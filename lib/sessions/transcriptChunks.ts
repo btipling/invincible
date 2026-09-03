@@ -8,7 +8,14 @@
  * chunk is not the full session.
  *
  * Client-safe: no db, no `node:crypto`, no Blob store. Callers inject `read`
- * and `isBound`. Persist is **head-only** — it must not call reconstruct.
+ * and `isBound`. Mid-turn persist is **head-only** — it must not call
+ * reconstruct. Terminal persist (plan #934) reconstructs the bound prior
+ * chain so the head `messages` are prior + this-run after a this-run-only
+ * overlay (the production wall-cap path), then writes a **flatten root**
+ * (`prev`/`depth` omitted) so GET does not walk. Host GET of a prev-bearing
+ * head fail-closes on a broken walk (never this-chunk-only) — including
+ * `turnStatus=completed`. A `failWrite` that stamped `completed` on a thin
+ * mid-turn overlay must not be adopted as the full transcript.
  */
 import { TRANSCRIPT_CHUNK_WALK_MAX, isRedisSafeOpaqueId } from '../sessionCloudCaps';
 import {
@@ -187,4 +194,28 @@ export function flattenReconstructedBody(
     rec.updatedAt = 0;
   }
   return rec;
+}
+
+/**
+ * After a reconstruct walk, pick the blob GET should parse.
+ *
+ * - Walk ok → flatten the merged chain (existing #886 path).
+ * - Walk fail → `null` (fail-closed; never this-chunk-only). A `completed`
+ *   overlay left by `failWrite` (no B7 merge) is still this-run-only; adopting
+ *   it would drop local prior history (adversarial #935). Successful #934
+ *   terminal heads omit `prev` so GET never walks.
+ */
+export function blobAfterReconstructWalk(input: {
+  sessionId: string;
+  headBody: unknown;
+  walked: ReconstructChainResult;
+}): Record<string, unknown> | null {
+  if (input.walked.ok) {
+    return flattenReconstructedBody(
+      input.headBody,
+      input.sessionId,
+      input.walked.messages,
+    );
+  }
+  return null;
 }

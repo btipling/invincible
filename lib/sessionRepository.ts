@@ -29,7 +29,7 @@ import {
   type TurnStatus,
 } from './sessionCloudCaps';
 import {
-  flattenReconstructedBody,
+  blobAfterReconstructWalk,
   reconstructTranscriptChain,
   transcriptChunkPrev,
 } from './sessions/transcriptChunks';
@@ -818,7 +818,8 @@ export function createHttpSessionRepository(
    * (client→Blob) instead of a whole-record Function GET. Used when the envelope
    * carrier is active. When the latest object has `prev`, the host walks the
    * chain (plan #886) and suffix-merges; a missing/foreign/loop chain fail-closes
-   * (never this-chunk-only). Host flatten roots omit `prev` and parse as one node.
+   * (never this-chunk-only), including `turnStatus=completed`. Host flatten roots
+   * and #934 terminal merged heads omit `prev` and parse as one node.
    */
   async function getEnvelope(id: string): Promise<CloudGetResult> {
     try {
@@ -897,11 +898,15 @@ export function createHttpSessionRepository(
             },
             isBound: (oid) => isRedisSafeOpaqueId(oid),
           });
-          if (!walked.ok) {
-            // Fail-closed: do not paint this-chunk-only on a broken chain.
+          const resolved = blobAfterReconstructWalk({
+            sessionId: id,
+            headBody: blobJson,
+            walked,
+          });
+          if (resolved === null) {
             return cloudGetFromEnvelopeMeta(id, env.meta, null);
           }
-          blobJson = flattenReconstructedBody(blobJson, id, walked.messages);
+          blobJson = resolved;
         }
         return cloudGetFromEnvelopeMeta(id, env.meta, blobJson);
       } catch {

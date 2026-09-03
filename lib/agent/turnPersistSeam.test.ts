@@ -455,7 +455,7 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     expect(parsed?.messages.some((m) => m.role === 'user')).toBe(true);
   });
 
-  it('second persist writes this-run chunk + prev; reconstruct keeps turn-1 user', async () => {
+  it('second persist writes a flatten-root merged head; reconstruct keeps turn-1 user', async () => {
     const { seam, blobStore, envelopeStore } = await makeSeam();
     const first = await seam.persist({
       turnRunId: realRunId,
@@ -490,9 +490,17 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
       prev?: string;
       depth?: number;
     };
-    expect(chunk.messages.map((m) => m.text)).toEqual(['turn-2 user', 'turn-2 assistant']);
-    expect(typeof chunk.prev).toBe('string');
-    expect(chunk.depth).toBe(2);
+    // Plan #934 / adversarial #935: the terminal head is suffix-merged
+    // prior + this-run and is a flatten root (no `prev`/`depth`) so GET
+    // never walks ancestors.
+    expect(chunk.messages.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
+      'turn-2 user',
+      'turn-2 assistant',
+    ]);
+    expect(chunk.prev).toBeUndefined();
+    expect(chunk.depth).toBeUndefined();
     const parsed = await chainParsed(blobStore, envelopeStore);
     expect(parsed).not.toBeNull();
     expect(parsed?.messages.map((m) => m.text)).toEqual([
@@ -542,7 +550,7 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
       prev?: string;
     };
     expect(chunk.queue).toEqual(['follow-up B', 'follow-up C']);
-    expect(typeof chunk.prev).toBe('string');
+    expect(chunk.prev).toBeUndefined();
     const parsed = parseCloudSessionSnapshot(chunk, scope.sessionId);
     expect(parsed?.queue).toEqual(['follow-up B', 'follow-up C']);
   });
@@ -1720,10 +1728,14 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
       HARNESS_SESSION_MAX_BODY_BYTES,
     );
     const parsed = await chainParsed(blobStore, envelopeStore);
-    expect(parsed?.messages.at(-1)?.text).toBe('newest-line');
-    expect(parsed?.messages[0]?.id).toBe('h0');
     const latest = parseCloudSessionSnapshot(JSON.parse(raw ?? 'null'), scope.sessionId);
-    expect(latest?.messages.map((m) => m.text)).toEqual(['newest-line']);
+    // Plan #934 / adversarial #935: merge-then-trim on a flatten-root head.
+    // Oldest drop; newest wrap-up kept. Reconstruct is head-only (no prev)
+    // so GET cannot restore the dropped rows from an untrimmed ancestor.
+    expect(parsed?.messages.at(-1)?.text).toBe('newest-line');
+    expect(latest?.messages.at(-1)?.text).toBe('newest-line');
+    expect(parsed?.messages[0]?.id).not.toBe('h0');
+    expect(parsed?.messages.map((m) => m.id)).toEqual(latest?.messages.map((m) => m.id));
   });
 
   it('foreign prev on the pointer object fail-closes persist (plan #886)', async () => {
@@ -1805,7 +1817,51 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     expect(env?.meta?.transcriptPointer).toBe(priorId);
   });
 
-  it('missing ancestor does not fail persist (head-only link; adversarial #889)', async () => {
+  it('missing ancestor does not fail mid-turn persist (head-only overlay; adversarial #889)', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const missingAncestor = newBlobObjectId(scope);
+    const priorId = newBlobObjectId(scope);
+    await blobStore.writeSegment({
+      objectId: priorId,
+      content: JSON.stringify({
+        id: scope.sessionId,
+        updatedAt: 1,
+        messages: [{ id: 'm1', role: 'user', text: 'head', at: 1 }],
+        prev: missingAncestor,
+      }),
+      maxBytes: 8 * 1024 * 1024,
+    });
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 1000,
+      meta: { transcriptPointer: priorId },
+    });
+    const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [{ id: 'cp_0', role: 'user', text: 'this-run', at: 1 }],
+      }),
+      terminal: false,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const chunk = JSON.parse((await blobStore.read(res.objectId!)) ?? 'null') as {
+      prev?: string;
+      messages: { text: string }[];
+    };
+    expect(chunk.prev).toBe(priorId);
+    expect(chunk.messages.map((m) => m.text)).toEqual(['this-run']);
+    const env = await envelopeStore.readEnvelope(key);
+    expect(env?.meta?.transcriptPointer).toBe(res.objectId);
+  });
+
+  it('missing ancestor fail-closes terminal persist (reconstruct required; plan #934)', async () => {
     const blobStore = new MemoryBlobTranscriptStore();
     const envelopeStore = new MemorySessionStore();
     const missingAncestor = newBlobObjectId(scope);
@@ -1836,19 +1892,16 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
         messages: [{ id: 'cp_0', role: 'user', text: 'this-run', at: 1 }],
       }),
     });
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    const chunk = JSON.parse((await blobStore.read(res.objectId!)) ?? 'null') as {
-      prev?: string;
-      messages: { text: string }[];
-    };
-    expect(chunk.prev).toBe(priorId);
-    expect(chunk.messages.map((m) => m.text)).toEqual(['this-run']);
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('write_failed');
+    expect(res.error).toContain('reconstruct');
     const env = await envelopeStore.readEnvelope(key);
-    expect(env?.meta?.transcriptPointer).toBe(res.objectId);
+    expect(env?.meta?.transcriptPointer).toBe(priorId);
+    expect(env?.meta?.turnStatus).toBe('completed');
   });
 
-  it('persist reads only the current pointer, not ancestor chunks (adversarial #889)', async () => {
+  it('mid-turn persist reads only the current pointer (adversarial #889); terminal reconstruct walks ancestors (plan #934)', async () => {
     const reads: string[] = [];
     class CountingBlobStore extends MemoryBlobTranscriptStore {
       override async read(objectId: string): Promise<string | null> {
@@ -1886,8 +1939,20 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
       updatedAt: 2,
       meta: { transcriptPointer: midId },
     });
-    reads.length = 0;
     const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    reads.length = 0;
+    const mid = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [{ id: 'cp_0', role: 'user', text: 'overlay', at: 1 }],
+      }),
+      terminal: false,
+    });
+    expect(mid.ok).toBe(true);
+    expect(reads).toEqual([midId]);
+    reads.length = 0;
     const res = await seam.persist({
       turnRunId: realRunId,
       deltas: [],
@@ -1898,10 +1963,20 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(reads).toEqual([midId]);
+    expect(reads[0]).toBe(mid.ok ? mid.objectId : midId);
+    expect(reads).toContain(oldestId);
+    const chunk = JSON.parse((await blobStore.read(res.objectId!)) ?? 'null') as {
+      messages: { text: string }[];
+    };
+    expect(chunk.messages.map((m) => m.text)).toEqual([
+      'oldest',
+      'mid',
+      'overlay',
+      'this-run',
+    ]);
   });
 
-  it('host flatten root (no prev) is the full list; next worker chunk prevs it', async () => {
+  it('host flatten root (no prev) is the full list; terminal merge writes a flatten root', async () => {
     const blobStore = new MemoryBlobTranscriptStore();
     const envelopeStore = new MemorySessionStore();
     const flattenId = newBlobObjectId(scope);
@@ -1945,9 +2020,13 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
       depth?: number;
       messages: { text: string }[];
     };
-    expect(chunk.prev).toBe(flattenId);
-    expect(chunk.depth).toBe(2);
+    expect(chunk.prev).toBeUndefined();
+    expect(chunk.depth).toBeUndefined();
+    // Plan #934: the terminal head is suffix-merged onto the host flatten root
+    // and itself omits prev (adversarial #935).
     expect(chunk.messages.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
       'turn-2 user',
       'turn-2 assistant',
     ]);
@@ -2002,5 +2081,427 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     expect(res.error).toContain('walk cap');
     const env = await envelopeStore.readEnvelope(key);
     expect(env?.meta?.transcriptPointer).toBe(priorId);
+  });
+
+  // ── Plan #934 (source #933): terminal persist suffix-merges this-run onto
+  // the prior transcript so a wall-clock `error` terminal (which never sees
+  // the host `done` flatten) is as durable as a `done` terminal.
+
+  it('plan #934 row 1 — wall-capped terminal persist merges this-run assistants + wrap-up onto prior history (head not thin)', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const priorId = newBlobObjectId(scope);
+    await blobStore.writeSegment({
+      objectId: priorId,
+      content: JSON.stringify({
+        id: scope.sessionId,
+        updatedAt: 1000,
+        messages: [
+          { id: 'h1', role: 'user', text: 'turn-1 user', at: 10 },
+          { id: 'h2', role: 'assistant', text: 'turn-1 assistant', at: 11 },
+        ],
+      }),
+      maxBytes: 8 * 1024 * 1024,
+    });
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 1000,
+      meta: { transcriptPointer: priorId },
+    });
+    const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    // A wall-capped turn's terminal checkpoint: pre-cap tool round + the
+    // tools-off wrap-up handoff. The SSE terminal was `error`, so no host
+    // flatten ever ran — the worker merge is the only durable writer.
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'run the suite', at: 1 },
+          { id: 'cp_1', role: 'tool_run', text: 'exit=1', at: 2 },
+          { id: 'cp_2', role: 'assistant', text: 'wrap-up: 3 tests still fail', at: 3 },
+        ],
+      }),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    // The head chunk ITSELF is not thin: it carries prior + this-run.
+    const chunk = JSON.parse((await blobStore.read(res.objectId!)) ?? 'null') as {
+      prev?: string;
+      depth?: number;
+      messages: { text: string }[];
+    };
+    expect(chunk.prev).toBeUndefined();
+    expect(chunk.depth).toBeUndefined();
+    expect(chunk.messages.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
+      'run the suite',
+      'exit=1',
+      'wrap-up: 3 tests still fail',
+    ]);
+    // Hydrate / next-prompt history fold (reconstruct) sees the same rows.
+    const parsed = await chainParsed(blobStore, envelopeStore);
+    expect(parsed?.messages.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
+      'run the suite',
+      'exit=1',
+      'wrap-up: 3 tests still fail',
+    ]);
+  });
+
+  it('plan #934 row 2 — normal done turn: merge against a host-flattened prior that already covers this-run is a no-op (no duplicate rows)', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const priorId = newBlobObjectId(scope);
+    await blobStore.writeSegment({
+      objectId: priorId,
+      content: JSON.stringify({
+        id: scope.sessionId,
+        updatedAt: 1000,
+        messages: [
+          { id: 'h1', role: 'user', text: 'turn-1 user', at: 10 },
+          { id: 'h2', role: 'assistant', text: 'turn-1 assistant', at: 11 },
+          { id: 'h3', role: 'user', text: 'run the suite', at: 20 },
+          { id: 'h4', role: 'tool_run', text: 'exit=1', at: 21 },
+          { id: 'h5', role: 'assistant', text: 'wrap-up: 3 tests still fail', at: 22 },
+        ],
+      }),
+      maxBytes: 8 * 1024 * 1024,
+    });
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 1000,
+      meta: { transcriptPointer: priorId },
+    });
+    const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'run the suite', at: 1 },
+          { id: 'cp_1', role: 'tool_run', text: 'exit=1', at: 2 },
+          { id: 'cp_2', role: 'assistant', text: 'wrap-up: 3 tests still fail', at: 3 },
+        ],
+      }),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    // The host flatten already wrote this run; the merged head adds no rows.
+    const parsed = await chainParsed(blobStore, envelopeStore);
+    expect(parsed?.messages.map((m) => m.id)).toEqual(['h1', 'h2', 'h3', 'h4', 'h5']);
+  });
+
+  it('plan #934 / adversarial #935 — history-fold this-run covers host composer; no second user row', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const priorId = newBlobObjectId(scope);
+    const priorMsgs = [
+      { id: 'h1', role: 'user' as const, text: 'turn-1 user', at: 10 },
+      { id: 'h2', role: 'assistant' as const, text: 'turn-1 assistant', at: 11 },
+    ];
+    const composer = 'run the suite';
+    const fold = formatPromptWithHistory(priorMsgs, composer);
+    await blobStore.writeSegment({
+      objectId: priorId,
+      content: JSON.stringify({
+        id: scope.sessionId,
+        updatedAt: 1000,
+        messages: [
+          ...priorMsgs,
+          { id: 'h3', role: 'user', text: composer, at: 20 },
+          { id: 'h4', role: 'tool_run', text: 'exit=1', at: 21 },
+        ],
+      }),
+      maxBytes: 8 * 1024 * 1024,
+    });
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 1000,
+      meta: { transcriptPointer: priorId },
+    });
+    const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: fold, at: 1 },
+          { id: 'cp_1', role: 'tool_run', text: 'exit=1', at: 2 },
+          { id: 'cp_2', role: 'assistant', text: 'wrap-up: 3 tests still fail', at: 3 },
+        ],
+      }),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const parsed = await chainParsed(blobStore, envelopeStore);
+    expect(parsed?.messages.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
+      composer,
+      'exit=1',
+      'wrap-up: 3 tests still fail',
+    ]);
+    expect(parsed?.messages.filter((m) => m.role === 'user').map((m) => m.text)).toEqual([
+      'turn-1 user',
+      composer,
+    ]);
+  });
+
+  it('plan #934 row 4 — first turn (empty prior): merge reduces to this-run only', async () => {
+    const { seam, blobStore, envelopeStore } = await makeSeam();
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'hello', at: 1 },
+          { id: 'cp_1', role: 'assistant', text: 'hi there', at: 2 },
+        ],
+      }),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const chunk = JSON.parse((await blobStore.read(res.objectId!)) ?? 'null') as {
+      prev?: string;
+      depth?: number;
+      messages: { text: string }[];
+    };
+    expect(chunk.prev).toBeUndefined();
+    expect(chunk.depth).toBeUndefined();
+    expect(chunk.messages.map((m) => m.text)).toEqual(['hello', 'hi there']);
+    const parsed = await chainParsed(blobStore, envelopeStore);
+    expect(parsed?.messages.map((m) => m.text)).toEqual(['hello', 'hi there']);
+  });
+
+  it('plan #934 row 5 — mid-turn running persist stays this-run-only (no merge)', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const priorId = newBlobObjectId(scope);
+    await blobStore.writeSegment({
+      objectId: priorId,
+      content: JSON.stringify({
+        id: scope.sessionId,
+        updatedAt: 1000,
+        messages: [
+          { id: 'h1', role: 'user', text: 'turn-1 user', at: 10 },
+          { id: 'h2', role: 'assistant', text: 'turn-1 assistant', at: 11 },
+        ],
+      }),
+      maxBytes: 8 * 1024 * 1024,
+    });
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 1000,
+      meta: { transcriptPointer: priorId },
+    });
+    const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'run the suite', at: 1 },
+          { id: 'cp_1', role: 'tool_run', text: 'exit=1', at: 2 },
+        ],
+      }),
+      terminal: false,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    // The mid-turn chunk is the thin this-run overlay (reconstruct still
+    // suffix-merges the prev chain on read — unchanged).
+    const chunk = JSON.parse((await blobStore.read(res.objectId!)) ?? 'null') as {
+      prev?: string;
+      messages: { text: string }[];
+    };
+    expect(chunk.prev).toBe(priorId);
+    expect(chunk.messages.map((m) => m.text)).toEqual(['run the suite', 'exit=1']);
+    const parsed = await chainParsed(blobStore, envelopeStore);
+    expect(parsed?.messages.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
+      'run the suite',
+      'exit=1',
+    ]);
+  });
+
+  it('plan #934 — terminal persist over the run’s OWN mid-turn chunk merges (tool-turn then finish), no duplicate rows', async () => {
+    const { seam, blobStore, envelopeStore } = await makeSeam();
+    // Mid-turn: user + tool batch (the loop's overlay write, terminal:false).
+    const mid = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'run the suite', at: 1 },
+          { id: 'cp_1', role: 'tool_run', text: 'exit=1', at: 2 },
+        ],
+      }),
+      terminal: false,
+    });
+    expect(mid.ok).toBe(true);
+    // Terminal: the full this-run checkpoint (tools round + wrap-up handoff).
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'run the suite', at: 1 },
+          { id: 'cp_1', role: 'tool_run', text: 'exit=1', at: 2 },
+          { id: 'cp_2', role: 'assistant', text: 'wrap-up: 3 tests still fail', at: 3 },
+        ],
+      }),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    // The terminal head carries the whole turn exactly once (not 2× the tool).
+    const chunk = JSON.parse((await blobStore.read(res.objectId!)) ?? 'null') as {
+      prev?: string;
+      depth?: number;
+      messages: { text: string }[];
+    };
+    expect(chunk.prev).toBeUndefined();
+    expect(chunk.depth).toBeUndefined();
+    expect(chunk.messages.map((m) => m.text)).toEqual([
+      'run the suite',
+      'exit=1',
+      'wrap-up: 3 tests still fail',
+    ]);
+    const parsed = await chainParsed(blobStore, envelopeStore);
+    expect(parsed?.messages.map((m) => m.text)).toEqual([
+      'run the suite',
+      'exit=1',
+      'wrap-up: 3 tests still fail',
+    ]);
+  });
+
+  it('plan #934 — terminal persist over mid-turn overlay reconstructs prior history (head not thin)', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const priorId = newBlobObjectId(scope);
+    await blobStore.writeSegment({
+      objectId: priorId,
+      content: JSON.stringify({
+        id: scope.sessionId,
+        updatedAt: 1000,
+        messages: [
+          { id: 'h1', role: 'user', text: 'turn-1 user', at: 10 },
+          { id: 'h2', role: 'assistant', text: 'turn-1 assistant', at: 11 },
+        ],
+      }),
+      maxBytes: 8 * 1024 * 1024,
+    });
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 1000,
+      meta: { transcriptPointer: priorId },
+    });
+    const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    const mid = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'run the suite', at: 1 },
+          { id: 'cp_1', role: 'tool_run', text: 'exit=1', at: 2 },
+        ],
+      }),
+      terminal: false,
+    });
+    expect(mid.ok).toBe(true);
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'run the suite', at: 1 },
+          { id: 'cp_1', role: 'tool_run', text: 'exit=1', at: 2 },
+          { id: 'cp_2', role: 'assistant', text: 'wrap-up: 3 tests still fail', at: 3 },
+        ],
+      }),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const chunk = JSON.parse((await blobStore.read(res.objectId!)) ?? 'null') as {
+      prev?: string;
+      messages: { text: string }[];
+    };
+    expect(chunk.prev).toBeUndefined();
+    expect(chunk.messages.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
+      'run the suite',
+      'exit=1',
+      'wrap-up: 3 tests still fail',
+    ]);
+    const parsed = await chainParsed(blobStore, envelopeStore);
+    expect(parsed?.messages.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
+      'run the suite',
+      'exit=1',
+      'wrap-up: 3 tests still fail',
+    ]);
+  });
+
+  it('plan #934 — non-snapshot terminal content keeps stamp-only path (merge skipped, no crash)', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const priorId = newBlobObjectId(scope);
+    await blobStore.writeSegment({
+      objectId: priorId,
+      content: JSON.stringify({
+        id: scope.sessionId,
+        updatedAt: 1000,
+        messages: [
+          { id: 'h1', role: 'user', text: 'turn-1 user', at: 10 },
+          { id: 'h2', role: 'assistant', text: 'turn-1 assistant', at: 11 },
+        ],
+      }),
+      maxBytes: 8 * 1024 * 1024,
+    });
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 1000,
+      meta: { transcriptPointer: priorId },
+    });
+    const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: '{"delta":"x"}',
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const chunk = JSON.parse((await blobStore.read(res.objectId!)) ?? 'null') as {
+      delta?: string;
+      updatedAt?: number;
+    };
+    expect(chunk.delta).toBe('x');
+    expect(Number.isFinite(chunk.updatedAt)).toBe(true);
   });
 });

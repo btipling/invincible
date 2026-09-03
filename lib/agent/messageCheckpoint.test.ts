@@ -11,6 +11,7 @@ import {
   TURN_MSG_CHECKPOINT_MAX_BYTES,
   TURN_MSG_CHECKPOINT_MAX_ROWS,
 } from '../sessionCloudCaps';
+import { formatPromptWithHistory } from '../sessionStore';
 
 function rows(n: number, content = 'm'): CheckpointRow[] {
   return Array.from({ length: n }, (_, i) => ({ role: 'user', content: `${content}${i}` }));
@@ -269,6 +270,53 @@ describe('mergeCheckpointOntoPrior', () => {
     const hostA2 = { id: 'ha2', role: 'assistant' as const, text: 'turn-2 assistant', at: 21 };
     const out = mergeCheckpointOntoPrior([u1, a1, hostU2, hostA2], [u2, a2]);
     expect(out).toEqual([u1, a1, hostU2, hostA2]);
+  });
+
+  it('history-fold this-run user covers a host composer (adversarial #935)', () => {
+    const composer = 'run the suite';
+    const fold = formatPromptWithHistory([u1, a1], composer);
+    const hostComposer = { id: 'hu2', role: 'user' as const, text: composer, at: 20 };
+    const hostCard = {
+      id: 'ht',
+      role: 'tool_run' as const,
+      text: 'exit=1',
+      at: 21,
+    };
+    const incoming = [
+      { id: 'cp_0', role: 'user' as const, text: fold, at: 1 },
+      { id: 'cp_1', role: 'tool_run' as const, text: 'exit=1', at: 2 },
+      { id: 'cp_2', role: 'assistant' as const, text: 'wrap-up: 3 tests still fail', at: 3 },
+    ];
+    const out = mergeCheckpointOntoPrior([u1, a1, hostComposer, hostCard], incoming);
+    expect(out.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
+      composer,
+      'exit=1',
+      'wrap-up: 3 tests still fail',
+    ]);
+    expect(out.filter((m) => m.role === 'user').map((m) => m.text)).toEqual([
+      'turn-1 user',
+      composer,
+    ]);
+  });
+
+  it('history-fold of a same-text retry still appends after a prior turn of that composer', () => {
+    const composer = 'look at foo.ts';
+    const t1 = { id: 'h1', role: 'user' as const, text: composer, at: 10 };
+    const a1b = { id: 'h2', role: 'assistant' as const, text: 'looked', at: 11 };
+    const fold = formatPromptWithHistory([t1, a1b], composer);
+    const incoming = [
+      { id: 'cp_0', role: 'user' as const, text: fold, at: 1 },
+      { id: 'cp_1', role: 'assistant' as const, text: 'looked again', at: 2 },
+    ];
+    const out = mergeCheckpointOntoPrior([t1, a1b], incoming);
+    expect(out.map((m) => m.text)).toEqual([
+      composer,
+      'looked',
+      fold,
+      'looked again',
+    ]);
   });
 
   it('appends only the non-overlapping tail (host already has this-run user)', () => {

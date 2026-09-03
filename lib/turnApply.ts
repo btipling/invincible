@@ -599,6 +599,14 @@ export function createApplyTurnEvent(
     if (ev.type === 'error') {
       ctx.sawStreamTerminal = true;
       closeThinkingSegment(bridge, ctx);
+      // Plan #934 (source #933): the host error path deliberately does NOT
+      // finalize/flatten here. A wall-capped turn ends with SSE `error` (never
+      // `done`). Durability is the worker terminal persist (reconstructed
+      // prior chain + this-run merge in lib/agent/turnPersistSeam.ts).
+      // HarnessHost adopts that worker transcript for local paint only and
+      // skips the cloud PUT — a host-clock flatten PUT would LWW-clobber
+      // the worker pointer. Adding a host finalize here would double-paint
+      // the handoff.
     }
   };
 }

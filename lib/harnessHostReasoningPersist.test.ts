@@ -306,7 +306,7 @@ describe('foldPendingReasoningChange', () => {
 });
 
 describe('HarnessHost wiring lock — applySessionReasoning must use writeLocalSessionMeta (adversarial-review #902 Major L1)', () => {
-  it('applySessionReasoningFn persist arg is writeLocalSessionMeta, not writeLocalSession', () => {
+  it('applySessionReasoningFn persist arg is persistMetaHeld (writeLocalSessionMeta + hold freeze)', () => {
     const src = readFileSync(
       resolve(import.meta.dirname, '..', 'app/harness/HarnessHost.tsx'),
       'utf-8',
@@ -314,12 +314,26 @@ describe('HarnessHost wiring lock — applySessionReasoning must use writeLocalS
     expect(src).toContain(
       'const writeLocalSessionMeta = useCallback((next: SessionSnapshot, opts?: { paintQuota?: boolean }) => {',
     );
+    expect(src).toContain('const persistMetaHeld = useCallback(');
     // Poll path after a model change must not snap ringWindowStartRef.
-    expect(src).toContain(
-      'applySessionReasoningFn(snap, options, b, sessionRef, writeLocalSessionMeta, repoRef.current);',
+    const applyIdx = src.indexOf('const applySessionReasoning = useCallback');
+    expect(applyIdx).toBeGreaterThan(0);
+    const applyBlock = src.slice(
+      applyIdx,
+      src.indexOf('/** Apply server snapshot', applyIdx),
     );
-    expect(src).toContain(
-      'foldPendingReasoningChangeFn(b, sessionRef, writeLocalSessionMeta, repoRef.current, inflightRef.current);',
+    expect(applyBlock).toContain('applySessionReasoningFn(');
+    expect(applyBlock).toContain('persistMetaHeld');
+    expect(applyBlock).toContain('repoHeld(snap.id)');
+    expect(applyBlock).not.toMatch(/applySessionReasoningFn\([^)]*writeLocalSession,/);
+    const foldIdx = src.indexOf('const foldPendingReasoningChange = useCallback');
+    expect(foldIdx).toBeGreaterThan(0);
+    const foldBlock = src.slice(
+      foldIdx,
+      src.indexOf('/** Persist the active session id', foldIdx),
     );
+    expect(foldBlock).toContain('foldPendingReasoningChangeFn(');
+    expect(foldBlock).toContain('persistMetaHeld');
+    expect(foldBlock).toContain('repoHeld(sessionRef.current.id)');
   });
 });

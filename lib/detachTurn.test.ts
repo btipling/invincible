@@ -445,7 +445,8 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     // the live last ring row from livePaintToolRun / growAssistant. A
     // still-running post-turn persist also skips paint (hot resume attach).
     expect(run).toContain('onSessionPatch: (s) => persistTurn(s, false)');
-    expect(run).toContain("persistTurn(folded, folded.turnStatus !== 'running')");
+    expect(run).toContain("persistTurn(folded, folded.turnStatus !== 'running', {");
+    expect(run).toContain('cloud: skipCloud ? false : undefined');
     expect(run).toContain("persistTurn(reconciled, reconciled.turnStatus !== 'running')");
   });
 
@@ -468,8 +469,8 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     // Pin ?s= only on live completion — not after detach/unmount.
     const bind = run.slice(run.indexOf('const pendingId = pendingMintBindRef.current'));
     expect(bind).toContain('shouldApplyMintBind(');
-    expect(bind).toContain('writeLocalSession(bound)');
-    expect(bind).toContain('repo?.put(pendingId, bound)');
+    expect(bind).toContain('writeLocalSession(keepFrozenClock(blocked, bound))');
+    expect(bind).toContain('if (!blocked) repo?.put(pendingId, bound)');
     expect(bind).not.toContain('repoRef.current?.put');
     expect(bind).toContain('if (!detached)');
     const pin = bind.slice(bind.indexOf('if (!detached)'));

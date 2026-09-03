@@ -1,0 +1,254 @@
+/**
+ * After a durable SSE `error` (wall-clock cap, model error) the worker has
+ * already terminal-persisted. The host fail path must not flatten-PUT a local
+ * snapshot that never ran `done` finalize (per-round assistants were
+ * bridge-only) — that PUT LWW-wins and orphans the worker head (source #933).
+ *
+ * Adopt the worker transcript (GET + reconstruct) for **local paint only**.
+ * Always skip the cloud PUT (`skipCloud: true`) so the worker envelope pointer
+ * stays LWW source of truth. GET `ok` unions F21 queue / usage via
+ * `mergeAdoptedUsage`, keeps the fail-fold `turnStatus` / `turnRunId`, and
+ * suffixes host-only error/system rows. GET fail freezes `updatedAt` so a
+ * later GET wins — and `shouldHoldCloudPut` keeps the *next* host persist
+ * from stamping `Date.now()` onto that thin snapshot and PUT-clobbering.
+ */
+import { mergeAdoptedUsage } from './sessionRepository';
+import type { CloudGetResult } from './sessionRepository';
+import type { SessionMessage, SessionSnapshot } from './sessionStore';
+import { queueTextFromUserContent } from './turnQueue';
+
+export function shouldAdoptWorkerTranscriptOnError(input: {
+  ok: boolean;
+  streamOpened: boolean;
+  turnStatus?: string;
+}): boolean {
+  return (
+    input.ok === false &&
+    input.streamOpened === true &&
+    input.turnStatus !== 'running' &&
+    input.turnStatus !== 'cancelling'
+  );
+}
+
+/** GET miss (freeze `updatedAt: 0`) — hold cloud PUT until a later GET merges. */
+export function shouldHoldCloudPut(adopted: {
+  skipCloud: boolean;
+  session: { updatedAt: number };
+}): boolean {
+  return adopted.skipCloud && adopted.session.updatedAt === 0;
+}
+
+/**
+ * Hold is per-session. A model/effort pick (or any other host persist) on a
+ * *different* session must still PUT; only the GET-miss session is fenced.
+ */
+export function heldSessionPutBlocked(
+  hold: boolean,
+  heldSessionId: string | null,
+  id: string,
+): boolean {
+  return hold && heldSessionId === id;
+}
+
+/**
+ * While the GET-miss hold is set, do not stamp `Date.now()` onto the thin
+ * snapshot. Freeze-0 is the LWW fence — a newer local clock lets F5 keep-local
+ * and boot-PUT the thin row over the worker merged head (source #933).
+ */
+export function keepFrozenClock(
+  blocked: boolean,
+  next: SessionSnapshot,
+): SessionSnapshot {
+  if (!blocked) return next;
+  return { ...next, updatedAt: 0 };
+}
+
+export type CloudPutFn = (id: string, snapshot: SessionSnapshot) => void;
+
+/** No-op `repo.put` while the held session is fenced. */
+export function putUnlessHeld(
+  blocked: boolean,
+  put: CloudPutFn | undefined,
+  id: string,
+  snapshot: SessionSnapshot,
+): void {
+  if (blocked) return;
+  put?.(id, snapshot);
+}
+
+/** Wrap a repo so `put` no-ops while `blocked`. Other methods pass through. */
+export function wrapRepoPut<T extends { put: CloudPutFn }>(
+  blocked: boolean,
+  repo: T | null,
+): T | null {
+  if (!repo) return null;
+  if (!blocked) return repo;
+  return { ...repo, put: () => undefined };
+}
+
+
+const HOST_ONLY_ROLES = new Set<SessionMessage['role']>(['error', 'system']);
+const FOLLOW_UP_ROLES = new Set<SessionMessage['role']>([
+  'assistant',
+  'tool_run',
+  'skill_attached',
+]);
+
+/** Local Turn-ended / system rows the worker checkpoint never carries. */
+export function withHostOnlySuffix(
+  worker: ReadonlyArray<SessionMessage>,
+  local: ReadonlyArray<SessionMessage>,
+): SessionMessage[] {
+  const extras = local.filter((m) => {
+    if (!HOST_ONLY_ROLES.has(m.role)) return false;
+    return !worker.some((w) => w.role === m.role && w.text === m.text);
+  });
+  if (extras.length === 0) return worker.slice();
+  return [...worker, ...extras];
+}
+
+/**
+ * Worker this-run `user` is `turnWorkflow.userMessage` = production
+ * `formatPromptWithHistory` fold. Host local is the composer line. Exact
+ * text misses; `queueTextFromUserContent` unwraps the last `User:` line.
+ *
+ * Coverage is a **bag** of unwrap-keys, not set-membership: a same-text
+ * retry after the composer (or a re-ask of a prior history line) must not
+ * be treated as already covered (adversarial #935).
+ */
+function userCoverageKey(text: string): string {
+  return queueTextFromUserContent(text);
+}
+
+function workerUserCoverage(
+  worker: ReadonlyArray<SessionMessage>,
+): Map<string, number> {
+  const remaining = new Map<string, number>();
+  for (const w of worker) {
+    if (w.role !== 'user') continue;
+    const k = userCoverageKey(w.text);
+    remaining.set(k, (remaining.get(k) ?? 0) + 1);
+  }
+  return remaining;
+}
+
+/**
+ * Recover-after-GET-miss suffix: host-only error/system rows plus extra **user**
+ * lines the worker snapshot lacks (a follow-up typed after the wall), and the
+ * `assistant` / `tool_run` / `skill_attached` rows that follow that extra user
+ * (a follow-up turn that completed locally while GET was still missing).
+ * Do **not** copy this-turn `assistantAcc` / live tool cards — those sit
+ * *before* any extra user and would duplicate the worker wrap-up on flatten
+ * PUT (adversarial #935). A worker history-fold covers the composer line via
+ * `queueTextFromUserContent` so the this-turn user is not treated as extra.
+ * Each worker user consumes one local user of the same unwrap-key; a
+ * same-text retry after that slot is extra.
+ */
+export function withLocalOnlySuffix(
+  worker: ReadonlyArray<SessionMessage>,
+  local: ReadonlyArray<SessionMessage>,
+): SessionMessage[] {
+  const remaining = workerUserCoverage(worker);
+  let seenExtraUser = false;
+  const extras = local.filter((m) => {
+    if (m.role === 'user') {
+      const k = userCoverageKey(m.text);
+      const n = remaining.get(k) ?? 0;
+      if (n > 0) {
+        remaining.set(k, n - 1);
+        return false;
+      }
+      seenExtraUser = true;
+      return true;
+    }
+    if (HOST_ONLY_ROLES.has(m.role)) {
+      return !worker.some((w) => w.role === m.role && w.text === m.text);
+    }
+    if (seenExtraUser && FOLLOW_UP_ROLES.has(m.role)) return true;
+    return false;
+  });
+  if (extras.length === 0) return worker.slice();
+  return [...worker, ...extras];
+}
+
+function keepLocalFailFold(
+  merged: SessionSnapshot,
+  local: SessionSnapshot,
+): SessionSnapshot {
+  const out: SessionSnapshot = {
+    ...merged,
+    messages: withHostOnlySuffix(merged.messages, local.messages),
+  };
+  if (local.turnStatus !== undefined) out.turnStatus = local.turnStatus;
+  else delete out.turnStatus;
+  if (local.turnRunId !== undefined) out.turnRunId = local.turnRunId;
+  else delete out.turnRunId;
+  if (local.turnStreamCursor !== undefined) {
+    out.turnStreamCursor = local.turnStreamCursor;
+  } else {
+    delete out.turnStreamCursor;
+  }
+  return out;
+}
+
+export async function adoptWorkerTranscriptOnError(opts: {
+  get: ((id: string) => Promise<CloudGetResult>) | undefined;
+  session: SessionSnapshot;
+}): Promise<{ session: SessionSnapshot; skipCloud: boolean }> {
+  if (!opts.get) {
+    return {
+      session: { ...opts.session, updatedAt: 0 },
+      skipCloud: true,
+    };
+  }
+  try {
+    const pulled = await opts.get(opts.session.id);
+    if (pulled.action === 'ok') {
+      return {
+        session: keepLocalFailFold(
+          mergeAdoptedUsage(pulled.snapshot, opts.session),
+          opts.session,
+        ),
+        skipCloud: true,
+      };
+    }
+  } catch {
+    /* GET blip — do not flatten-clobber the worker pointer */
+  }
+  return {
+    session: { ...opts.session, updatedAt: 0 },
+    skipCloud: true,
+  };
+}
+
+/**
+ * After an error-adopt GET miss (`shouldHoldCloudPut`), GET+merge the worker
+ * head before the next host PUT. GET ok → worker transcript + host-only /
+ * extra-user suffix (plus follow-up-turn rows after that user),
+ * `skipCloud: false` (a flatten of the merged head is safe).
+ * GET miss → keep local, `skipCloud: true` (still do not PUT a thin snapshot).
+ */
+export async function recoverWorkerTranscriptBeforePut(opts: {
+  get: ((id: string) => Promise<CloudGetResult>) | undefined;
+  session: SessionSnapshot;
+}): Promise<{ session: SessionSnapshot; skipCloud: boolean }> {
+  if (!opts.get) {
+    return { session: opts.session, skipCloud: true };
+  }
+  try {
+    const pulled = await opts.get(opts.session.id);
+    if (pulled.action === 'ok') {
+      const merged = mergeAdoptedUsage(pulled.snapshot, opts.session);
+      return {
+        session: {
+          ...merged,
+          messages: withLocalOnlySuffix(merged.messages, opts.session.messages),
+        },
+        skipCloud: false,
+      };
+    }
+  } catch {
+    /* still cannot see the worker head */
+  }
+  return { session: opts.session, skipCloud: true };
+}

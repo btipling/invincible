@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { TRANSCRIPT_CHUNK_WALK_MAX } from '../sessionCloudCaps';
 import {
+  blobAfterReconstructWalk,
   flattenReconstructedBody,
   reconstructTranscriptChain,
   transcriptChunkChainLength,
@@ -214,5 +215,50 @@ describe('flatten', () => {
       'x',
       'y',
     ]);
+  });
+});
+
+describe('blobAfterReconstructWalk (plan #934 / adversarial #935)', () => {
+  const missing = {
+    ok: false as const,
+    code: 'missing' as const,
+    error: 'bound transcript prev object is missing',
+  };
+
+  it('walk ok flattens the reconstructed chain', () => {
+    const head = snap([msg('m2', 'this-run')], 't_prev', 2);
+    const body = blobAfterReconstructWalk({
+      sessionId: SESSION,
+      headBody: head,
+      walked: { ok: true, messages: [msg('m1', 'prior'), msg('m2', 'this-run')] },
+    });
+    expect(body).not.toBeNull();
+    expect(body?.prev).toBeUndefined();
+    expect((body?.messages as { text: string }[]).map((m) => m.text)).toEqual([
+      'prior',
+      'this-run',
+    ]);
+  });
+
+  it('walk fail on a running overlay fail-closes (not this-chunk-only)', () => {
+    const head = snap([msg('m2', 'this-run')], 't_missing', 2);
+    expect(
+      blobAfterReconstructWalk({
+        sessionId: SESSION,
+        headBody: head,
+        walked: missing,
+      }),
+    ).toBeNull();
+  });
+
+  it('walk fail on a completed thin overlay fail-closes (not this-chunk-only)', () => {
+    const head = snap([msg('m2', 'this-run')], 't_missing', 2);
+    expect(
+      blobAfterReconstructWalk({
+        sessionId: SESSION,
+        headBody: head,
+        walked: missing,
+      }),
+    ).toBeNull();
   });
 });

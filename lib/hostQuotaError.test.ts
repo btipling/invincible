@@ -203,12 +203,15 @@ describe('HarnessHost wiring lock — quota save (#870)', () => {
   });
 
   it('post-turn persistTurn does not paint while the durable turn is still running', () => {
-    expect(src).toContain("persistTurn(folded, folded.turnStatus !== 'running')");
+    expect(src).toContain("persistTurn(folded, folded.turnStatus !== 'running', {");
+    expect(src).toContain('cloud: skipCloud ? false : undefined');
     expect(src).toContain("persistTurn(reconciled, reconciled.turnStatus !== 'running')");
   });
 
   it('adopt and Clear rebuild the ring before painting quota', () => {
-    expect(src).toContain('writeLocalSession(s, { paintQuota: false })');
+    expect(src).toContain(
+      'writeLocalSession(keepFrozenClock(blocked, s), { paintQuota: false })',
+    );
     expect(src).toContain('writeLocalSession(empty, { paintQuota: false })');
     expect(src).toContain('paintQuotaAfterRebuild(');
   });

@@ -19,6 +19,7 @@ import {
   TURN_MSG_CHECKPOINT_MAX_ROWS,
 } from '../sessionCloudCaps';
 import type { SessionRole } from '../sessionStore';
+import { queueTextFromUserContent } from '../turnQueue';
 
 /** A single `{role, content}` checkpoint row. `content` is always a string (may be empty). */
 export type CheckpointRow = { role: string; content: string };
@@ -563,14 +564,31 @@ function flexMatchExact(
   return { matched, skippedAssistant: matched && skippedAssistant };
 }
 
-/** Host tool cards encode a payload; worker checkpoint rows are raw results. */
+/** Host tool cards encode a payload; worker checkpoint rows are raw results.
+ *  User rows: exact text, or a `formatPromptWithHistory` fold covering the
+ *  host composer (`queueTextFromUserContent`). Production this-run user is
+ *  the fold (`runTurnLoop` `userMessage`); host flatten prior is the composer
+ *  line. Exact-only overlap appended both (adversarial #935). */
 function snapshotRowOverlaps(
   prior: CheckpointSnapshotMessage,
   incoming: CheckpointSnapshotMessage,
 ): boolean {
   if (prior.role !== incoming.role) return false;
   if (prior.role === 'tool_run') return true;
-  return prior.text === incoming.text;
+  if (prior.text === incoming.text) return true;
+  if (prior.role === 'user') return userFoldCoversComposer(prior.text, incoming.text);
+  return false;
+}
+
+/**
+ * Incoming history-fold covers a host composer line. Incoming must be the
+ * longer fold (`\nUser: ` present); a raw composer must not unwrap-match an
+ * earlier same-text history user as a prefix cover.
+ */
+function userFoldCoversComposer(priorText: string, incomingText: string): boolean {
+  if (incomingText.length <= priorText.length) return false;
+  if (!incomingText.includes('\nUser: ')) return false;
+  return queueTextFromUserContent(incomingText) === priorText;
 }
 
 function hasLaterRole(

@@ -165,6 +165,29 @@ reserved-`meta` carriers are defined in
 
 The durable model step (`modelGenerateStep`) passes the **same** `resolveSystem()` string as `POST /api/agent` — base standing orders (including “Be concise”), plus optional persona / attached-skill blocks resolved in-step from the assembled tool registry. Persona inject reads and locks `meta.personaSnapshot` on the envelope (`readEnvelope` / `upsertEnvelope`, `updatedAt` unchanged), not the legacy whole-blob `get`/`put`. A missing system prompt is not an output cap; it is what used to let a provider default `max_tokens` look like a mysterious mid-sentence stop. Slash-command `/skill-name` attach still lives on `/api/agent`; the durable step re-resolves sticky and always-on skills only (`command: none`).
 
+**Terminal persist is worker-owned and terminal-agnostic (plan #934).** The
+worker's **terminal** persist reconstructs the bound prior chain (so a mid-turn
+`running` overlay is not treated as the whole transcript) then suffix-merges
+this-run checkpoint messages via the shipped `mergeCheckpointOntoPrior`. The
+head itself carries prior + this-run history and is a **flatten root**
+(`prev`/`depth` omitted) so GET does not walk ancestors. A wall-clock `error`
+terminal is therefore as durable as a `done` terminal. The host must **not**
+flatten-PUT after SSE `error` (per-round assistants were bridge-only; a
+host-clock PUT LWW-wins and orphans the worker head). It adopts the worker
+transcript (GET + reconstruct) for local paint only (`skipCloud`) and unions
+F21 queue / host-only error rows onto that snapshot. A GET miss freezes
+`updatedAt` and holds later host PUTs (including model/effort-pick `repo.put`,
+not only `persist()`) until a GET merges the worker head (recover suffix is
+host-only error/system rows plus extra user lines and the assistant/tool rows that follow that extra user — not this-turn local assistants; user coverage is an unwrap-key bag so a same-text retry after the composer is extra); a held-session local
+write does not bump the clock (freeze-0 is the LWW fence — a follow-up prompt
+or F5 must not flatten-clobber it). Host GET of a prev-bearing head fail-closes
+on a broken walk (never this-chunk-only), including `turnStatus=completed` — a
+`failWrite` completed overlay is still this-run-only and must not replace local
+prior history. Mid-turn `running` persists stay this-run-only (transient
+overlays), and the merged head is still bounded by
+`HARNESS_SESSION_MAX_BODY_BYTES` via `fitSnapshotUtf8` (oldest rows drop first,
+newest kept).
+
 ## Turn-end logs (Workflows)
 
 Durable `'use step'` bodies `console.log` one JSON line each. These show on **Observability → Workflows** for that run — **not** HTTP Runtime Logs (`/api/harness/status` is the only HTTP probe on that surface).

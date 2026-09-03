@@ -46,8 +46,10 @@ copy-forwarded onto worker this-run chunks (minus this-run's user prompt) and
 folded by host `trimForCloudPut`. Same-id adopt field-merges it with local
 (`mergeAdoptedUsage`) so a newer worker clock cannot drop a `queueAppend` that
 lost the coalesced-PUT race, and a stale-long server queue cannot re-arm an
-in-flight drain. Worker persist writes **this-run messages** plus `prev` pointing at the previous
-object and `depth` (1-based length of the chain ending at that object). Persist
+in-flight drain. Mid-turn worker persist writes **this-run messages** plus `prev` pointing at the previous
+object and `depth` (1-based length of the chain ending at that object). The **terminal** persist
+reconstructs that chain, suffix-merges this-run, and writes a **flatten root** (`prev` / `depth`
+omitted) so GET does not walk. Persist
 is head-only: it will not append when `depth` is already **256**. Legacy / host-flattened
 objects omit `prev` and `depth` and are a one-node chain.
 Reconstruct walks `prev` (max **256** objects, each id bound to this session)
@@ -300,11 +302,25 @@ Redis and never through a Function payload**. Redis keeps the **small, always-fe
 envelope** (`harness:envelope:…`): ownership, `createdAt`, `updatedAt` (LWW), reserved
 `meta`, and `meta.transcriptPointer` (the key of the latest transcript object).
 Worker persist writes a **this-run chunk** (`id` + `messages` + optional `prev` +
-optional `depth`)
-and **trims oldest messages** in that chunk to the 8 MiB object ceiling so a
-fat tool batch cannot kill the turn. Host terminal PUT writes a full trimmed
-snapshot with **`prev` / `depth` omitted** (flatten root). Reconstruct walks `prev` when
-present. Persist refuses to append when the head's chain length is already 256.
+optional `depth`) on mid-turn `running` overlays, and **trims oldest messages**
+in that chunk to the 8 MiB object ceiling so a fat tool batch cannot kill the
+turn. The **terminal** persist (`completed`) reconstructs the bound prior chain
+then suffix-merges this-run messages (the same idempotent `mergeCheckpointOntoPrior`
+reconstruct uses), so the head chunk itself carries prior + this-run history
+even when the pointer was a this-run-only mid-turn overlay — durability is
+worker-owned. That terminal head is a **flatten root** (`prev` / `depth`
+omitted) so GET does not walk ancestors. After SSE `error` the host adopts that
+worker transcript (GET) for local paint only and **does not** flatten-PUT (a
+host-clock PUT would LWW-clobber the worker pointer — plan #934 / source #933).
+A GET miss holds later host PUTs (including model/effort-pick `repo.put`, not
+only `persist()`) until a GET merges the worker head; a held-session local write
+does not bump the clock (freeze-0 LWW). Host GET of a prev-bearing head
+fail-closes on a broken walk (never this-chunk-only), including
+`turnStatus=completed` — a `failWrite` overlay is still this-run-only. Host
+terminal PUT on `done` may additionally **flatten** to a full trimmed snapshot
+with **`prev` / `depth` omitted** (flatten root).
+Reconstruct walks `prev` when present. Persist refuses to append when the
+head's chain length is already 256.
 A leftover `{ deltas }` object is not a snapshot — next persist starts
 from this run only and does not link `prev`.
 
