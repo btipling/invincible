@@ -15,6 +15,7 @@
 import { mergeAdoptedUsage } from './sessionRepository';
 import type { CloudGetResult } from './sessionRepository';
 import type { SessionMessage, SessionSnapshot } from './sessionStore';
+import { queueTextFromUserContent } from './turnQueue';
 
 export function shouldAdoptWorkerTranscriptOnError(input: {
   ok: boolean;
@@ -87,6 +88,11 @@ export function wrapRepoPut<T extends { put: CloudPutFn }>(
 
 
 const HOST_ONLY_ROLES = new Set<SessionMessage['role']>(['error', 'system']);
+const FOLLOW_UP_ROLES = new Set<SessionMessage['role']>([
+  'assistant',
+  'tool_run',
+  'skill_attached',
+]);
 
 /** Local Turn-ended / system rows the worker checkpoint never carries. */
 export function withHostOnlySuffix(
@@ -102,22 +108,47 @@ export function withHostOnlySuffix(
 }
 
 /**
+ * Worker this-run `user` is `turnWorkflow.userMessage` = production
+ * `formatPromptWithHistory` fold. Host local is the composer line. Exact
+ * text misses; `queueTextFromUserContent` unwraps the last `User:` line.
+ */
+function workerCoversUser(
+  worker: ReadonlyArray<SessionMessage>,
+  text: string,
+): boolean {
+  return worker.some((w) => {
+    if (w.role !== 'user') return false;
+    if (w.text === text) return true;
+    return queueTextFromUserContent(w.text) === text;
+  });
+}
+
+/**
  * Recover-after-GET-miss suffix: host-only error/system rows plus extra **user**
- * lines the worker snapshot lacks (a follow-up typed after the wall). Do **not**
- * copy local assistant / tool_run / skill_attached — those are live-paint
- * encodings (`assistantAcc`, tool cards) that would duplicate the worker
- * wrap-up on flatten PUT (adversarial #935).
+ * lines the worker snapshot lacks (a follow-up typed after the wall), and the
+ * `assistant` / `tool_run` / `skill_attached` rows that follow that extra user
+ * (a follow-up turn that completed locally while GET was still missing).
+ * Do **not** copy this-turn `assistantAcc` / live tool cards — those sit
+ * *before* any extra user and would duplicate the worker wrap-up on flatten
+ * PUT (adversarial #935). A worker history-fold covers the composer line via
+ * `queueTextFromUserContent` so the this-turn user is not treated as extra.
  */
 export function withLocalOnlySuffix(
   worker: ReadonlyArray<SessionMessage>,
   local: ReadonlyArray<SessionMessage>,
 ): SessionMessage[] {
+  let seenExtraUser = false;
   const extras = local.filter((m) => {
     if (m.role === 'user') {
-      return !worker.some((w) => w.role === 'user' && w.text === m.text);
+      if (workerCoversUser(worker, m.text)) return false;
+      seenExtraUser = true;
+      return true;
     }
-    if (!HOST_ONLY_ROLES.has(m.role)) return false;
-    return !worker.some((w) => w.role === m.role && w.text === m.text);
+    if (HOST_ONLY_ROLES.has(m.role)) {
+      return !worker.some((w) => w.role === m.role && w.text === m.text);
+    }
+    if (seenExtraUser && FOLLOW_UP_ROLES.has(m.role)) return true;
+    return false;
   });
   if (extras.length === 0) return worker.slice();
   return [...worker, ...extras];
@@ -176,7 +207,8 @@ export async function adoptWorkerTranscriptOnError(opts: {
 /**
  * After an error-adopt GET miss (`shouldHoldCloudPut`), GET+merge the worker
  * head before the next host PUT. GET ok → worker transcript + host-only /
- * extra-user suffix, `skipCloud: false` (a flatten of the merged head is safe).
+ * extra-user suffix (plus follow-up-turn rows after that user),
+ * `skipCloud: false` (a flatten of the merged head is safe).
  * GET miss → keep local, `skipCloud: true` (still do not PUT a thin snapshot).
  */
 export async function recoverWorkerTranscriptBeforePut(opts: {

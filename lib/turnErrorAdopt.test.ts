@@ -12,7 +12,7 @@ import {
   withHostOnlySuffix,
   withLocalOnlySuffix,
 } from './turnErrorAdopt';
-import { createEmptySession, type SessionSnapshot } from './sessionStore';
+import { createEmptySession, formatPromptWithHistory, type SessionSnapshot } from './sessionStore';
 import { shouldAdoptServer, type CloudGetResult } from './sessionRepository';
 
 describe('shouldAdoptWorkerTranscriptOnError', () => {
@@ -211,6 +211,63 @@ describe('shouldHoldCloudPut / recoverWorkerTranscriptBeforePut (adversarial #93
     ]);
   });
 
+  it('withLocalOnlySuffix treats a history-fold worker user as covering the composer line', () => {
+    const prior = [
+      { id: 'p1', role: 'user' as const, text: 'earlier', at: 1 },
+      { id: 'p2', role: 'assistant' as const, text: 'ok', at: 2 },
+    ];
+    const fold = formatPromptWithHistory(prior, 'run the suite');
+    const worker = [
+      ...prior,
+      { id: 'h1', role: 'user' as const, text: fold, at: 3 },
+      { id: 'h2', role: 'assistant' as const, text: 'wrap-up: 3 tests still fail', at: 4 },
+    ];
+    const local = [
+      ...prior,
+      { id: 'u1', role: 'user' as const, text: 'run the suite', at: 3 },
+      { id: 'acc', role: 'assistant' as const, text: 'wrap-up: 3 tests sti', at: 4 },
+      {
+        id: 'e1',
+        role: 'error' as const,
+        text: 'Turn ended · turn wall clock exceeded',
+        at: 5,
+      },
+    ];
+    expect(withLocalOnlySuffix(worker, local).map((m) => m.text)).toEqual([
+      'earlier',
+      'ok',
+      fold,
+      'wrap-up: 3 tests still fail',
+      'Turn ended · turn wall clock exceeded',
+    ]);
+  });
+
+  it('withLocalOnlySuffix copies a GET-miss follow-up user and its later assistant', () => {
+    const worker = [
+      { id: 'h1', role: 'user' as const, text: 'run the suite', at: 1 },
+      { id: 'h2', role: 'assistant' as const, text: 'wrap-up: 3 tests still fail', at: 2 },
+    ];
+    const local = [
+      { id: 'h1', role: 'user' as const, text: 'run the suite', at: 1 },
+      { id: 'acc', role: 'assistant' as const, text: 'wrap-up: 3 tests sti', at: 2 },
+      {
+        id: 'e1',
+        role: 'error' as const,
+        text: 'Turn ended · turn wall clock exceeded',
+        at: 3,
+      },
+      { id: 'u2', role: 'user' as const, text: 'fix the remaining 3', at: 4 },
+      { id: 'a2', role: 'assistant' as const, text: 'patched the three failures', at: 5 },
+    ];
+    expect(withLocalOnlySuffix(worker, local).map((m) => m.text)).toEqual([
+      'run the suite',
+      'wrap-up: 3 tests still fail',
+      'Turn ended · turn wall clock exceeded',
+      'fix the remaining 3',
+      'patched the three failures',
+    ]);
+  });
+
   it('GET ok recover suffixes the follow-up and clears skipCloud so a flatten PUT is safe', async () => {
     const local = createEmptySession('sess_1');
     local.updatedAt = 0;
@@ -260,6 +317,36 @@ describe('shouldHoldCloudPut / recoverWorkerTranscriptBeforePut (adversarial #93
       'run the suite',
       'wrap-up: 3 tests still fail',
       'Turn ended · turn wall clock exceeded',
+    ]);
+  });
+
+  it('GET ok recover keeps a GET-miss follow-up assistant after the extra user', async () => {
+    const local = createEmptySession('sess_1');
+    local.updatedAt = 0;
+    local.messages = [
+      { id: 'u1', role: 'user', text: 'run the suite', at: 1 },
+      { id: 'acc', role: 'assistant', text: 'wrap-up: 3 tests sti', at: 8 },
+      { id: 'e1', role: 'error', text: 'Turn ended · turn wall clock exceeded', at: 9 },
+      { id: 'u2', role: 'user', text: 'fix the remaining 3', at: 10 },
+      { id: 'a2', role: 'assistant', text: 'patched the three failures', at: 11 },
+    ];
+    const worker = createEmptySession('sess_1');
+    worker.updatedAt = 8_000;
+    worker.messages = [
+      { id: 'h1', role: 'user', text: 'run the suite', at: 1 },
+      { id: 'h2', role: 'assistant', text: 'wrap-up: 3 tests still fail', at: 2 },
+    ];
+    const got = await recoverWorkerTranscriptBeforePut({
+      get: async () => ({ action: 'ok', snapshot: worker }),
+      session: local,
+    });
+    expect(got.skipCloud).toBe(false);
+    expect(got.session.messages.map((m) => m.text)).toEqual([
+      'run the suite',
+      'wrap-up: 3 tests still fail',
+      'Turn ended · turn wall clock exceeded',
+      'fix the remaining 3',
+      'patched the three failures',
     ]);
   });
 
