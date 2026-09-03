@@ -2508,13 +2508,14 @@ describe('step wrappers (matrix 4–7)', () => {
     vi.doMock('../tenancy/personaInject', () => ({
       resolvePersonaPreamble: async () => 'Always use tabs.',
     }));
+    const resolveSkillPreamble = vi.fn(async () => ({
+      // Catalog inject (plan #557/#931): slug + name + description lines.
+      preamble: '`create-plan` — Create plan: writes a plan.',
+      attachedSlugs: ['create-plan'],
+      events: [],
+    }));
     vi.doMock('../tenancy/skillInject', () => ({
-      resolveSkillPreamble: async () => ({
-        // Catalog inject (plan #557/#931): slug + name + description lines.
-        preamble: '`create-plan` — Create plan: writes a plan.',
-        attachedSlugs: ['create-plan'],
-        events: [],
-      }),
+      resolveSkillPreamble,
     }));
     const { DEFAULT_AGENT_SYSTEM } = await import('../agent/agentSystem');
     const mod = await import('./modelGenerateStep');
@@ -2530,6 +2531,13 @@ describe('step wrappers (matrix 4–7)', () => {
     expect(argDeps.system).toContain('Always use tabs.');
     expect(argDeps.system).toContain('<attached_skills>');
     expect(argDeps.system).toContain('`create-plan` — Create plan: writes a plan.');
+    // Durable catalog seam: dropping `listUserSkills` silently reverts to the
+    // legacy body-block inject. This assertion fails if the call omits it.
+    expect(resolveSkillPreamble).toHaveBeenCalled();
+    const skillArgs = resolveSkillPreamble.mock.calls[0]?.[0] as {
+      listUserSkills?: unknown;
+    };
+    expect(skillArgs.listUserSkills).toBeTruthy();
     vi.doUnmock('../agent/generateOneRound');
     vi.doUnmock('../di/index');
     vi.doUnmock('./assembleDurableToolWorld');

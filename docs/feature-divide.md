@@ -131,9 +131,10 @@ path); the host pushes a display-only bridge message kind **7**
 (`MessageKind.SkillAttached`, session role `skill_attached`) whose text is just
 `Skill attached: <slug>` (or detached / not-attached). **Wasm owns the row
 paint** (`paintSkillAttached`, protocol v12); it shows only the skill NAME. The
-body is never shipped to the client and never folded into the model prompt —
-attachment is session-sticky via `meta.attachedSkills` (slugs only),
-re-resolved each turn as a catalog line.
+body is never shipped to the client. The model reads a body only as a
+`fetch_skill` tool result — never as the system-prefix inject (that block is
+catalog-only: slug + name + description). Attachment is session-sticky via
+`meta.attachedSkills` (slugs only), re-resolved each turn as a catalog line.
 
 ## Key source paths
 

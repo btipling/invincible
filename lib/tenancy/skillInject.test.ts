@@ -337,7 +337,7 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
     expect(res.preamble).toContain('`b` — B: second');
   });
 
-  it('store listUserSkills error → fail-open: no catalog block, round still runs, sticky NOT rewritten', async () => {
+  it('store listUserSkills error → fail-open: no catalog, no sticky rewrite, no host detach-all', async () => {
     for (const mode of ['ok-false', 'throw'] as const) {
       const store = new FakeStore(makeEnvelope({ attachedSkills: '["kept"]' }));
       const res = await resolveSkillPreamble({
@@ -349,9 +349,10 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
         listUserSkills: failingLister(mode),
       });
       expect(res.preamble).toBeUndefined();
-      // attachedSlugs is empty this turn (fail-open), but the sticky persist is
-      // SKIPPED so the previously stored set is never wiped by an outage.
-      expect(res.attachedSlugs).toEqual([]);
+      // Host contract: omit = leave the set; `[]` / `"[]"` = detach-all.
+      // Catalog fail-open must omit (or preserve), never signal detach-all.
+      expect(res.attachedSlugs).toBeUndefined();
+      expect(res.attachedSkills).toBeUndefined();
       expect(store.upserts).toHaveLength(0);
       expect(store.env?.meta?.attachedSkills).toBe('["kept"]');
     }

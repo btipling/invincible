@@ -26,7 +26,10 @@
  *     for other-user rows.
  *   - store down OR no session key available → fail-open: the attach still
  *     resolves + injects THIS turn, only the sticky `meta.attachedSkills`
- *     persist is skipped (same as persona).
+ *     persist is skipped (same as persona). A catalog `listUserSkills` failure
+ *     is also fail-open: no catalog block, no sticky rewrite, and the return
+ *     **omits** `attachedSkills` / `attachedSlugs` (never `"[]"` / `[]` —
+ *     that is the host detach-all signal; omit = leave the host set untouched).
  *   - a malformed stored `attachedSkills` fails closed at read (defense in
  *     depth even beyond the write-side `validateMetaFields` branch).
  *
@@ -177,9 +180,16 @@ export type ResolveSkillCommandInput = {
 export type ResolveSkillResult = {
   /** Labelled system-preamble block(s) to append AFTER the persona preamble. */
   preamble?: string;
-  /** Final attached slug set (de-duplicated, insert order preserved). */
-  attachedSlugs: string[];
-  /** JSON-array string writer value for sticky persist (undefined = nothing to write). */
+  /**
+   * Final attached slug set (de-duplicated, insert order preserved).
+   * Omitted on catalog `listUserSkills` fail-open so the host leave-untouched
+   * contract applies (`[]` would be detach-all).
+   */
+  attachedSlugs?: string[];
+  /**
+   * JSON-array string writer value for sticky persist / host fold.
+   * `undefined` = omit (leave host set); `"[]"` = explicit detach-all.
+   */
   attachedSkills: string | undefined;
   /** Per-command display events (attach/detach outcomes) — sticky re-resolves are silent. */
   events: SkillEvent[];
@@ -222,7 +232,9 @@ function byteLength(s: string): number {
  * pulled on demand via `fetch_skill`. A sticky/always-on slug whose skill was
  * deleted has no summary and silently drops from the catalog (same as it
  * silently stopped body-injecting). A store error → fail-open: no catalog
- * block, the round still runs with the base system. The catalog is bounded by
+ * block, no sticky rewrite, and no host detach-all signal (`attachedSkills` /
+ * `attachedSlugs` omitted — never `"[]"` / `[]`). The round still runs with
+ * the base system. The catalog is bounded by
  * the `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES` ceiling as a safety rail (a
  * catalog of ≤ 32 + 8 entries is a few KiB — far under 256 KiB).
  *
@@ -295,8 +307,6 @@ export async function resolveSkillPreamble(
   // (existence only) before being committed to the sticky set. No body is read
   // for injection — the catalog path never injects bodies.
   let pendingAttach: { slug: string } | null = null;
-  // Set when a catalog store error must skip the sticky rewrite (fail-open).
-  let skipStickyPersist = false;
 
   // 2. Apply the current command (attach/detach).
   if (command.type === 'attach') {
@@ -375,6 +385,17 @@ export async function resolveSkillPreamble(
     } catch {
       storeError = true;
     }
+    if (storeError) {
+      // Fail-open: no catalog this turn (the round still runs with the base
+      // system). Do not rewrite sticky, and do not return `"[]"` / `[]` —
+      // the host treats those as detach-all. Omit the fields so host
+      // leave-untouched applies.
+      return {
+        preamble: undefined,
+        attachedSkills: undefined,
+        events,
+      };
+    }
     const bySlug = new Map(summaries.map((s) => [s.slug, s]));
     for (const slug of set) {
       const summary = bySlug.get(slug);
@@ -387,15 +408,6 @@ export async function resolveSkillPreamble(
       }
       blocks.push(line);
       used += bytes;
-    }
-    if (storeError && set.length > 0) {
-      // Fail-open on a catalog store error: no inject this turn (the round
-      // still runs with the base system); also skip the sticky rewrite below
-      // so a store outage can never rewrite `meta.attachedSkills` from a
-      // half-resolved candidate set.
-      finalSlugs.length = 0;
-      blocks.length = 0;
-      skipStickyPersist = true;
     }
   } else {
     // Legacy fallback (no lister seam): greedy body blocks under the inject
@@ -423,7 +435,7 @@ export async function resolveSkillPreamble(
   //    `meta.attachedSkills` — they are re-resolved from the DB every turn.
   const stickySlugs = finalSlugs.filter((s) => !alwaysOnSet.has(s));
   const attachedSkills = serializeAttachedSkills(stickySlugs);
-  if (envelope && sessionStore && sessionKey && !skipStickyPersist) {
+  if (envelope && sessionStore && sessionKey) {
     try {
       const input: SessionEnvelopeInput = {
         id: envelope.id,

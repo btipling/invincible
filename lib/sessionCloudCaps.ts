@@ -154,9 +154,10 @@ export const PERSONA_VERSION_MAX = 100;
 /**
  * Max number of skills a user may set as always-on (plan #720 phase 2).
  * Always-on skills auto-attach to every new session regardless of persona.
- * NEW generous cap — 8 × ≤ 256 KiB inject budget fits inside the existing
- * `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES` (256 KiB) total inject budget.
- * No existing cap changed.
+ * NEW generous cap — 8 catalog lines (name ≤ 200, description ≤ 2000) is a
+ * few KiB in the per-turn catalog inject, far under the 256 KiB
+ * `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES` ceiling (a safety rail over the
+ * catalog, not a body-era 8 × 256 KiB inject budget). No existing cap changed.
  */
 export const USER_ALWAYS_ON_SKILLS_MAX = 8;
 

@@ -5,6 +5,7 @@ import {
   SANDBOX_SELECTION_REQUIRED_ERROR,
   WORKSPACE_INSTANCE_REQUIRED_ERROR,
 } from '../../../lib/tenancy/errors';
+import { parseJsonAgentBody } from '../../../lib/agentApi';
 
 /**
  * Route tests import the handler after env is set.
@@ -1947,6 +1948,212 @@ describe('POST /api/agent', () => {
     const body = (await res.json()) as { attachedSkills?: string; error?: string };
     expect(body.error).toBeTruthy();
     expect(body.attachedSkills).toBe('["create-plan"]');
+  });
+
+  it('catalog listUserSkills fail-open omits attachedSkills so the host does not detach-all', async () => {
+    mockAuthedSession();
+    mockMcpEmpty();
+    mockByokOk();
+    mockGithubToken();
+    mockResolveSandboxOk();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    const fakeSessionStore = {
+      readEnvelope: vi.fn(async () => ({
+        id: 'sess_1',
+        tenantId: 'tenant-1',
+        userId: 'user-1',
+        createdAt: 1,
+        updatedAt: 1,
+        meta: { attachedSkills: '["create-plan"]' },
+      })),
+      upsertEnvelope: vi.fn(async () => ({ status: 'stored' as const })),
+    };
+    vi.doMock('../../../lib/tenancy/harnessSessionsRedis', () => ({
+      resolveSessionStore: async () => ({ ok: true as const, value: fakeSessionStore }),
+      sessionKeyFor: (t: string, u: string, s: string) => ({
+        tenantId: t,
+        userId: u,
+        sessionId: s,
+      }),
+    }));
+    servicesState.harnessSessionsRedis = {
+      resolveTenantIdForUser: vi.fn(async () => ({ ok: true as const, value: 'tenant-1' })),
+    };
+    servicesState.userSkills = {
+      getSkillBySlug: vi.fn(async () => ({
+        ok: true as const,
+        value: { body: 'BODY' },
+      })),
+      listUserSkills: vi.fn(async () => ({
+        ok: false as const,
+        code: 'unavailable',
+        error: 'down',
+      })),
+    };
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent: vi.fn(async () => ({ text: 'ok', toolTrace: [] })),
+      runAgentStream: vi.fn(),
+    }));
+
+    const { POST } = await loadRoute();
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'keep going', sessionId: 'sess_1' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { attachedSkills?: string; text?: string };
+    expect(body.text).toBe('ok');
+    // Omit = host leave-untouched. `"[]"` would wipe sticky on the next PUT.
+    expect(body.attachedSkills).toBeUndefined();
+    expect(fakeSessionStore.upsertEnvelope).not.toHaveBeenCalled();
+    const parsed = parseJsonAgentBody(res, body);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.attachedSlugs).toBeUndefined();
+  });
+
+  it('catalog listUserSkills fail-open omits attachedSkills on 502 (no host wipe)', async () => {
+    mockAuthedSession();
+    mockMcpEmpty();
+    mockByokOk();
+    mockGithubToken();
+    mockResolveSandboxOk();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    const fakeSessionStore = {
+      readEnvelope: vi.fn(async () => ({
+        id: 'sess_1',
+        tenantId: 'tenant-1',
+        userId: 'user-1',
+        createdAt: 1,
+        updatedAt: 1,
+        meta: { attachedSkills: '["create-plan"]' },
+      })),
+      upsertEnvelope: vi.fn(async () => ({ status: 'stored' as const })),
+    };
+    vi.doMock('../../../lib/tenancy/harnessSessionsRedis', () => ({
+      resolveSessionStore: async () => ({ ok: true as const, value: fakeSessionStore }),
+      sessionKeyFor: (t: string, u: string, s: string) => ({
+        tenantId: t,
+        userId: u,
+        sessionId: s,
+      }),
+    }));
+    servicesState.harnessSessionsRedis = {
+      resolveTenantIdForUser: vi.fn(async () => ({ ok: true as const, value: 'tenant-1' })),
+    };
+    servicesState.userSkills = {
+      getSkillBySlug: vi.fn(async () => ({
+        ok: true as const,
+        value: { body: 'BODY' },
+      })),
+      listUserSkills: vi.fn(async () => ({
+        ok: false as const,
+        code: 'unavailable',
+        error: 'down',
+      })),
+    };
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent: vi.fn(async () => ({ text: '', toolTrace: [] })),
+      runAgentStream: vi.fn(),
+    }));
+
+    const { POST } = await loadRoute();
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'keep going', sessionId: 'sess_1' }),
+      }),
+    );
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as { attachedSkills?: string; error?: string };
+    expect(body.error).toBeTruthy();
+    expect(body.attachedSkills).toBeUndefined();
+    expect(fakeSessionStore.upsertEnvelope).not.toHaveBeenCalled();
+    const parsed = parseJsonAgentBody(res, body);
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) expect(parsed.attachedSlugs).toBeUndefined();
+  });
+
+  it('catalog listUserSkills fail-open: skill_attached omits attachedSlugs (not detach-all)', async () => {
+    mockAuthedSession();
+    mockMcpEmpty();
+    mockByokOk();
+    mockGithubToken();
+    mockResolveSandboxOk();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    const fakeSessionStore = {
+      readEnvelope: vi.fn(async () => ({
+        id: 'sess_1',
+        tenantId: 'tenant-1',
+        userId: 'user-1',
+        createdAt: 1,
+        updatedAt: 1,
+        meta: { attachedSkills: '["kept"]' },
+      })),
+      upsertEnvelope: vi.fn(async () => ({ status: 'stored' as const })),
+    };
+    vi.doMock('../../../lib/tenancy/harnessSessionsRedis', () => ({
+      resolveSessionStore: async () => ({ ok: true as const, value: fakeSessionStore }),
+      sessionKeyFor: (t: string, u: string, s: string) => ({
+        tenantId: t,
+        userId: u,
+        sessionId: s,
+      }),
+    }));
+    servicesState.harnessSessionsRedis = {
+      resolveTenantIdForUser: vi.fn(async () => ({ ok: true as const, value: 'tenant-1' })),
+    };
+    servicesState.userSkills = {
+      getSkillBySlug: vi.fn(async () => ({
+        ok: true as const,
+        value: { body: 'PLAN BODY' },
+      })),
+      listUserSkills: vi.fn(async () => ({
+        ok: false as const,
+        code: 'unavailable',
+        error: 'down',
+      })),
+    };
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent: vi.fn(),
+      runAgentStream: vi.fn(async (_p, handlers: { onEvent: (e: unknown) => Promise<void> }) => {
+        await handlers.onEvent({ type: 'done', text: 'ok' });
+      }),
+    }));
+
+    const { POST } = await loadRoute();
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+        },
+        body: JSON.stringify({
+          prompt: '/create-plan please scaffold a plan',
+          sessionId: 'sess_1',
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    const events: Record<string, unknown>[] = [];
+    for (const block of text.split('\n\n')) {
+      const line = block.trim();
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice('data:'.length).trim();
+      if (!payload) continue;
+      events.push(JSON.parse(payload) as Record<string, unknown>);
+    }
+    const skillEv = events.find((e) => e.type === 'skill_attached');
+    expect(skillEv).toBeTruthy();
+    expect(skillEv?.slug).toBe('create-plan');
+    // Omit = leave; `[]` would fold detach-all on the live stream.
+    expect(skillEv?.attachedSlugs).toBeUndefined();
+    expect(fakeSessionStore.upsertEnvelope).not.toHaveBeenCalled();
   });
 
   it('seeds resolve from the envelope activeSandboxId when a sessionId is present, no body sandboxId (blocker B1 A1)', async () => {

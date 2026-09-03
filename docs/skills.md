@@ -136,8 +136,9 @@ always-on toggle. If you want persona-specific recommendations instead, see
 
 The transcript shows **only the skill name**: a compact `Skill attached:
 <slug>` row in the canvas. The skill **body is never displayed in the canvas
-and never sent to the client** — it exists only server-side in the model's
-system context.
+and never sent to the client**. The model reads the body on demand via the
+`fetch_skill` tool; it is **not** injected into the system prompt (that block
+is catalog-only: slug + name + description).
 
 ## Agent skill-search tools (`find_skill` / `fetch_skill`)
 
