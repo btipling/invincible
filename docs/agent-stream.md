@@ -166,13 +166,13 @@ reserved-`meta` carriers are defined in
 The durable model step (`modelGenerateStep`) passes the **same** `resolveSystem()` string as `POST /api/agent` — base standing orders (including “Be concise”), plus optional persona / attached-skill blocks resolved in-step from the assembled tool registry. Persona inject reads and locks `meta.personaSnapshot` on the envelope (`readEnvelope` / `upsertEnvelope`, `updatedAt` unchanged), not the legacy whole-blob `get`/`put`. A missing system prompt is not an output cap; it is what used to let a provider default `max_tokens` look like a mysterious mid-sentence stop. Slash-command `/skill-name` attach still lives on `/api/agent`; the durable step re-resolves sticky and always-on skills only (`command: none`).
 
 **Terminal persist is worker-owned and terminal-agnostic (plan #934).** The
-worker's **terminal** persist suffix-merges this-run checkpoint messages onto
-the prior readable transcript (the same idempotent `mergeCheckpointOntoPrior`
-the reconstruct walk uses) before writing the head chunk, so the head itself
-carries prior + this-run history. A wall-clock `error` terminal is therefore
-as durable as a `done` terminal: even when the host never runs its `done`
-flatten, refresh / next-prompt hydrate and the next turn's model history fold
-still contain the this-turn assistants and the wrap-up handoff. Mid-turn
+worker's **terminal** persist reconstructs the bound prior chain (so a mid-turn
+`running` overlay is not treated as the whole transcript) then suffix-merges
+this-run checkpoint messages via the shipped `mergeCheckpointOntoPrior`. The
+head itself carries prior + this-run history. A wall-clock `error` terminal is
+therefore as durable as a `done` terminal. The host must **not** flatten-PUT a
+thin local snapshot after SSE `error` (per-round assistants were bridge-only);
+it adopts the worker transcript (GET + reconstruct) before persist. Mid-turn
 `running` persists stay this-run-only (transient overlays), and the merged
 head is still bounded by `HARNESS_SESSION_MAX_BODY_BYTES` via
 `fitSnapshotUtf8` (oldest rows drop first, newest kept).

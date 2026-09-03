@@ -37,6 +37,10 @@ import {
   type StopFoldAction,
 } from '../../lib/detachTurn';
 import { cancelTurn } from '../../lib/turnApi';
+import {
+  adoptWorkerTranscriptOnError,
+  shouldAdoptWorkerTranscriptOnError,
+} from '../../lib/turnErrorAdopt';
 import { decideHotResume, decideSendAttach, shouldPaintAttachFollowUpNote, shouldPaintAttachFollowUpDetachNote, shouldRepostAttachFollowUp, shouldSkipAttachHotResume, shouldKickHotResume, ATTACH_FOLLOW_UP_NOTE, ATTACH_FOLLOW_UP_DETACH_NOTE, isAttachFollowUpHostNote, coldAttachFromSnapshot, type HeapApplied } from '../../lib/turnAttach';
 import {
   HarnessBridge,
@@ -587,10 +591,10 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   );
 
   const persist = useCallback(
-    (next: SessionSnapshot, opts?: { paintQuota?: boolean }) => {
+    (next: SessionSnapshot, opts?: { paintQuota?: boolean; cloud?: boolean }) => {
       writeLocalSession(next, opts);
       // Hybrid cloud push — never blocks the turn; coalesced per session in repo.
-      repoRef.current?.put(next.id, next);
+      if (opts?.cloud !== false) repoRef.current?.put(next.id, next);
     },
     [writeLocalSession],
   );
@@ -715,7 +719,11 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       // Adversarial #844: capture the repo object NOW. Unmount cleanup nulls
       // `repoRef` before the abort microtask reaches persistTurn/finally.
       const repo = repoRef.current;
-      const persistTurn = (snapshot: SessionSnapshot, paintQuota = true): SessionSnapshot => {
+      const persistTurn = (
+        snapshot: SessionSnapshot,
+        paintQuota = true,
+        persistOpts?: { cloud?: boolean },
+      ): SessionSnapshot => {
         const pendingFold = pendingStopFoldRef.current;
         const foldedSnapshot =
           pendingFold != null
@@ -766,7 +774,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           }
           return preserved;
         }
-        persist(foldedSnapshot, { paintQuota });
+        persist(foldedSnapshot, { paintQuota, cloud: persistOpts?.cloud });
         return foldedSnapshot;
       };
       setBusy(true);
@@ -870,16 +878,46 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         const liveEffort = bridge.getSelectedReasoning();
         // F21: persist `reconciled` (queue restore/give-up), not `next`.
         // Plan #898: fold the live effort pick the same way as the model id.
-        const folded: SessionSnapshot = {
+        let folded: SessionSnapshot = {
           ...reconciled,
           ...(liveId ? { selectedModel: liveId } : {}),
         };
         if (liveEffort) folded.reasoningEffort = liveEffort;
         else delete folded.reasoningEffort;
+        // Plan #934 / source #933: a durable SSE `error` (wall-clock cap) never
+        // ran `done` finalize. Flatten-PUTting that thin local snapshot LWW-wins
+        // over the worker terminal persist and drops this-turn assistants.
+        // Adopt the worker transcript (GET + reconstruct) first; if GET fails,
+        // skip the cloud PUT and freeze `updatedAt` so a later GET wins.
+        let skipCloud = false;
+        if (
+          shouldAdoptWorkerTranscriptOnError({
+            ok: result.ok,
+            streamOpened,
+            turnStatus: folded.turnStatus,
+          })
+        ) {
+          const adopted = await adoptWorkerTranscriptOnError({
+            get: repoRef.current
+              ? (id) => repoRef.current!.get(id)
+              : undefined,
+            session: folded,
+          });
+          folded = {
+            ...adopted.session,
+            ...(adopted.skipCloud ? {} : { updatedAt: Date.now() }),
+            ...(liveId ? { selectedModel: liveId } : {}),
+          };
+          if (liveEffort) folded.reasoningEffort = liveEffort;
+          else delete folded.reasoningEffort;
+          skipCloud = adopted.skipCloud;
+        }
         // Always persist — including user Stop/cancel (and late abort after a finished
         // stream). Dropping session on signal.aborted left SessionStore behind Wasm:
         // Load earlier / refresh could wipe the cancelled turn from the ring.
-        const persisted = persistTurn(folded, folded.turnStatus !== 'running');
+        const persisted = persistTurn(folded, folded.turnStatus !== 'running', {
+          cloud: skipCloud ? false : undefined,
+        });
         const operatorStop = shouldSkipAttachHotResume({
           attaching,
           aborted: controller.signal.aborted,

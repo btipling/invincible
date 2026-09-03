@@ -1815,7 +1815,51 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     expect(env?.meta?.transcriptPointer).toBe(priorId);
   });
 
-  it('missing ancestor does not fail persist (head-only link; adversarial #889)', async () => {
+  it('missing ancestor does not fail mid-turn persist (head-only overlay; adversarial #889)', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const missingAncestor = newBlobObjectId(scope);
+    const priorId = newBlobObjectId(scope);
+    await blobStore.writeSegment({
+      objectId: priorId,
+      content: JSON.stringify({
+        id: scope.sessionId,
+        updatedAt: 1,
+        messages: [{ id: 'm1', role: 'user', text: 'head', at: 1 }],
+        prev: missingAncestor,
+      }),
+      maxBytes: 8 * 1024 * 1024,
+    });
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 1000,
+      meta: { transcriptPointer: priorId },
+    });
+    const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [{ id: 'cp_0', role: 'user', text: 'this-run', at: 1 }],
+      }),
+      terminal: false,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const chunk = JSON.parse((await blobStore.read(res.objectId!)) ?? 'null') as {
+      prev?: string;
+      messages: { text: string }[];
+    };
+    expect(chunk.prev).toBe(priorId);
+    expect(chunk.messages.map((m) => m.text)).toEqual(['this-run']);
+    const env = await envelopeStore.readEnvelope(key);
+    expect(env?.meta?.transcriptPointer).toBe(res.objectId);
+  });
+
+  it('missing ancestor fail-closes terminal persist (reconstruct required; plan #934)', async () => {
     const blobStore = new MemoryBlobTranscriptStore();
     const envelopeStore = new MemorySessionStore();
     const missingAncestor = newBlobObjectId(scope);
@@ -1846,20 +1890,15 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
         messages: [{ id: 'cp_0', role: 'user', text: 'this-run', at: 1 }],
       }),
     });
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    const chunk = JSON.parse((await blobStore.read(res.objectId!)) ?? 'null') as {
-      prev?: string;
-      messages: { text: string }[];
-    };
-    expect(chunk.prev).toBe(priorId);
-    // Plan #934: the terminal head is suffix-merged — 'head' (prior) + this-run.
-    expect(chunk.messages.map((m) => m.text)).toEqual(['head', 'this-run']);
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('write_failed');
+    expect(res.error).toContain('reconstruct');
     const env = await envelopeStore.readEnvelope(key);
-    expect(env?.meta?.transcriptPointer).toBe(res.objectId);
+    expect(env?.meta?.transcriptPointer).toBe(priorId);
   });
 
-  it('persist reads only the current pointer, not ancestor chunks (adversarial #889)', async () => {
+  it('mid-turn persist reads only the current pointer (adversarial #889); terminal reconstruct walks ancestors (plan #934)', async () => {
     const reads: string[] = [];
     class CountingBlobStore extends MemoryBlobTranscriptStore {
       override async read(objectId: string): Promise<string | null> {
@@ -1897,8 +1936,20 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
       updatedAt: 2,
       meta: { transcriptPointer: midId },
     });
-    reads.length = 0;
     const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    reads.length = 0;
+    const mid = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [{ id: 'cp_0', role: 'user', text: 'overlay', at: 1 }],
+      }),
+      terminal: false,
+    });
+    expect(mid.ok).toBe(true);
+    expect(reads).toEqual([midId]);
+    reads.length = 0;
     const res = await seam.persist({
       turnRunId: realRunId,
       deltas: [],
@@ -1909,7 +1960,17 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(reads).toEqual([midId]);
+    expect(reads[0]).toBe(mid.ok ? mid.objectId : midId);
+    expect(reads).toContain(oldestId);
+    const chunk = JSON.parse((await blobStore.read(res.objectId!)) ?? 'null') as {
+      messages: { text: string }[];
+    };
+    expect(chunk.messages.map((m) => m.text)).toEqual([
+      'oldest',
+      'mid',
+      'overlay',
+      'this-run',
+    ]);
   });
 
   it('host flatten root (no prev) is the full list; next worker chunk prevs it', async () => {
@@ -2263,6 +2324,79 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     ]);
     const parsed = await chainParsed(blobStore, envelopeStore);
     expect(parsed?.messages.map((m) => m.text)).toEqual([
+      'run the suite',
+      'exit=1',
+      'wrap-up: 3 tests still fail',
+    ]);
+  });
+
+  it('plan #934 — terminal persist over mid-turn overlay reconstructs prior history (head not thin)', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const priorId = newBlobObjectId(scope);
+    await blobStore.writeSegment({
+      objectId: priorId,
+      content: JSON.stringify({
+        id: scope.sessionId,
+        updatedAt: 1000,
+        messages: [
+          { id: 'h1', role: 'user', text: 'turn-1 user', at: 10 },
+          { id: 'h2', role: 'assistant', text: 'turn-1 assistant', at: 11 },
+        ],
+      }),
+      maxBytes: 8 * 1024 * 1024,
+    });
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 1000,
+      meta: { transcriptPointer: priorId },
+    });
+    const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    const mid = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'run the suite', at: 1 },
+          { id: 'cp_1', role: 'tool_run', text: 'exit=1', at: 2 },
+        ],
+      }),
+      terminal: false,
+    });
+    expect(mid.ok).toBe(true);
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'run the suite', at: 1 },
+          { id: 'cp_1', role: 'tool_run', text: 'exit=1', at: 2 },
+          { id: 'cp_2', role: 'assistant', text: 'wrap-up: 3 tests still fail', at: 3 },
+        ],
+      }),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const chunk = JSON.parse((await blobStore.read(res.objectId!)) ?? 'null') as {
+      prev?: string;
+      messages: { text: string }[];
+    };
+    expect(chunk.prev).toBeDefined();
+    expect(chunk.messages.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
+      'run the suite',
+      'exit=1',
+      'wrap-up: 3 tests still fail',
+    ]);
+    const parsed = await chainParsed(blobStore, envelopeStore);
+    expect(parsed?.messages.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
       'run the suite',
       'exit=1',
       'wrap-up: 3 tests still fail',

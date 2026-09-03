@@ -8,7 +8,10 @@
  * chunk is not the full session.
  *
  * Client-safe: no db, no `node:crypto`, no Blob store. Callers inject `read`
- * and `isBound`. Persist is **head-only** — it must not call reconstruct.
+ * and `isBound`. Mid-turn persist is **head-only** — it must not call
+ * reconstruct. Terminal persist (plan #934) reconstructs the bound prior
+ * chain so the head `messages` are prior + this-run after a this-run-only
+ * overlay (the production wall-cap path).
  */
 import { TRANSCRIPT_CHUNK_WALK_MAX, isRedisSafeOpaqueId } from '../sessionCloudCaps';
 import {

@@ -61,6 +61,7 @@ import {
 } from './messageCheckpoint';
 import { persistTranscriptSegment } from './turnWorkerPersist';
 import {
+  reconstructTranscriptChain,
   transcriptChunkChainLength,
   transcriptChunkPrev,
 } from '../sessions/transcriptChunks';
@@ -289,6 +290,8 @@ export function createTurnPersistSeam(
       // the host `done` flatten, which a wall-clock `error` terminal skips.
       // Mid-turn `running` chunks stay this-run-only (transient overlays).
       let priorMessages: CheckpointSnapshotMessage[] | undefined;
+      let priorBody: unknown | undefined;
+      let priorHeadId: string | undefined;
       const pointer = stored?.meta?.transcriptPointer;
       if (typeof pointer === 'string' && isObjectIdBoundTo(pointer, scope)) {
         let raw: string | null;
@@ -347,8 +350,53 @@ export function createTurnPersistSeam(
           chunkPrev = pointer;
           chunkDepth = chainLen + 1;
           priorQueue = queueFromBody(parsed);
-          const gateMessages = snapshotMessagesFromUnknown(parsed, scope.sessionId);
-          if (gateMessages !== null) priorMessages = gateMessages;        }
+          priorMessages = snapshotMessagesFromUnknown(parsed, scope.sessionId) ?? undefined;
+          priorBody = parsed;
+          priorHeadId = pointer;
+        }
+      }
+
+      // Plan #934 — terminal persist suffix-merges this-run onto the
+      // reconstructed prior chain (source #933). The bound pointer after a
+      // mid-turn `running` persist is a this-run-only overlay; merging onto
+      // that body alone leaves the head thin. Reconstruct (injected blob
+      // reads, same walk as GET) materializes prior + overlay so the head
+      // itself is the full transcript. Flatten-root priors (no `prev`) are
+      // already complete; reconstruct is a no-walk. A broken chain fail-closes
+      // rather than publishing a thin head as durable.
+      if (
+        status === 'completed' &&
+        priorMessages !== undefined &&
+        priorBody !== undefined &&
+        priorHeadId
+      ) {
+        const walked = await reconstructTranscriptChain({
+          sessionId: scope.sessionId,
+          headId: priorHeadId,
+          headBody: priorBody,
+          read: async (objectId) => {
+            try {
+              const b = await blobStore.read(objectId);
+              if (b === null) return null;
+              try {
+                return JSON.parse(b);
+              } catch {
+                return null;
+              }
+            } catch {
+              return null;
+            }
+          },
+          isBound: (oid) => isObjectIdBoundTo(oid, scope),
+        });
+        if (!walked.ok) {
+          return await failWrite({
+            ok: false,
+            code: 'write_failed',
+            error: `terminal merge reconstruct failed: ${walked.error}`,
+          });
+        }
+        priorMessages = walked.messages;
       }
 
       // Plan #934 — terminal persist suffix-merges this-run onto the prior

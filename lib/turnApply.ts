@@ -600,12 +600,12 @@ export function createApplyTurnEvent(
       ctx.sawStreamTerminal = true;
       closeThinkingSegment(bridge, ctx);
       // Plan #934 (source #933): the host error path deliberately does NOT
-      // finalize/flatten. A wall-capped turn ends with SSE `error` (never
-      // `done`), and the worker's terminal persist suffix-merges this-run
-      // onto the prior transcript (lib/agent/turnPersistSeam.ts), so this-turn
-      // assistants + the wrap-up handoff are durable worker-side — independent
-      // of which SSE terminal the host saw. Adding a host finalize here would
-      // double-paint the handoff the worker already wrote.
+      // finalize/flatten here. A wall-capped turn ends with SSE `error` (never
+      // `done`). Durability is the worker terminal persist (reconstructed
+      // prior chain + this-run merge in lib/agent/turnPersistSeam.ts) plus
+      // HarnessHost adopting that worker transcript before any cloud PUT —
+      // a thin local flatten PUT would LWW-clobber the worker pointer.
+      // Adding a host finalize here would double-paint the handoff.
     }
   };
 }
