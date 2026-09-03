@@ -694,6 +694,45 @@ describe('setAlwaysOn + listAlwaysOnSkills (plan #720 phase 2)', () => {
     expect(listed.value).toHaveLength(USER_ALWAYS_ON_SKILLS_MAX);
   });
 
+  it('listAlwaysOnSkills order is slug-stable across a body-only edit', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const alpha = await createUserSkill(
+      { userId, name: 'Alpha', slug: 'alpha', body: 'body-alpha' },
+      { db: db as never },
+    );
+    expect(alpha.ok).toBe(true);
+    const beta = await createUserSkill(
+      { userId, name: 'Beta', slug: 'beta', body: 'body-beta' },
+      { db: db as never },
+    );
+    expect(beta.ok).toBe(true);
+    expect(
+      (await setAlwaysOn(userId, alpha.ok ? alpha.value.id : '', true, { db: db as never })).ok,
+    ).toBe(true);
+    expect(
+      (await setAlwaysOn(userId, beta.ok ? beta.value.id : '', true, { db: db as never })).ok,
+    ).toBe(true);
+
+    const before = await listAlwaysOnSkills(userId, { db: db as never });
+    expect(before.ok).toBe(true);
+    if (!before.ok) throw new Error('expected ok');
+    expect(before.value).toEqual(['alpha', 'beta']);
+
+    // Body-only edit bumps updatedAt; slug order must not flip (Goal 5).
+    const edited = await updateUserSkillBody(
+      userId,
+      beta.ok ? beta.value.id : '',
+      'body-beta-edited-only',
+      { db: db as never },
+    );
+    expect(edited.ok).toBe(true);
+
+    const after = await listAlwaysOnSkills(userId, { db: db as never });
+    expect(after.ok).toBe(true);
+    if (!after.ok) throw new Error('expected ok');
+    expect(after.value).toEqual(['alpha', 'beta']);
+  });
+
   it('setAlwaysOn returns not_found for a foreign/non-existent skill', async () => {
     const { userId } = await seedUser('t1', 'u@example.com');
     const other = await seedUser('t2', 'other@example.com');

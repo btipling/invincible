@@ -365,6 +365,25 @@ describe('createSkillTools', () => {
     expect(out).not.toMatch(/not_found/);
   });
 
+  it('fetch_skill: truncation does not split a UTF-8 scalar (no U+FFFD)', async () => {
+    const cjk = '文';
+    const prefix = 'x'.repeat(SKILL_FETCH_MAX_RETURN_BYTES - 1);
+    const big = makeSummary({
+      slug: 'cjk-cut',
+      name: 'CJK cut',
+      body: `${prefix}${cjk}${cjk}`,
+    });
+    const us = makeUserSkills({
+      getSkillBySlug: vi.fn(async () => ({ ok: true as const, value: big })),
+    });
+    const { fetch_skill } = createSkillTools({ userId: 'user-1', userSkills: us });
+    const out = String(await fetch_skill.execute!({ slug: 'cjk-cut' }, execOpts));
+    expect(out).toContain('=== skill: cjk-cut ===');
+    expect(out).toContain('[truncated');
+    expect(out).not.toContain('\uFFFD');
+    expect(out).not.toMatch(/not_found/);
+  });
+
   it('bound identity: execute ignores any input-provided identity and uses the route userId', async () => {
     const us = makeUserSkills();
     const { fetch_skill } = createSkillTools({ userId: 'user-1', userSkills: us });

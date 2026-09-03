@@ -428,14 +428,18 @@ export async function resolveSkillPreamble(
   }
 
   const events: SkillEvent[] = [];
-  // Ordered candidate set (insertion order preserved, de-duplicated).
+  // Ordered candidate set (insertion order preserved for sticky, de-duplicated).
   // Always-on slugs (plan #720 phase 2) are prepended BEFORE the sticky set
   // so they are listed first — but they are NEVER added to the sticky set or
-  // persisted to `meta.attachedSkills`. Cap on read so a concurrent
+  // persisted to `meta.attachedSkills`. Order among always-on is slug-sorted
+  // so a body-only edit (which bumps `updatedAt`) cannot rewrite the stable
+  // catalog prefix (plan #931 Goal 5). Cap on read so a concurrent
   // setAlwaysOn race cannot overflow the IN slice and GC sticky.
   const alwaysOnRaw =
     alwaysOnSlugs?.filter((s) => SKILL_SLUG_RE.test(s)) ?? [];
-  const alwaysOn = alwaysOnRaw.slice(0, USER_ALWAYS_ON_SKILLS_MAX);
+  const alwaysOn = [...alwaysOnRaw]
+    .sort((a, b) => a.localeCompare(b))
+    .slice(0, USER_ALWAYS_ON_SKILLS_MAX);
   const set: string[] = [];
   // Prepending always-on slugs first (order = auto-attach, then sticky).
   for (const slug of alwaysOn) {

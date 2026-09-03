@@ -18,7 +18,7 @@
  * user/tenant, and getSkillBySlug returns null for another-user rows (no
  * existence leak).
  */
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import {
   userSkills,
   userSkillVersions,
@@ -1096,9 +1096,10 @@ export async function setAlwaysOn(
 /**
  * List slugs of the user's always-on skills (plan #720 phase 2).
  * Returns only the slugs of rows with `is_always_on = true`, ordered by
- * updatedAt desc (deterministic for the inject merge). Caps on read at
- * `USER_ALWAYS_ON_SKILLS_MAX` so a concurrent `setAlwaysOn` race cannot
- * overflow the catalog IN slice and GC sticky as a false delete.
+ * slug (stable across body/name/summary writes so a mid-session playbook
+ * edit cannot rewrite the catalog prefix — plan #931 Goal 5). Caps on
+ * read at `USER_ALWAYS_ON_SKILLS_MAX` so a concurrent `setAlwaysOn` race
+ * cannot overflow the catalog IN slice and GC sticky as a false delete.
  */
 export async function listAlwaysOnSkills(
   userId: string,
@@ -1121,7 +1122,7 @@ export async function listAlwaysOnSkills(
             eq(userSkills.isAlwaysOn, true),
           ),
         )
-        .orderBy(desc(userSkills.updatedAt))
+        .orderBy(asc(userSkills.slug))
         .limit(USER_ALWAYS_ON_SKILLS_MAX);
       return { ok: true as const, value: rows.map((r) => r.slug) };
     });

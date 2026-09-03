@@ -22,7 +22,7 @@
 import { jsonSchema, tool } from 'ai';
 import { SKILL_FETCH_MAX_RETURN_BYTES, SKILL_FIND_RESULT_MAX } from '../sessionCloudCaps';
 import { SKILL_SLUG_RE } from '../sessionCloudCaps';
-import { buildCatalogLine, flattenCatalogText } from '../tenancy/skillInject';
+import { buildCatalogLine, flattenCatalogText, truncateUtf8 } from '../tenancy/skillInject';
 
 /** System-prompt addendum shown whenever the skill tools are on the tool surface. */
 export const SKILL_TOOLS_SYSTEM_ADDENDUM =
@@ -85,8 +85,9 @@ function summarize(result: ListSkillsResult): string {
 function boundBody(slug: string, body: string): string {
   const len = Buffer.byteLength(body, 'utf8');
   if (len <= SKILL_FETCH_MAX_RETURN_BYTES) return body;
-  const buf = Buffer.from(body, 'utf8');
-  const sliced = buf.subarray(0, SKILL_FETCH_MAX_RETURN_BYTES).toString('utf8');
+  // Prefix-preserving: never split a UTF-8 scalar (CJK at the cap must not
+  // become U+FFFD — fetch_skill is the only body path after catalog inject).
+  const sliced = truncateUtf8(body, SKILL_FETCH_MAX_RETURN_BYTES);
   const marker = `\n…[truncated to ${SKILL_FETCH_MAX_RETURN_BYTES} bytes; full body is ${len} bytes — edit in Settings]`;
   return `${sliced}${marker}`;
 }

@@ -423,6 +423,28 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
     expect(store.upserts[0]!.meta?.attachedSkills).toBe('["sticky"]');
   });
 
+  it('always-on catalog order is slug-stable (caller recency does not reorder)', async () => {
+    const rows = [
+      { slug: 'beta', name: 'Beta', description: 'second' },
+      { slug: 'alpha', name: 'Alpha', description: 'first' },
+    ];
+    const make = (alwaysOn: string[]) =>
+      resolveSkillPreamble({
+        userId: KEY.userId,
+        command: { type: 'none' },
+        alwaysOnSlugs: alwaysOn,
+        userSkills: readerOf({ alpha: { body: 'A' }, beta: { body: 'B' } }),
+        listUserSkills: listerOf(rows),
+      });
+    const recency = await make(['beta', 'alpha']);
+    const flipped = await make(['alpha', 'beta']);
+    expect(recency.preamble).toBe(flipped.preamble);
+    const alphaIdx = recency.preamble!.indexOf('alpha —');
+    const betaIdx = recency.preamble!.indexOf('beta —');
+    expect(alphaIdx).toBeGreaterThanOrEqual(0);
+    expect(alphaIdx).toBeLessThan(betaIdx);
+  });
+
   it('deleted/stale slug drops from the catalog AND the sticky set (no silent lie)', async () => {
     const store = new FakeStore(makeEnvelope({ attachedSkills: '["deleted","kept"]' }));
     const res = await resolveSkillPreamble({
