@@ -360,12 +360,11 @@ describe('harnessChat attach hydrate source-lock (adversarial #857)', () => {
     expect(src).not.toMatch(/if \(coldBackup\) \{\s*opts\?\.onSessionPatch\?\(\{ \.\.\.s, messages: coldBackup \}\)/);
   });
 
-  it('attach Stop keep-running is D18-shaped (adversarial #857)', () => {
-    expect(src).toContain(
-      'attaching && fail.kind === \'stop\' && opts?.signal?.aborted === true',
-    );
-    expect(src).toContain('fail.kind === \'detach\' || attachSubscribeFail || attachOperatorStop');
-    expect(src).toContain('fail.kind !== \'detach\' && !attachOperatorStop');
+  it('attach Stop is G22 cancelling + Turn-ended, not D18 keep-running (adversarial-review #927)', () => {
+    expect(src).not.toContain('attachOperatorStop');
+    expect(src).toContain('fail.kind === \'detach\' || attachSubscribeFail');
+    expect(src).toContain('} else if (fail.kind !== \'detach\') {');
+    expect(src).toContain('failedSession = pushTurnEnd(bridge, failedSession, fail.kind, fail.detail)');
   });
 
   it('ATTACH_FOLLOW_UP_NOTE is not a Turn-ended line (canvas System + TEAL host mirror)', () => {

@@ -5702,7 +5702,7 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
     ).toBe(true);
   });
 
-  it('test 6i: attach Stop after onTurnStarted keeps running, no you-stopped (adversarial #857)', async () => {
+  it('test 6i: attach Stop after onTurnStarted folds cancelling + Turn-ended (G22 / adversarial-review #927)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const session = runningSession();
@@ -5728,20 +5728,19 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
     expect(result.ok).toBe(false);
     expect(sendAgent).not.toHaveBeenCalled();
     expect(next.turnRunId).toBe('wr_live');
-    expect(next.turnStatus).toBe('running');
+    expect(next.turnStatus).toBe('cancelling');
     expect(
       next.messages.some(
         (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
       ),
-    ).toBe(false);
-    expect(exp.__messages.some((m) => isTurnEndLine(m.text))).toBe(false);
+    ).toBe(true);
     expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
     expect(exp.__messages.some((m) => m.kind === MessageKind.Thinking && m.text === 'hmm')).toBe(
       true,
     );
   });
 
-  it('test 6j: attach Stop before onTurnStarted keeps running, no subscribe-fail EMBER (adversarial #857)', async () => {
+  it('test 6j: attach Stop before onTurnStarted folds cancelling + Turn-ended, no subscribe-fail EMBER (G22 / adversarial-review #927)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const session = runningSession();
@@ -5759,10 +5758,14 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
       },
     });
     expect(result.ok).toBe(false);
-    expect(next.turnStatus).toBe('running');
+    expect(next.turnStatus).toBe('cancelling');
     expect(next.turnRunId).toBe('wr_1');
     expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
-    expect(exp.__messages.some((m) => isTurnEndLine(m.text))).toBe(false);
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(true);
     expect(
       exp.__messages.some((m) => m.kind === MessageKind.Error),
     ).toBe(false);
@@ -5796,7 +5799,7 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
     expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
   });
 
-  it('test 6k: Send-while-running attach Stop keeps running, strips follow-up, no still-attached note (adversarial #857)', async () => {
+  it('test 6k: Send-while-running attach Stop folds cancelling + Turn-ended, strips follow-up (G22 / adversarial-review #927)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     bridge.pushMessage(MessageKind.User, 'hello');
@@ -5824,13 +5827,12 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
     expect(result.ok).toBe(false);
     expect(sendAgent).not.toHaveBeenCalled();
     expect(next.turnRunId).toBe('wr_live');
-    expect(next.turnStatus).toBe('running');
+    expect(next.turnStatus).toBe('cancelling');
     expect(
       next.messages.some(
         (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
       ),
-    ).toBe(false);
-    expect(exp.__messages.some((m) => isTurnEndLine(m.text))).toBe(false);
+    ).toBe(true);
     expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
     expect(exp.__messages.filter((m) => m.kind === MessageKind.User).map((m) => m.text)).toEqual([
       'hello',

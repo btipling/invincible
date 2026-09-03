@@ -99,7 +99,7 @@ export function isDetachAbort(signal?: AbortSignal): boolean {
  * |-------|--------|
  * | Clear/remove discarded the started id | `drop` — never PUT (LWW upsert would resurrect) |
  * | Still on this turn (epoch match) | `live` — writeLocal + put as today |
- * | Detached + running + turnRunId | `preserve` — PUT onto `preserveTargetId` (pending mint UUID, else startedId); never clobber a switched live session |
+ * | Detached + running/cancelling + turnRunId | `preserve` — PUT onto `preserveTargetId` (pending mint UUID, else startedId); never clobber a switched live session. `'cancelling'` is host-held **liveness** (G22 / C15), not terminal. |
  * | Detached without a durable running id | `drop` — skip PUT so we cannot omit-clear C14d |
  */
 export type DetachPersistAction = 'live' | 'preserve' | 'drop';
@@ -121,7 +121,9 @@ export interface DetachPersistInput {
 export function decideDetachPersist(input: DetachPersistInput): DetachPersistAction {
   if (input.discarded) return 'drop';
   if (!input.detached) return 'live';
-  if (input.turnRunId && input.turnStatus === 'running') return 'preserve';
+  if (input.turnRunId && (input.turnStatus === 'running' || input.turnStatus === 'cancelling')) {
+    return 'preserve';
+  }
   return 'drop';
 }
 

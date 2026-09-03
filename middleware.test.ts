@@ -321,6 +321,26 @@ describe('middleware auth gate', () => {
     vi.resetModules();
     const { config } = await import('./middleware');
     expect(config.matcher).toContain('/api/turns');
+    expect(config.matcher).toContain('/api/turns/:path*');
+  });
+
+  it('401 JSON on unauth POST /api/turns/:runId/cancel when tenancy on', async () => {
+    process.env.DATABASE_URL = 'postgres://x';
+    process.env.AUTH_SECRET = 'test-secret-value-for-jwt-middleware!!';
+    process.env.CREDENTIALS_ENCRYPTION_KEY = 'key-material';
+    vi.resetModules();
+    vi.doMock('next-auth/jwt', () => ({
+      getToken: vi.fn(async () => null),
+    }));
+    const { middleware } = await loadMw();
+    const res = await middleware(
+      new Request('http://localhost/api/turns/wr_live/cancel?sessionId=s1', {
+        method: 'POST',
+      }) as never,
+    );
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe(AUTH_REQUIRED_ERROR);
   });
 
   it('allows GET /api/skills when JWT sub present', async () => {

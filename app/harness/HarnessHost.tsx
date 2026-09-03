@@ -262,6 +262,16 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const pendingStopFoldRef = useRef<{ runId: string; fold: StopFoldAction } | null>(
     null,
   );
+  /**
+   * Adversarial-review #927 pass 5 — last persistTurn snapshot that carried a
+   * G22 fold. `persist-detached` folds onto this (abort snapshot with
+   * Turn-ended) instead of the Stop-fire capture (pre-abort, stale messages).
+   */
+  const lastStopPersistRef = useRef<{
+    sessionId: string;
+    runId: string;
+    snapshot: SessionSnapshot;
+  } | null>(null);
   const inflightRef = useRef(false);
   /**
    * Plan #887 — session-scoped one-shot auto-continue flag. Clears on the next
@@ -591,6 +601,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       // turn must not ride persistTurn of this prompt (pre-headers snapshot
       // may still carry the old id, or have cleared it).
       pendingStopFoldRef.current = null;
+      lastStopPersistRef.current = null;
 
       // Plan #887: next operator submit (not attach, not auto-continue) clears
       // the one-shot flag so a later recoverable can fire again.
@@ -665,6 +676,13 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           pendingFold != null
             ? applyStopFoldToSession(snapshot, pendingFold.runId, pendingFold.fold)
             : snapshot;
+        if (pendingFold != null) {
+          lastStopPersistRef.current = {
+            sessionId: foldedSnapshot.id,
+            runId: pendingFold.runId,
+            snapshot: foldedSnapshot,
+          };
+        }
         const pendingMintId = pendingMintBindRef.current;
         const action = decideDetachPersist({
           detached: turnEpochRef.current !== epoch,
@@ -872,8 +890,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         // Plan #813: SSE drop while still mounted → hot resume at this-heap C.
         // Empty-EOF GET (applied == startIndex) must not reconnect (spin).
         // F5 is never this path (heapApplied was nulled; activateSession is cold).
-        // Operator Stop during attach: skip auto-resume this tick (D18 reader
-        // close, not G22 cancel — adversarial #857).
+        // Operator Stop during attach: skip auto-resume this tick (G22 cancel
+        // already fired; shouldKickHotResume is false via operatorStop).
         if (kickHot) {
           const resume = decideHotResume({
             turnRunId: folded.turnRunId,
@@ -1267,13 +1285,24 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                     }
                     if (apply.commit === 'drop') return;
                     if (apply.commit === 'persist-detached') {
+                      const preserved = lastStopPersistRef.current;
+                      const base =
+                        preserved != null &&
+                        preserved.sessionId === cancelSessionId &&
+                        preserved.runId === stopRunId
+                          ? preserved.snapshot
+                          : cancelSnapshot;
                       const folded = applyStopFoldToSession(
-                        cancelSnapshot,
+                        base,
                         stopRunId,
                         apply.fold,
                       );
                       const detached = { ...folded, id: cancelSessionId };
                       cancelRepo?.put(cancelSessionId, detached);
+                      // persistTurn may still be in flight (detached preserve).
+                      // Keep the ack fold so it cannot re-apply optimistic
+                      // cancelling over keep-running / clear-terminal.
+                      pendingStopFoldRef.current = { runId: stopRunId, fold: apply.fold };
                       if (sessionRef.current.id === cancelSessionId) {
                         persist(detached);
                       }
@@ -1283,7 +1312,11 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                         persist(applyStopFoldToSession(liveNow, stopRunId, apply.fold));
                       }
                     }
-                    if (apply.fold.kind === 'keep-running') {
+                    if (
+                      apply.fold.kind === 'keep-running' &&
+                      !cancelled &&
+                      sessionRef.current.id === cancelSessionId
+                    ) {
                       // Soft note only — never a fake cancel; the run continues
                       // to its own terminal (same honesty as detach). Stop can
                       // retry because we dropped the posted-id and folded

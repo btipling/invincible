@@ -166,13 +166,21 @@ describe('decideDetachPersist (adversarial #844 Clear-vs-PUT / late persist)', (
     ).toBe('drop');
   });
 
-  it('detached + running + turnRunId → preserve (Switch/New/unmount)', () => {
+  it('detached + running/cancelling + turnRunId → preserve (Switch/New/unmount; G22 liveness)', () => {
     expect(
       decideDetachPersist({
         detached: true,
         discarded: false,
         turnRunId: 'wr_live',
         turnStatus: 'running',
+      }),
+    ).toBe('preserve');
+    expect(
+      decideDetachPersist({
+        detached: true,
+        discarded: false,
+        turnRunId: 'wr_live',
+        turnStatus: 'cancelling',
       }),
     ).toBe('preserve');
   });
@@ -194,7 +202,7 @@ describe('decideDetachPersist (adversarial #844 Clear-vs-PUT / late persist)', (
         detached: true,
         discarded: false,
         turnRunId: 'wr_old',
-        turnStatus: 'cancelling',
+        turnStatus: 'idle',
       }),
     ).toBe('drop');
   });
@@ -491,17 +499,25 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     expect(poll).toContain('cancelRepo?.put(cancelSessionId, detached)');
     expect(poll).toContain('discardedSessionIdsRef.current.has(cancelSessionId)');
     expect(poll).not.toContain('if (inflightRef.current) return');
+    // Adversarial-review #927 pass 5: persist-detached folds onto persistTurn's
+    // abort snapshot (Turn-ended), not the Stop-fire capture; failed-ack note
+    // stays on cancelSessionId.
+    expect(poll).toContain('lastStopPersistRef');
+    expect(poll).toContain('preserved.sessionId === cancelSessionId');
+    expect(poll).toContain('sessionRef.current.id === cancelSessionId');
   });
 
   it('runPrompt nulls pendingStopFoldRef so a leftover fold cannot ride the next persistTurn (adversarial-review #927)', () => {
     const runStart = host.indexOf('const runPrompt = useCallback');
     const run = host.slice(runStart, host.indexOf('useEffect(() => {', runStart));
     expect(run).toContain('pendingStopFoldRef.current = null');
+    expect(run).toContain('lastStopPersistRef.current = null');
   });
 
   it('persistTurn applies pendingStopFold so harnessChat cannot beat a failed ack (adversarial-review #927)', () => {
     expect(host).toContain('pendingStopFoldRef.current');
     expect(host).toContain('applyStopFoldToSession(snapshot, pendingFold.runId, pendingFold.fold)');
+    expect(host).toContain('lastStopPersistRef.current');
   });
 });
 
