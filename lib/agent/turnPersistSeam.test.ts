@@ -455,7 +455,7 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     expect(parsed?.messages.some((m) => m.role === 'user')).toBe(true);
   });
 
-  it('second persist writes this-run chunk + prev; reconstruct keeps turn-1 user', async () => {
+  it('second persist writes a flatten-root merged head; reconstruct keeps turn-1 user', async () => {
     const { seam, blobStore, envelopeStore } = await makeSeam();
     const first = await seam.persist({
       turnRunId: realRunId,
@@ -490,16 +490,17 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
       prev?: string;
       depth?: number;
     };
-    // Plan #934: the terminal head chunk is suffix-merged — prior turn-1 rows
-    // plus this-run — while `prev`/`depth` keep the chain walkable.
+    // Plan #934 / adversarial #935: the terminal head is suffix-merged
+    // prior + this-run and is a flatten root (no `prev`/`depth`) so GET
+    // never walks ancestors.
     expect(chunk.messages.map((m) => m.text)).toEqual([
       'turn-1 user',
       'turn-1 assistant',
       'turn-2 user',
       'turn-2 assistant',
     ]);
-    expect(typeof chunk.prev).toBe('string');
-    expect(chunk.depth).toBe(2);
+    expect(chunk.prev).toBeUndefined();
+    expect(chunk.depth).toBeUndefined();
     const parsed = await chainParsed(blobStore, envelopeStore);
     expect(parsed).not.toBeNull();
     expect(parsed?.messages.map((m) => m.text)).toEqual([
@@ -549,7 +550,7 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
       prev?: string;
     };
     expect(chunk.queue).toEqual(['follow-up B', 'follow-up C']);
-    expect(typeof chunk.prev).toBe('string');
+    expect(chunk.prev).toBeUndefined();
     const parsed = parseCloudSessionSnapshot(chunk, scope.sessionId);
     expect(parsed?.queue).toEqual(['follow-up B', 'follow-up C']);
   });
@@ -1727,13 +1728,14 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
       HARNESS_SESSION_MAX_BODY_BYTES,
     );
     const parsed = await chainParsed(blobStore, envelopeStore);
-    expect(parsed?.messages.at(-1)?.text).toBe('newest-line');
-    expect(parsed?.messages[0]?.id).toBe('h0');
     const latest = parseCloudSessionSnapshot(JSON.parse(raw ?? 'null'), scope.sessionId);
-    // Plan #934: the terminal head is suffix-merged (prior 50 fat rows + this
-    // run) BEFORE fitSnapshotUtf8 drops oldest rows to the 8 MiB ceiling, so
-    // the head itself carries the newest rows; the trim keeps 'newest-line'.
+    // Plan #934 / adversarial #935: merge-then-trim on a flatten-root head.
+    // Oldest drop; newest wrap-up kept. Reconstruct is head-only (no prev)
+    // so GET cannot restore the dropped rows from an untrimmed ancestor.
+    expect(parsed?.messages.at(-1)?.text).toBe('newest-line');
     expect(latest?.messages.at(-1)?.text).toBe('newest-line');
+    expect(parsed?.messages[0]?.id).not.toBe('h0');
+    expect(parsed?.messages.map((m) => m.id)).toEqual(latest?.messages.map((m) => m.id));
   });
 
   it('foreign prev on the pointer object fail-closes persist (plan #886)', async () => {
@@ -1896,6 +1898,7 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     expect(res.error).toContain('reconstruct');
     const env = await envelopeStore.readEnvelope(key);
     expect(env?.meta?.transcriptPointer).toBe(priorId);
+    expect(env?.meta?.turnStatus).toBe('completed');
   });
 
   it('mid-turn persist reads only the current pointer (adversarial #889); terminal reconstruct walks ancestors (plan #934)', async () => {
@@ -1973,7 +1976,7 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     ]);
   });
 
-  it('host flatten root (no prev) is the full list; next worker chunk prevs it', async () => {
+  it('host flatten root (no prev) is the full list; terminal merge writes a flatten root', async () => {
     const blobStore = new MemoryBlobTranscriptStore();
     const envelopeStore = new MemorySessionStore();
     const flattenId = newBlobObjectId(scope);
@@ -2017,9 +2020,10 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
       depth?: number;
       messages: { text: string }[];
     };
-    expect(chunk.prev).toBe(flattenId);
-    expect(chunk.depth).toBe(2);
-    // Plan #934: the terminal head is suffix-merged onto the host flatten root.
+    expect(chunk.prev).toBeUndefined();
+    expect(chunk.depth).toBeUndefined();
+    // Plan #934: the terminal head is suffix-merged onto the host flatten root
+    // and itself omits prev (adversarial #935).
     expect(chunk.messages.map((m) => m.text)).toEqual([
       'turn-1 user',
       'turn-1 assistant',
@@ -2130,8 +2134,8 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
       depth?: number;
       messages: { text: string }[];
     };
-    expect(chunk.prev).toBe(priorId);
-    expect(chunk.depth).toBe(2);
+    expect(chunk.prev).toBeUndefined();
+    expect(chunk.depth).toBeUndefined();
     expect(chunk.messages.map((m) => m.text)).toEqual([
       'turn-1 user',
       'turn-1 assistant',
@@ -2315,8 +2319,8 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
       depth?: number;
       messages: { text: string }[];
     };
-    expect(chunk.prev).toBeDefined();
-    expect(chunk.depth).toBe(2);
+    expect(chunk.prev).toBeUndefined();
+    expect(chunk.depth).toBeUndefined();
     expect(chunk.messages.map((m) => m.text)).toEqual([
       'run the suite',
       'exit=1',
@@ -2385,7 +2389,7 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
       prev?: string;
       messages: { text: string }[];
     };
-    expect(chunk.prev).toBeDefined();
+    expect(chunk.prev).toBeUndefined();
     expect(chunk.messages.map((m) => m.text)).toEqual([
       'turn-1 user',
       'turn-1 assistant',

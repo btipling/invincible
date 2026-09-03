@@ -132,7 +132,10 @@ function firstUserText(
  *  suffix-merged onto the prior readable transcript so the head chunk carries the
  *  full this-run + prior history — a wall-clock `error` terminal is then as durable
  *  as a `done` terminal, with no host flatten required (idempotent: a prior that
- *  already covers this-run — host flatten or a persist retry — stays unchanged). */
+ *  already covers this-run — host flatten or a persist retry — stays unchanged).
+ *  Terminal merged heads omit `prev`/`depth` (flatten root) so GET never walks
+ *  ancestors (adversarial #935: walk-fail fail-soft of a thin completed overlay
+ *  clobbers local P0). Mid-turn `running` chunks still link `prev`. */
 function buildThisRunChunk(opts: {
   content: string;
   sessionId: string;
@@ -408,14 +411,20 @@ export function createTurnPersistSeam(
       // covers this-run (host-flattened `done` path, mid-turn worker chunk
       // being retried) stays byte-equal — no duplicate rows. Mid-turn
       // `running` persists keep the thin this-run chunk (transient overlay).
+      //
+      // Adversarial #935: the merged terminal head is a flatten root
+      // (`prev`/`depth` omitted). GET of a self-contained head must not walk
+      // ancestors — walk-fail fail-soft of a `failWrite` completed overlay
+      // (pointer still this-run-only) would replace local P0 with this-run.
+      const terminalFlatten = status === 'completed';
       const stampedRaw = buildThisRunChunk({
         content: input.content,
         sessionId: scope.sessionId,
         updatedAt,
-        prev: chunkPrev,
-        depth: chunkDepth,
+        prev: terminalFlatten ? undefined : chunkPrev,
+        depth: terminalFlatten ? undefined : chunkDepth,
         priorQueue,
-        ...(status === 'completed' && priorMessages !== undefined
+        ...(terminalFlatten && priorMessages !== undefined
           ? { mergePrior: priorMessages }
           : {}),
       });

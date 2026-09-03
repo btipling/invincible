@@ -11,9 +11,11 @@
  * and `isBound`. Mid-turn persist is **head-only** — it must not call
  * reconstruct. Terminal persist (plan #934) reconstructs the bound prior
  * chain so the head `messages` are prior + this-run after a this-run-only
- * overlay (the production wall-cap path). Host GET of a **completed**
- * merged head fail-softs to that head when an ancestor walk fails (the head
- * is self-contained). Mid-turn `running` overlays stay fail-closed.
+ * overlay (the production wall-cap path), then writes a **flatten root**
+ * (`prev`/`depth` omitted) so GET does not walk. Host GET of a prev-bearing
+ * head fail-closes on a broken walk (never this-chunk-only) — including
+ * `turnStatus=completed`. A `failWrite` that stamped `completed` on a thin
+ * mid-turn overlay must not be adopted as the full transcript.
  */
 import { TRANSCRIPT_CHUNK_WALK_MAX, isRedisSafeOpaqueId } from '../sessionCloudCaps';
 import {
@@ -195,21 +197,18 @@ export function flattenReconstructedBody(
 }
 
 /**
- * Plan #934 / adversarial #935: after a reconstruct walk, pick the blob GET
- * should parse.
+ * After a reconstruct walk, pick the blob GET should parse.
  *
  * - Walk ok → flatten the merged chain (existing #886 path).
- * - Walk fail + live (`running` / `cancelling`) overlay → `null` (fail-closed;
- *   the head is this-run-only; never this-chunk-only).
- * - Walk fail + terminal / unset status → flatten the **head's own messages**
- *   when they parse. The #934 terminal head already carries prior + this-run;
- *   an ancestor 5xx must not throw that complete head away.
+ * - Walk fail → `null` (fail-closed; never this-chunk-only). A `completed`
+ *   overlay left by `failWrite` (no B7 merge) is still this-run-only; adopting
+ *   it would drop local prior history (adversarial #935). Successful #934
+ *   terminal heads omit `prev` so GET never walks.
  */
 export function blobAfterReconstructWalk(input: {
   sessionId: string;
   headBody: unknown;
   walked: ReconstructChainResult;
-  turnStatus?: string;
 }): Record<string, unknown> | null {
   if (input.walked.ok) {
     return flattenReconstructedBody(
@@ -218,10 +217,5 @@ export function blobAfterReconstructWalk(input: {
       input.walked.messages,
     );
   }
-  const live =
-    input.turnStatus === 'running' || input.turnStatus === 'cancelling';
-  if (live) return null;
-  const headMsgs = snapshotMessagesFromUnknown(input.headBody, input.sessionId);
-  if (headMsgs === null) return null;
-  return flattenReconstructedBody(input.headBody, input.sessionId, headMsgs);
+  return null;
 }

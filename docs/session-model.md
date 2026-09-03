@@ -306,16 +306,17 @@ turn. The **terminal** persist (`completed`) reconstructs the bound prior chain
 then suffix-merges this-run messages (the same idempotent `mergeCheckpointOntoPrior`
 reconstruct uses), so the head chunk itself carries prior + this-run history
 even when the pointer was a this-run-only mid-turn overlay — durability is
-worker-owned. After SSE `error` the host adopts that worker transcript (GET)
-for local paint only and **does not** flatten-PUT (a host-clock PUT would
-LWW-clobber the worker pointer — plan #934 / source #933). A GET miss holds
-later host PUTs (including model/effort-pick `repo.put`, not only `persist()`)
-until a GET merges the worker head; a held-session local write does not bump
-the clock (freeze-0 LWW). Host GET of a completed
-merged head fail-softs to the head messages when an ancestor walk fails;
-live `running` overlays stay fail-closed (never this-chunk-only). Host terminal PUT on `done` may additionally
-**flatten** to a full trimmed snapshot with **`prev` / `depth` omitted**
-(flatten root).
+worker-owned. That terminal head is a **flatten root** (`prev` / `depth`
+omitted) so GET does not walk ancestors. After SSE `error` the host adopts that
+worker transcript (GET) for local paint only and **does not** flatten-PUT (a
+host-clock PUT would LWW-clobber the worker pointer — plan #934 / source #933).
+A GET miss holds later host PUTs (including model/effort-pick `repo.put`, not
+only `persist()`) until a GET merges the worker head; a held-session local write
+does not bump the clock (freeze-0 LWW). Host GET of a prev-bearing head
+fail-closes on a broken walk (never this-chunk-only), including
+`turnStatus=completed` — a `failWrite` overlay is still this-run-only. Host
+terminal PUT on `done` may additionally **flatten** to a full trimmed snapshot
+with **`prev` / `depth` omitted** (flatten root).
 Reconstruct walks `prev` when present. Persist refuses to append when the
 head's chain length is already 256.
 A leftover `{ deltas }` object is not a snapshot — next persist starts

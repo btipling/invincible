@@ -818,7 +818,8 @@ export function createHttpSessionRepository(
    * (client→Blob) instead of a whole-record Function GET. Used when the envelope
    * carrier is active. When the latest object has `prev`, the host walks the
    * chain (plan #886) and suffix-merges; a missing/foreign/loop chain fail-closes
-   * (never this-chunk-only). Host flatten roots omit `prev` and parse as one node.
+   * (never this-chunk-only), including `turnStatus=completed`. Host flatten roots
+   * and #934 terminal merged heads omit `prev` and parse as one node.
    */
   async function getEnvelope(id: string): Promise<CloudGetResult> {
     try {
@@ -901,7 +902,6 @@ export function createHttpSessionRepository(
             sessionId: id,
             headBody: blobJson,
             walked,
-            turnStatus: sanitizeTurnStatus(env.meta?.turnStatus),
           });
           if (resolved === null) {
             return cloudGetFromEnvelopeMeta(id, env.meta, null);

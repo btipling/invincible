@@ -247,28 +247,18 @@ describe('blobAfterReconstructWalk (plan #934 / adversarial #935)', () => {
         sessionId: SESSION,
         headBody: head,
         walked: missing,
-        turnStatus: 'running',
       }),
     ).toBeNull();
   });
 
-  it('walk fail on a completed #934 head fail-softs to the head messages', () => {
-    const head = snap(
-      [msg('h1', 'turn-1 user'), msg('h2', 'wrap-up: 3 tests still fail')],
-      't_overlay',
-      3,
-    );
-    const body = blobAfterReconstructWalk({
-      sessionId: SESSION,
-      headBody: head,
-      walked: missing,
-      turnStatus: 'completed',
-    });
-    expect(body).not.toBeNull();
-    expect(body?.prev).toBeUndefined();
-    expect((body?.messages as { text: string }[]).map((m) => m.text)).toEqual([
-      'turn-1 user',
-      'wrap-up: 3 tests still fail',
-    ]);
+  it('walk fail on a completed thin overlay fail-closes (not this-chunk-only)', () => {
+    const head = snap([msg('m2', 'this-run')], 't_missing', 2);
+    expect(
+      blobAfterReconstructWalk({
+        sessionId: SESSION,
+        headBody: head,
+        walked: missing,
+      }),
+    ).toBeNull();
   });
 });

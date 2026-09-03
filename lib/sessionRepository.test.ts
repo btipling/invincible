@@ -1553,7 +1553,47 @@ describe('createHttpSessionRepository — envelope carrier (phase 0 #515)', () =
     }
   });
 
-  it('get() of a completed #934 merged head fail-softs when prev is missing (adversarial #935)', async () => {
+  it('get() of a completed thin overlay fail-closes when prev is missing (adversarial #935)', async () => {
+    const headUrl = `${UPLOAD_URL}/read?obj=tx_head`;
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && u.endsWith('/envelope')) {
+        return Response.json(
+          {
+            id: idA,
+            updatedAt: 40,
+            meta: { transcriptPointer: 'tx_head', turnStatus: 'completed' },
+            transcriptReadUrl: headUrl,
+          },
+          { status: 200 },
+        );
+      }
+      if (u === headUrl) {
+        return Response.json(
+          {
+            id: idA,
+            updatedAt: 40,
+            messages: [{ id: 'm3', role: 'user', text: 'this-run', at: 3 }],
+            prev: 'tx_missing',
+          },
+          { status: 200 },
+        );
+      }
+      if (method === 'GET' && u.includes('/transcript?objectId=')) {
+        return Response.json({ error: 'not found', code: 'NOT_FOUND' }, { status: 404 });
+      }
+      return new Response(null, { status: 204 });
+    });
+    const repo = createHttpSessionRepository({ fetchImpl, carrier: 'envelope' });
+    const res = await repo.get(idA);
+    expect(res.action).toBe('error');
+    if (res.action === 'ok') {
+      expect(res.snapshot.messages.map((m) => m.text)).not.toEqual(['this-run']);
+    }
+  });
+
+  it('get() of a completed #934 flatten-root merged head is head-only (no ancestor walk)', async () => {
     const headUrl = `${UPLOAD_URL}/read?obj=tx_head`;
     const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       const u = String(url);
@@ -1578,13 +1618,12 @@ describe('createHttpSessionRepository — envelope carrier (phase 0 #515)', () =
               { id: 'h1', role: 'user', text: 'turn-1 user', at: 1 },
               { id: 'h2', role: 'assistant', text: 'wrap-up: 3 tests still fail', at: 2 },
             ],
-            prev: 'tx_missing',
           },
           { status: 200 },
         );
       }
       if (method === 'GET' && u.includes('/transcript?objectId=')) {
-        return Response.json({ error: 'not found', code: 'NOT_FOUND' }, { status: 404 });
+        throw new Error('must not walk ancestors of a flatten-root head');
       }
       return new Response(null, { status: 204 });
     });
