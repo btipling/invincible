@@ -37,6 +37,55 @@ export function shouldHoldCloudPut(adopted: {
   return adopted.skipCloud && adopted.session.updatedAt === 0;
 }
 
+/**
+ * Hold is per-session. A model/effort pick (or any other host persist) on a
+ * *different* session must still PUT; only the GET-miss session is fenced.
+ */
+export function heldSessionPutBlocked(
+  hold: boolean,
+  heldSessionId: string | null,
+  id: string,
+): boolean {
+  return hold && heldSessionId === id;
+}
+
+/**
+ * While the GET-miss hold is set, do not stamp `Date.now()` onto the thin
+ * snapshot. Freeze-0 is the LWW fence — a newer local clock lets F5 keep-local
+ * and boot-PUT the thin row over the worker merged head (source #933).
+ */
+export function keepFrozenClock(
+  blocked: boolean,
+  next: SessionSnapshot,
+): SessionSnapshot {
+  if (!blocked) return next;
+  return { ...next, updatedAt: 0 };
+}
+
+export type CloudPutFn = (id: string, snapshot: SessionSnapshot) => void;
+
+/** No-op `repo.put` while the held session is fenced. */
+export function putUnlessHeld(
+  blocked: boolean,
+  put: CloudPutFn | undefined,
+  id: string,
+  snapshot: SessionSnapshot,
+): void {
+  if (blocked) return;
+  put?.(id, snapshot);
+}
+
+/** Wrap a repo so `put` no-ops while `blocked`. Other methods pass through. */
+export function wrapRepoPut<T extends { put: CloudPutFn }>(
+  blocked: boolean,
+  repo: T | null,
+): T | null {
+  if (!repo) return null;
+  if (!blocked) return repo;
+  return { ...repo, put: () => undefined };
+}
+
+
 const HOST_ONLY_ROLES = new Set<SessionMessage['role']>(['error', 'system']);
 
 /** Local Turn-ended / system rows the worker checkpoint never carries. */

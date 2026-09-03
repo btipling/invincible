@@ -175,8 +175,10 @@ after SSE `error` (per-round assistants were bridge-only; a host-clock PUT
 LWW-wins and orphans the worker head). It adopts the worker transcript
 (GET + reconstruct) for local paint only (`skipCloud`) and unions F21 queue /
 host-only error rows onto that snapshot. A GET miss freezes `updatedAt` and
-holds later host PUTs until a GET merges the worker head (a follow-up prompt
-must not flatten-clobber it). Host GET of a **completed** merged head
+holds later host PUTs (including model/effort-pick `repo.put`, not only
+`persist()`) until a GET merges the worker head; a held-session local write
+does not bump the clock (freeze-0 is the LWW fence — a follow-up prompt or
+F5 must not flatten-clobber it). Host GET of a **completed** merged head
 fail-softs to that head when an ancestor walk fails; mid-turn `running`
 overlays stay fail-closed. Mid-turn `running` persists stay
 this-run-only (transient overlays), and the merged head is still bounded by

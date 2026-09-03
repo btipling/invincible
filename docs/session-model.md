@@ -309,7 +309,9 @@ even when the pointer was a this-run-only mid-turn overlay — durability is
 worker-owned. After SSE `error` the host adopts that worker transcript (GET)
 for local paint only and **does not** flatten-PUT (a host-clock PUT would
 LWW-clobber the worker pointer — plan #934 / source #933). A GET miss holds
-later host PUTs until a GET merges the worker head. Host GET of a completed
+later host PUTs (including model/effort-pick `repo.put`, not only `persist()`)
+until a GET merges the worker head; a held-session local write does not bump
+the clock (freeze-0 LWW). Host GET of a completed
 merged head fail-softs to the head messages when an ancestor walk fails;
 live `running` overlays stay fail-closed (never this-chunk-only). Host terminal PUT on `done` may additionally
 **flatten** to a full trimmed snapshot with **`prev` / `depth` omitted**

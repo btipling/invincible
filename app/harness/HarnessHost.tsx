@@ -39,9 +39,12 @@ import {
 import { cancelTurn } from '../../lib/turnApi';
 import {
   adoptWorkerTranscriptOnError,
+  keepFrozenClock,
   recoverWorkerTranscriptBeforePut,
   shouldAdoptWorkerTranscriptOnError,
   shouldHoldCloudPut,
+  heldSessionPutBlocked,
+  wrapRepoPut,
 } from '../../lib/turnErrorAdopt';
 import { decideHotResume, decideSendAttach, shouldPaintAttachFollowUpNote, shouldPaintAttachFollowUpDetachNote, shouldRepostAttachFollowUp, shouldSkipAttachHotResume, shouldKickHotResume, ATTACH_FOLLOW_UP_NOTE, ATTACH_FOLLOW_UP_DETACH_NOTE, isAttachFollowUpHostNote, coldAttachFromSnapshot, type HeapApplied } from '../../lib/turnAttach';
 import {
@@ -319,9 +322,11 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   /**
    * Plan #934 / adversarial #935 — error-adopt GET missed (`updatedAt: 0`).
    * Hold coalesced cloud PUTs until a later GET merges the worker head so a
-   * follow-up `appendMessage` / `queueAppend` cannot LWW-orphan it.
+   * follow-up `appendMessage` / `queueAppend` / model-effort pick cannot
+   * LWW-orphan it. Per-session: other sessions still PUT.
    */
   const holdCloudPutRef = useRef(false);
+  const holdSessionIdRef = useRef<string | null>(null);
   /**
    * Plan #887 — session-scoped one-shot auto-continue flag. Clears on the next
    * operator submit. Not persisted.
@@ -452,6 +457,37 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     });
   }, []);
 
+  /** Local persist that keeps freeze-0 while this session's error-adopt GET missed. */
+  const persistLocalHeld = useCallback(
+    (next: SessionSnapshot) => {
+      const blocked = heldSessionPutBlocked(
+        holdCloudPutRef.current,
+        holdSessionIdRef.current,
+        next.id,
+      );
+      writeLocalSession(keepFrozenClock(blocked, next));
+    },
+    [writeLocalSession],
+  );
+
+  const persistMetaHeld = useCallback(
+    (next: SessionSnapshot) => {
+      const blocked = heldSessionPutBlocked(
+        holdCloudPutRef.current,
+        holdSessionIdRef.current,
+        next.id,
+      );
+      writeLocalSessionMeta(keepFrozenClock(blocked, next));
+    },
+    [writeLocalSessionMeta],
+  );
+
+  const repoHeld = (id: string) =>
+    wrapRepoPut(
+      heldSessionPutBlocked(holdCloudPutRef.current, holdSessionIdRef.current, id),
+      repoRef.current,
+    );
+
   /**
    * Plan #616 (source #610) — delegate to the extracted pure function in
    * lib/harnessHostModelPersist.ts so the logic is unit-testable without
@@ -460,8 +496,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const applySessionModel = useCallback((snap: SessionSnapshot) => {
     const b = bridgeRef.current;
     if (!b) return;
-    applySessionModelFn(snap, b, sessionRef, writeLocalSession, repoRef.current);
-  }, [writeLocalSession]);
+    applySessionModelFn(snap, b, sessionRef, persistLocalHeld, repoHeld(snap.id));
+  }, [persistLocalHeld]);
 
   const applySessionReasoning = useCallback((snap: SessionSnapshot) => {
     const b = bridgeRef.current;
@@ -471,9 +507,9 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     // Meta-only persist (adversarial-review #902 Major L1): this runs on the
     // 150 ms poll after a model change and must not snap ringWindowStartRef
     // the way writeLocalSession does (Load-earlier window).
-    applySessionReasoningFn(snap, options, b, sessionRef, writeLocalSessionMeta, repoRef.current);
+    applySessionReasoningFn(snap, options, b, sessionRef, persistMetaHeld, repoHeld(snap.id));
     applyResolvedProvider(snap, b);
-  }, [writeLocalSessionMeta]);
+  }, [persistMetaHeld]);
 
   /** Apply server snapshot to local store + latest Wasm ring window. */
   const adoptCloudSession = useCallback(
@@ -484,7 +520,12 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       const b = bridgeRef.current;
       let quota = false;
       const persistNoPaint = (s: SessionSnapshot) => {
-        quota = writeLocalSession(s, { paintQuota: false });
+        const blocked = heldSessionPutBlocked(
+          holdCloudPutRef.current,
+          holdSessionIdRef.current,
+          s.id,
+        );
+        quota = writeLocalSession(keepFrozenClock(blocked, s), { paintQuota: false });
       };
       if (b) {
         // Flush a pending menu/Next pick onto the CURRENT session before
@@ -493,11 +534,12 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         // — fold-after-persist would stamp the live pick onto the incoming row.
         // Adversarial #870: paint after hydrate so the once-flag is not spent
         // on a row `hydrateMessages` immediately drops.
+        const liveId = sessionRef.current.id;
         foldPendingReasoningChangeFn(
           b,
           sessionRef,
           persistNoPaint,
-          repoRef.current,
+          repoHeld(liveId),
           inflightRef.current,
         );
         flushPendingThenRestore(
@@ -505,7 +547,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           b,
           sessionRef,
           persistNoPaint,
-          repoRef.current,
+          repoHeld(liveId),
           inflightRef.current,
         );
         const liveModel = b.getSelectedModel();
@@ -515,7 +557,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           b,
           sessionRef,
           persistNoPaint,
-          repoRef.current,
+          repoHeld(merged.id),
         );
         applyResolvedProvider(merged, b);
       } else {
@@ -540,14 +582,26 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const foldPendingModelChange = useCallback(() => {
     const b = bridgeRef.current;
     if (!b) return;
-    foldPendingModelChangeFn(b, sessionRef, writeLocalSessionMeta, repoRef.current, inflightRef.current);
-  }, [writeLocalSessionMeta]);
+    foldPendingModelChangeFn(
+      b,
+      sessionRef,
+      persistMetaHeld,
+      repoHeld(sessionRef.current.id),
+      inflightRef.current,
+    );
+  }, [persistMetaHeld]);
 
   const foldPendingReasoningChange = useCallback(() => {
     const b = bridgeRef.current;
     if (!b) return;
-    foldPendingReasoningChangeFn(b, sessionRef, writeLocalSessionMeta, repoRef.current, inflightRef.current);
-  }, [writeLocalSessionMeta]);
+    foldPendingReasoningChangeFn(
+      b,
+      sessionRef,
+      persistMetaHeld,
+      repoHeld(sessionRef.current.id),
+      inflightRef.current,
+    );
+  }, [persistMetaHeld]);
 
   /** Persist the active session id into the URL `?s=` (no new history entry). */
   const setUrlSessionId = useCallback((id: string | null) => {
@@ -600,9 +654,15 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
 
   const persist = useCallback(
     (next: SessionSnapshot, opts?: { paintQuota?: boolean; cloud?: boolean }) => {
-      writeLocalSession(next, opts);
+      const blocked = heldSessionPutBlocked(
+        holdCloudPutRef.current,
+        holdSessionIdRef.current,
+        next.id,
+      );
+      writeLocalSession(keepFrozenClock(blocked, next), opts);
       // Hybrid cloud push — never blocks the turn; coalesced per session in repo.
-      if (opts?.cloud !== false && !holdCloudPutRef.current) repoRef.current?.put(next.id, next);
+      // Held session: no PUT and no Date.now() stamp (freeze-0 LWW).
+      if (opts?.cloud !== false && !blocked) repoRef.current?.put(next.id, next);
     },
     [writeLocalSession],
   );
@@ -730,13 +790,20 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       // Plan #934 / adversarial #935: a prior error-adopt GET miss left the
       // worker merged head as LWW source of truth. GET+merge it before this
       // turn's host PUTs so a follow-up prompt cannot flatten-clobber it.
-      if (holdCloudPutRef.current && repo) {
+      if (
+        holdCloudPutRef.current &&
+        repo &&
+        sessionRef.current.id === holdSessionIdRef.current
+      ) {
         const recovered = await recoverWorkerTranscriptBeforePut({
           get: (id) => repo.get(id),
           session: sessionRef.current,
         });
         writeLocalSession(recovered.session);
-        if (!recovered.skipCloud) holdCloudPutRef.current = false;
+        if (!recovered.skipCloud) {
+          holdCloudPutRef.current = false;
+          holdSessionIdRef.current = null;
+        }
       }
       const persistTurn = (
         snapshot: SessionSnapshot,
@@ -928,7 +995,9 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           if (liveEffort) folded.reasoningEffort = liveEffort;
           else delete folded.reasoningEffort;
           skipCloud = adopted.skipCloud;
-          holdCloudPutRef.current = shouldHoldCloudPut(adopted);
+          const hold = shouldHoldCloudPut(adopted);
+          holdCloudPutRef.current = hold;
+          holdSessionIdRef.current = hold ? folded.id : null;
         }
         // Always persist — including user Stop/cancel (and late abort after a finished
         // stream). Dropping session on signal.aborted left SessionStore behind Wasm:
@@ -1074,8 +1143,20 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
               pendingId,
             );
             const bound = { ...sessionRef.current, id: pendingId };
-            writeLocalSession(bound);
-            repo?.put(pendingId, bound);
+            const blocked =
+              heldSessionPutBlocked(
+                holdCloudPutRef.current,
+                holdSessionIdRef.current,
+                pendingId,
+              ) ||
+              heldSessionPutBlocked(
+                holdCloudPutRef.current,
+                holdSessionIdRef.current,
+                startedId,
+              );
+            if (blocked) holdSessionIdRef.current = pendingId;
+            writeLocalSession(keepFrozenClock(blocked, bound));
+            if (!blocked) repo?.put(pendingId, bound);
             if (!detached) {
               setActiveSessionId(pendingId);
               setUrlSessionId(pendingId);
@@ -1246,18 +1327,32 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                   bootBridge,
                   sessionRef,
                   (s) => {
-                    foldQuota = writeLocalSessionMeta(s, { paintQuota: false });
+                    const blocked = heldSessionPutBlocked(
+                      holdCloudPutRef.current,
+                      holdSessionIdRef.current,
+                      s.id,
+                    );
+                    foldQuota = writeLocalSessionMeta(keepFrozenClock(blocked, s), {
+                      paintQuota: false,
+                    });
                   },
-                  repoRef.current,
+                  repoHeld(sessionRef.current.id),
                   inflightRef.current,
                 );
                 foldPendingReasoningChangeFn(
                   bootBridge,
                   sessionRef,
                   (s) => {
-                    foldQuota = writeLocalSessionMeta(s, { paintQuota: false });
+                    const blocked = heldSessionPutBlocked(
+                      holdCloudPutRef.current,
+                      holdSessionIdRef.current,
+                      s.id,
+                    );
+                    foldQuota = writeLocalSessionMeta(keepFrozenClock(blocked, s), {
+                      paintQuota: false,
+                    });
                   },
-                  repoRef.current,
+                  repoHeld(sessionRef.current.id),
                   inflightRef.current,
                 );
               }
@@ -1275,7 +1370,12 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
               });
               if (restored === local) {
                 setActiveSessionId(id);
-                repoRef.current?.put(id, local);
+                const blocked = heldSessionPutBlocked(
+                  holdCloudPutRef.current,
+                  holdSessionIdRef.current,
+                  id,
+                );
+                if (!blocked) repoRef.current?.put(id, local);
                 paintQuotaAfterRebuild(
                   bootBridge,
                   localSaveQuotaWarnedRef,

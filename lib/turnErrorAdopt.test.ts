@@ -5,11 +5,15 @@ import {
   recoverWorkerTranscriptBeforePut,
   shouldAdoptWorkerTranscriptOnError,
   shouldHoldCloudPut,
+  heldSessionPutBlocked,
+  keepFrozenClock,
+  putUnlessHeld,
+  wrapRepoPut,
   withHostOnlySuffix,
   withLocalOnlySuffix,
 } from './turnErrorAdopt';
-import { createEmptySession } from './sessionStore';
-import type { CloudGetResult } from './sessionRepository';
+import { createEmptySession, type SessionSnapshot } from './sessionStore';
+import { shouldAdoptServer, type CloudGetResult } from './sessionRepository';
 
 describe('shouldAdoptWorkerTranscriptOnError', () => {
   it('is true for durable SSE error after the worker completed', () => {
@@ -223,6 +227,61 @@ describe('shouldHoldCloudPut / recoverWorkerTranscriptBeforePut (adversarial #93
   });
 });
 
+describe('held-session PUT fence (adversarial #935 pass 4)', () => {
+  it('blocks only the held session id', () => {
+    expect(heldSessionPutBlocked(true, 'sess_1', 'sess_1')).toBe(true);
+    expect(heldSessionPutBlocked(true, 'sess_1', 'sess_2')).toBe(false);
+    expect(heldSessionPutBlocked(false, 'sess_1', 'sess_1')).toBe(false);
+    expect(heldSessionPutBlocked(true, null, 'sess_1')).toBe(false);
+  });
+
+  it('keepFrozenClock forces 0 when blocked and leaves a live clock otherwise', () => {
+    const next = createEmptySession('sess_1');
+    next.updatedAt = 12_345;
+    next.selectedModel = 'xai/grok-4';
+    expect(keepFrozenClock(true, next).updatedAt).toBe(0);
+    expect(keepFrozenClock(true, next).selectedModel).toBe('xai/grok-4');
+    expect(keepFrozenClock(false, next).updatedAt).toBe(12_345);
+  });
+
+  it('model-pick while hold does not repo.put and keeps freeze-0 so F5 still adopts worker', () => {
+    const thin = createEmptySession('sess_1');
+    thin.updatedAt = 0;
+    thin.messages = [{ id: 'u1', role: 'user', text: 'run the suite', at: 1 }];
+    const picked = { ...thin, updatedAt: Date.now(), selectedModel: 'xai/grok-4' };
+    const blocked = heldSessionPutBlocked(true, 'sess_1', picked.id);
+    const persisted = keepFrozenClock(blocked, picked);
+    const puts: SessionSnapshot[] = [];
+    putUnlessHeld(blocked, (_id, s) => puts.push(s), picked.id, picked);
+    expect(blocked).toBe(true);
+    expect(persisted.updatedAt).toBe(0);
+    expect(persisted.selectedModel).toBe('xai/grok-4');
+    expect(puts).toEqual([]);
+
+    const worker = createEmptySession('sess_1');
+    worker.updatedAt = 8_000;
+    worker.messages = [
+      { id: 'h1', role: 'user', text: 'run the suite', at: 1 },
+      { id: 'h2', role: 'assistant', text: 'wrap-up: 3 tests still fail', at: 2 },
+    ];
+    expect(shouldAdoptServer(persisted, worker)).toBe(true);
+    expect(shouldAdoptServer(picked, worker)).toBe(false);
+  });
+
+  it('wrapRepoPut no-ops put while blocked and passes through otherwise', () => {
+    const puts: string[] = [];
+    const repo = {
+      put: (id: string, _snapshot: SessionSnapshot) => {
+        puts.push(id);
+      },
+    };
+    wrapRepoPut(true, repo)?.put('sess_1', createEmptySession('sess_1'));
+    expect(puts).toEqual([]);
+    wrapRepoPut(false, repo)?.put('sess_1', createEmptySession('sess_1'));
+    expect(puts).toEqual(['sess_1']);
+  });
+});
+
 describe('HarnessHost adopt glue (plan #934 adversarial)', () => {
   it('skips cloud PUT after error adopt; never stamps Date.now() on the GET-ok path', () => {
     const src = readFileSync('app/harness/HarnessHost.tsx', 'utf8');
@@ -234,10 +293,16 @@ describe('HarnessHost adopt glue (plan #934 adversarial)', () => {
     expect(glue).toContain('adoptWorkerTranscriptOnError');
     expect(glue).toContain('skipCloud = adopted.skipCloud');
     expect(glue).toContain('shouldHoldCloudPut');
+    expect(glue).toContain('holdSessionIdRef');
     expect(glue).not.toContain('Date.now()');
     expect(src).toContain('cloud: skipCloud ? false : undefined');
     expect(src).toContain('holdCloudPutRef');
+    expect(src).toContain('holdSessionIdRef');
     expect(src).toContain('recoverWorkerTranscriptBeforePut');
-    expect(src).toContain('!holdCloudPutRef.current');
+    expect(src).toContain('heldSessionPutBlocked');
+    expect(src).toContain('keepFrozenClock');
+    expect(src).toContain('persistMetaHeld');
+    expect(src).toContain('repoHeld(');
+    expect(src).toContain('wrapRepoPut');
   });
 });

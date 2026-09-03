@@ -606,7 +606,7 @@ describe('picker index setter vs restore-by-id (PR #618 re-run 5 Minor L6)', () 
 });
 
 describe('HarnessHost wiring lock — foldPendingModelChange must use writeLocalSessionMeta (PR #618 re-run 7 Nit L6)', () => {
-  it('foldPendingModelChangeFn is called with writeLocalSessionMeta, not writeLocalSession', () => {
+  it('foldPendingModelChangeFn is called with persistMetaHeld (writeLocalSessionMeta + hold freeze)', () => {
     const src = readFileSync(
       resolve(import.meta.dirname, '..', 'app/harness/HarnessHost.tsx'),
       'utf-8',
@@ -616,12 +616,17 @@ describe('HarnessHost wiring lock — foldPendingModelChange must use writeLocal
     expect(src).toContain(
       'const writeLocalSessionMeta = useCallback((next: SessionSnapshot, opts?: { paintQuota?: boolean }) => {',
     );
-    // Lock: foldPendingModelChangeFn's persist arg is writeLocalSessionMeta.
-    // If someone dedupes and points back at writeLocalSession, this fails.
-    expect(src).toContain(
-      'foldPendingModelChangeFn(b, sessionRef, writeLocalSessionMeta, repoRef.current, inflightRef.current);',
-    );
-    // Double-check: the fold's own deps array also locks the name.
-    expect(src).toContain('}, [writeLocalSessionMeta]);');
+    expect(src).toContain('const persistMetaHeld = useCallback(');
+    // Lock: fold persist arg is persistMetaHeld (wraps writeLocalSessionMeta +
+    // freeze-0 while error-adopt hold is set). Must not snap writeLocalSession.
+    expect(src).toContain('persistMetaHeld,');
+    expect(src).toContain('repoHeld(sessionRef.current.id)');
+    expect(src).toContain('}, [persistMetaHeld]);');
+    const foldIdx = src.indexOf('const foldPendingModelChange = useCallback');
+    expect(foldIdx).toBeGreaterThan(0);
+    const foldBlock = src.slice(foldIdx, src.indexOf('const foldPendingReasoningChange', foldIdx));
+    expect(foldBlock).toContain('foldPendingModelChangeFn(');
+    expect(foldBlock).toContain('persistMetaHeld');
+    expect(foldBlock).not.toMatch(/foldPendingModelChangeFn\([^)]*writeLocalSession,/);
   });
 });
