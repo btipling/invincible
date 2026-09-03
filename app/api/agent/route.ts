@@ -292,9 +292,13 @@ export async function POST(req: Request): Promise<Response> {
     // per candidate skill — sticky ∪ always-on: slug + name + description),
     // NOT the bodies — bodies ride the on-demand `fetch_skill` tool, so a
     // mid-session body edit no longer rewrites the stable system-prefix block.
-    // Fail-open: any store/resolution error → no preamble (turn
-    // proceeds), never a 4xx/5xx on the hot path. Sticky persist is best-effort;
-    // when no `sessionId`/store is available the attach still injects THIS turn
+    // Catalog list fail-open (`listUserSkillsBySlugs` ok:false/throw) still
+    // emits a slug-only catalog from the command-applied set so strip-`/slug`
+    // keeps identity — never "no preamble" on that path. Missing sticky drops
+    // when exists still answers; exists-unavailable keeps the slug. A throw
+    // from this whole resolve (outer catch below) still blanks `skills` and
+    // the turn proceeds without 4xx/5xx. Sticky persist is best-effort; when
+    // no `sessionId`/store is available the attach still injects THIS turn
     // (mirrors persona's offline-safe path), just without a sticky write.
     // The store is narrowed to the phase-0 ENVELOPE seam (adversarial-review
     // H2): the agent mirror writes `readEnvelope`/`upsertEnvelope` so it lands on
