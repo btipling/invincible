@@ -1984,6 +1984,10 @@ describe('POST /api/agent', () => {
         ok: true as const,
         value: { body: 'BODY' },
       })),
+      skillExistsBySlug: vi.fn(async () => ({
+        ok: true as const,
+        value: true,
+      })),
       listUserSkills: vi.fn(async () => ({
         ok: false as const,
         code: 'unavailable',
@@ -2053,6 +2057,10 @@ describe('POST /api/agent', () => {
         ok: true as const,
         value: { body: 'BODY' },
       })),
+      skillExistsBySlug: vi.fn(async () => ({
+        ok: true as const,
+        value: true,
+      })),
       listUserSkills: vi.fn(async () => ({
         ok: false as const,
         code: 'unavailable',
@@ -2115,6 +2123,10 @@ describe('POST /api/agent', () => {
       getSkillBySlug: vi.fn(async () => ({
         ok: true as const,
         value: { body: 'PLAN BODY' },
+      })),
+      skillExistsBySlug: vi.fn(async () => ({
+        ok: true as const,
+        value: true,
       })),
       listUserSkills: vi.fn(async () => ({
         ok: false as const,

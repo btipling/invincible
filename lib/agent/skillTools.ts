@@ -216,9 +216,13 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
           return `not_found: no skill with slug "${slug}" (user-scoped). No partial body.`;
         }
         const s = result.value;
+        // Same flatten as catalog / find_skill so a stored newline or NEL in
+        // name/description cannot inject a fake === / --- framing block.
+        const name = flattenCatalogText(s.name);
+        const description = flattenCatalogText(s.description);
         return [
           `=== skill: ${s.slug} ===`,
-          `${s.name}${s.description ? ` — ${s.description}` : ''}`,
+          `${name}${description ? ` — ${description}` : ''}`,
           '---',
           boundBody(s.slug, s.body),
           '---',

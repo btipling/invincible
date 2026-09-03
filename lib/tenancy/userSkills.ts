@@ -626,6 +626,43 @@ export async function getSkillBySlug(
 }
 
 /**
+ * Lightweight existence check by slug (catalog fail-open GC / attach). SELECTs
+ * only `slug` — never the body column — so a maxed 32×4 MiB sticky set cannot
+ * hydrate playbooks just to prove a row is still there. Same tenant+user scope
+ * and charset fail-closed as `getSkillBySlug`: other-user / missing / malformed
+ * → `{ ok: true, value: false }` (no existence leak). Store-down → unavailable.
+ */
+export async function skillExistsBySlug(
+  userId: string,
+  slug: string,
+  deps: UserSkillsDeps = {},
+): Promise<UserSkillsResult<boolean>> {
+  const uid = userId?.trim();
+  const s = slug?.trim() ?? '';
+  if (!uid || !s || !SKILL_SLUG_RE.test(s)) {
+    return { ok: true, value: false };
+  }
+  try {
+    const tid = await resolveTenantId(uid, deps);
+    if (!tid.ok) return tid;
+
+    return await withDb(deps, async (db) => {
+      const rows = await db
+        .select({ slug: userSkills.slug })
+        .from(userSkills)
+        .where(and(eq(userSkills.slug, s), eq(userSkills.userId, uid), eq(userSkills.tenantId, tid.value)))
+        .limit(1);
+      return { ok: true as const, value: rows.length > 0 };
+    });
+  } catch (err) {
+    if (isUndefinedTable(err)) {
+      return { ok: false, code: 'unavailable', error: 'user_skills unavailable' };
+    }
+    return { ok: false, code: 'unavailable', error: 'could not check skill' };
+  }
+}
+
+/**
  * Scoped single row including body, resolved by id (server-side injection seam
  * for the `meta_skill_str_replace` patch tool — see plan for #600). Returns
  * null for another-user/tenant rows (no existence leak). Mirrors `getPersonaById`
@@ -1103,6 +1140,8 @@ export function createUserSkills(deps: UserSkillsDeps = {}) {
       deleteUserSkill(userId, id, { ...deps, ...o }),
     getSkillBySlug: (userId: string, slug: string, o?: UserSkillsDeps) =>
       getSkillBySlug(userId, slug, { ...deps, ...o }),
+    skillExistsBySlug: (userId: string, slug: string, o?: UserSkillsDeps) =>
+      skillExistsBySlug(userId, slug, { ...deps, ...o }),
     getSkillById: (userId: string, id: string, o?: UserSkillsDeps) =>
       getSkillById(userId, id, { ...deps, ...o }),
     listSkillVersions: (userId: string, skillId: string, o?: UserSkillsDeps) =>

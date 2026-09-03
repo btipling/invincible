@@ -7,6 +7,7 @@ import {
   deleteUserSkill,
   getSkillById,
   getSkillBySlug,
+  skillExistsBySlug,
   getSkillVersion,
   listAlwaysOnSkills,
   listSkillVersions,
@@ -188,6 +189,42 @@ describe('userSkills', () => {
     expect(malformed.ok).toBe(true);
     if (!malformed.ok) throw new Error('expected ok');
     expect(malformed.value).toBeNull();
+  });
+
+  it('skillExistsBySlug is slug-only (no body): owner true, other-user/missing/malformed false', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserSkill(
+      { userId, name: 'A', slug: 'a', body: 'body-A-must-not-hydrate' },
+      { db: db as never },
+    );
+    expect(created.ok).toBe(true);
+
+    const own = await skillExistsBySlug(userId, 'a', { db: db as never });
+    expect(own.ok).toBe(true);
+    if (!own.ok) throw new Error('expected ok');
+    expect(own.value).toBe(true);
+    // Result is a boolean — no body field to leak a 4 MiB playbook.
+    expect(typeof own.value).toBe('boolean');
+
+    const { userId: otherId } = await seedUser('t2', 'other@example.com');
+    const cross = await skillExistsBySlug(otherId, 'a', { db: db as never });
+    expect(cross.ok).toBe(true);
+    if (!cross.ok) throw new Error('expected ok');
+    expect(cross.value).toBe(false);
+
+    const missing = await skillExistsBySlug(userId, 'does-not-exist', {
+      db: db as never,
+    });
+    expect(missing.ok).toBe(true);
+    if (!missing.ok) throw new Error('expected ok');
+    expect(missing.value).toBe(false);
+
+    const malformed = await skillExistsBySlug(userId, 'Not-A-Slug', {
+      db: db as never,
+    });
+    expect(malformed.ok).toBe(true);
+    if (!malformed.ok) throw new Error('expected ok');
+    expect(malformed.value).toBe(false);
   });
 
   it('getSkillById returns the FULL body for the owner; other-user / foreign id → null (no leak)', async () => {

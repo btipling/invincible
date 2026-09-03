@@ -21,7 +21,7 @@ import {
   truncateUtf8,
   type ParsedSkillCommand,
   type SessionStoreEnvelope,
-  type SkillBodyReader,
+  type SkillExistsReader,
   type SkillSummaryLister,
 } from './skillInject';
 
@@ -91,11 +91,16 @@ function failingLister(mode: 'ok-false' | 'throw'): SkillSummaryLister {
   };
 }
 
-function readerOf(rows: Partial<Record<string, { body: string } | null>>): SkillBodyReader {
+/** In-memory fake for fail-open existence (never a body). `{ body }` fixtures mean present. */
+function readerOf(
+  rows: Partial<Record<string, { body?: string } | null | boolean>>,
+): SkillExistsReader {
   return {
-    async getSkillBySlug(_userId: string, slug: string) {
+    async skillExistsBySlug(_userId: string, slug: string) {
       const row = rows[slug];
-      return { ok: true as const, value: row ?? null };
+      if (row === true) return { ok: true as const, value: true };
+      if (row && typeof row === 'object') return { ok: true as const, value: true };
+      return { ok: true as const, value: false };
     },
   };
 }
@@ -385,7 +390,7 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
     expect(res.preamble).toContain('b — B: second');
   });
 
-  it('store listUserSkills fail-open: getSkillBySlug-missing sticky is dropped from catalog and sticky (ghost GC)', async () => {
+  it('store listUserSkills fail-open: skillExistsBySlug-missing sticky is dropped from catalog and sticky (ghost GC)', async () => {
     const store = new FakeStore(
       makeEnvelope({ attachedSkills: '["kept","old-playbook"]' }),
     );
@@ -406,10 +411,10 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
     expect(store.upserts[0]!.meta?.attachedSkills).toBe('["kept"]');
   });
 
-  it('store listUserSkills fail-open: unavailable getSkillBySlug keeps sticky (cannot tell missing)', async () => {
+  it('store listUserSkills fail-open: unavailable skillExistsBySlug keeps sticky (cannot tell missing)', async () => {
     const store = new FakeStore(makeEnvelope({ attachedSkills: '["kept"]' }));
-    const unavailable: SkillBodyReader = {
-      async getSkillBySlug() {
+    const unavailable: SkillExistsReader = {
+      async skillExistsBySlug() {
         return { ok: false as const, error: 'down' };
       },
     };
@@ -421,11 +426,54 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
       userSkills: unavailable,
       listUserSkills: failingLister('throw'),
     });
-    // get did not answer — do not GC; slug-only catalog + sticky stay.
+    // exists did not answer — do not GC; slug-only catalog + sticky stay.
     expect(res.preamble).toBe('kept');
     expect(res.attachedSlugs).toEqual(['kept']);
     expect(res.attachedSkills).toBe('["kept"]');
     expect(store.upserts[0]!.meta?.attachedSkills).toBe('["kept"]');
+  });
+
+  it('store listUserSkills fail-open: GC does not call getSkillBySlug (exists-only, one call per slug)', async () => {
+    const sticky = Array.from(
+      { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS },
+      (_, i) => `skill-${String(i).padStart(2, '0')}`,
+    );
+    const present: Record<string, boolean> = Object.fromEntries(
+      sticky.map((s) => [s, true]),
+    );
+    present['new-skill'] = true;
+    let existsCalls = 0;
+    let bodyCalls = 0;
+    const reader: SkillExistsReader & {
+      getSkillBySlug: (userId: string, slug: string) => Promise<unknown>;
+    } = {
+      async skillExistsBySlug(_userId, slug) {
+        existsCalls += 1;
+        return { ok: true as const, value: present[slug] === true };
+      },
+      async getSkillBySlug() {
+        bodyCalls += 1;
+        return { ok: true as const, value: { body: 'SHOULD-NOT-READ' } };
+      },
+    };
+    const store = new FakeStore(
+      makeEnvelope({ attachedSkills: JSON.stringify(sticky) }),
+    );
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'attach', slug: 'new-skill', rest: '' },
+      sessionStore: store,
+      sessionKey: KEY,
+      userSkills: reader,
+      listUserSkills: failingLister('ok-false'),
+    });
+    // Lightweight path only: never SELECT a body for fail-open GC / attach.
+    expect(bodyCalls).toBe(0);
+    // One exists lookup per unique slug (pending attach is cached, not double-fetched).
+    expect(existsCalls).toBe(sticky.length + 1);
+    expect(res.attachedSlugs).toHaveLength(sticky.length + 1);
+    expect(res.preamble).not.toContain('SHOULD-NOT-READ');
+    expect(res.preamble?.split('\n\n')).toHaveLength(sticky.length + 1);
   });
 
   it('store listUserSkills error → fail-open: slug-only catalog, command-applied set persisted (not omit, not detach-all)', async () => {
@@ -497,8 +545,15 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
 
   it('happy-path attach does not hydrate the body (existence is a summary lookup)', async () => {
     let bodyReads = 0;
-    const reader: SkillBodyReader = {
-      async getSkillBySlug(_userId, slug) {
+    let existsReads = 0;
+    const reader: SkillExistsReader & {
+      getSkillBySlug: (userId: string, slug: string) => Promise<unknown>;
+    } = {
+      async skillExistsBySlug() {
+        existsReads += 1;
+        return { ok: true as const, value: true };
+      },
+      async getSkillBySlug(_userId: string, slug: string) {
         bodyReads += 1;
         return { ok: true as const, value: { body: `BODY-${slug}` } };
       },
@@ -513,6 +568,7 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
       listUserSkills: listerOf(CATALOG_ROWS),
     });
     expect(bodyReads).toBe(0);
+    expect(existsReads).toBe(0);
     expect(readEventActions(res)).toEqual([
       { action: 'attach', slug: 'create-plan', ok: true },
     ]);
