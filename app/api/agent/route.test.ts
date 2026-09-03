@@ -2238,6 +2238,138 @@ describe('POST /api/agent', () => {
     expect(arg.skillsPreamble).toContain('kept');
   });
 
+  it('SSE skill_attached.attachedSlugs is the sticky persist set (always-on stays out)', async () => {
+    mockAuthedSession();
+    mockMcpEmpty();
+    mockByokOk();
+    mockGithubToken();
+    mockResolveSandboxOk();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    const fakeSessionStore = {
+      readEnvelope: vi.fn(async () => ({
+        id: 'sess_1',
+        tenantId: 'tenant-1',
+        userId: 'user-1',
+        createdAt: 1,
+        updatedAt: 1,
+        meta: {},
+      })),
+      upsertEnvelope: vi.fn(async () => ({ status: 'stored' as const })),
+    };
+    vi.doMock('../../../lib/tenancy/harnessSessionsRedis', () => ({
+      resolveSessionStore: async () => ({ ok: true as const, value: fakeSessionStore }),
+      sessionKeyFor: (t: string, u: string, s: string) => ({
+        tenantId: t,
+        userId: u,
+        sessionId: s,
+      }),
+    }));
+    servicesState.harnessSessionsRedis = {
+      resolveTenantIdForUser: vi.fn(async () => ({ ok: true as const, value: 'tenant-1' })),
+    };
+    servicesState.userSkills = {
+      getSkillBySlug: vi.fn(async () => ({
+        ok: true as const,
+        value: { body: 'PLAN BODY' },
+      })),
+      listAlwaysOnSkills: vi.fn(async () => ({
+        ok: true as const,
+        value: ['review'],
+      })),
+      listUserSkills: vi.fn(async () => ({
+        ok: true as const,
+        value: [
+          {
+            id: 's1',
+            name: 'Create plan',
+            slug: 'create-plan',
+            description: 'writes a plan issue',
+            updatedAt: new Date(0),
+          },
+          {
+            id: 's2',
+            name: 'Review',
+            slug: 'review',
+            description: 'reviews a plan',
+            updatedAt: new Date(0),
+          },
+        ],
+      })),
+      listUserSkillsBySlugs: vi.fn(async () => ({
+        ok: true as const,
+        value: [
+          {
+            id: 's1',
+            name: 'Create plan',
+            slug: 'create-plan',
+            description: 'writes a plan issue',
+            updatedAt: new Date(0),
+          },
+          {
+            id: 's2',
+            name: 'Review',
+            slug: 'review',
+            description: 'reviews a plan',
+            updatedAt: new Date(0),
+          },
+        ],
+      })),
+    };
+    const runAgentStream = vi.fn(
+      async (
+        _p: { skillsPreamble?: string },
+        handlers: { onEvent: (e: unknown) => Promise<void> },
+      ) => {
+        await handlers.onEvent({ type: 'done', text: 'ok' });
+      },
+    );
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent: vi.fn(),
+      runAgentStream,
+    }));
+
+    const { POST } = await loadRoute();
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+        },
+        body: JSON.stringify({
+          prompt: '/create-plan please scaffold a plan',
+          sessionId: 'sess_1',
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    const events: Record<string, unknown>[] = [];
+    for (const block of text.split('\n\n')) {
+      const line = block.trim();
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice('data:'.length).trim();
+      if (!payload) continue;
+      events.push(JSON.parse(payload) as Record<string, unknown>);
+    }
+    const skillEv = events.find((e) => e.type === 'skill_attached');
+    expect(skillEv).toBeTruthy();
+    expect(skillEv?.slug).toBe('create-plan');
+    // Sticky persist set matches JSON attachedSkills — always-on `review` stays
+    // out so a later toggle-off cannot leave it sticky until `/unskill`.
+    expect(skillEv?.attachedSlugs).toEqual(['create-plan']);
+    expect(skillEv?.attachedSlugs).not.toContain('review');
+    expect(fakeSessionStore.upsertEnvelope).toHaveBeenCalled();
+    const upsert = fakeSessionStore.upsertEnvelope.mock.calls[0]?.[1] as {
+      meta?: { attachedSkills?: string };
+    };
+    expect(upsert.meta?.attachedSkills).toBe('["create-plan"]');
+    // Catalog inject still lists always-on this turn (inject ≠ persist).
+    const arg = runAgentStream.mock.calls[0]?.[0] as { skillsPreamble?: string };
+    expect(arg.skillsPreamble).toContain('create-plan');
+    expect(arg.skillsPreamble).toContain('review');
+  });
+
   it('seeds resolve from the envelope activeSandboxId when a sessionId is present, no body sandboxId (blocker B1 A1)', async () => {
     mockAuthedSession();
     mockMcpEmpty();

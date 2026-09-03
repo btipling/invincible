@@ -33,7 +33,7 @@ optional login chrome).
 | Model selection UI (status-bar menu) | **Wasm** | Status bar line 1; protocol v3 catalog + stock dvui dropdown menu (#617). The selected **model id** rides the session-carrier `meta.selectedModel` (DOM fold + backend reserved key — plan #616 / source #610): the DOM host folds the live Wasm selection into `SessionSnapshot.selectedModel` (folding a user menu pick or **Next** cycle via the additive **v16** `inv_has_pending_model_change` / `inv_ack_pending_model_change`, and at `runPrompt`), persists it via the reserved `meta.selectedModel`, and restores **by id** after the catalog push via the additive **v16** `inv_set_selected_model`. Restore-by-id never sets the pending flag; a revoked/absent stored id falls back to the default first-granted. The picker UI stays **Wasm**; submit still reads the live `getSelectedModel()` (no second POST-body truth) |
 | Reasoning effort UI (status-bar menu) | **Wasm** | Status bar line 1, next to the model menu (protocol **v23**). Hidden when `GET /api/models.reasoningOptions` for the current id is empty. Host pushes that model's joined catalog values (Gateway list when published; models.dev `vercel.models[id]` fills holes; catalog `max` rewrites to `xhigh`, then remaining non-wire tokens drop). The operator pick rides `meta.reasoningEffort` (reserved key, drop-to-unset). Host computes the default via `defaultEffortFromOptions` (never auto `max` / `xhigh`); stored `max` restores as `xhigh` when listed. Wasm only paints + raises pending on click. Submit reads live `getSelectedReasoning()` into `POST /api/turns` `{ reasoning }` |
 | Resolved inference provider (status-bar label) | **Wasm** paint + **DOM** fold + **Vercel** capture | Status bar line 1, after the effort menu (protocol **v24**). Display-only; hidden when unset. Catalog model id stays the model id. Slug comes from the generation (`providerMetadata.gateway.routing.resolvedProvider`) with a BYOK-pin fallback; host maps to a short label (`Together AI` / `Fireworks`) and pushes `inv_set_resolved_provider`. Worker-owned `meta.resolvedProvider` survives reload / attach. Not a picker and not a DOM chip. |
-| Skill attach display (`Skill attached: <slug>`) | **Wasm** (display-only kind 7) + **Vercel** (resolve/catalog inject) | Server resolves `/skill-name` + folds the skill into the session's **catalog** inject (after the persona — slug + name + description lines, never bodies; the agent reads a body on demand via `fetch_skill`); the Wasm canvas shows only the skill NAME on the kind-7 row (display-only). A fetched body may later appear as a `fetch_skill` `tool_run` (tool result preview), never on the kind-7 attach row |
+| Skill attach display (`Skill attached: <slug>`) | **Wasm** (display-only kind 7) + **Vercel** (resolve/catalog inject) | Server folds sticky ∪ always-on into the session's **catalog** inject (after the persona — slug + name + description lines, never bodies; the agent reads a body on demand via `fetch_skill`). Production `/harness` does **not** parse slash (`command: none` on the durable model step); slash `/skill-name` / `/unskill` still lives on legacy `/api/agent` (tests/JSON). The Wasm canvas shows only the skill NAME on the kind-7 row (display-only). A fetched body may later appear as a `fetch_skill` `tool_run` (tool result preview), never on the kind-7 attach row |
 | Selected `modelId` on inference | **DOM host** → **Vercel backend** | Host reads the live Wasm bridge `getSelectedModel()` at submit (never a second source of truth); POST body; server re-authorizes grants + BYOK. The persisted `SessionSnapshot.selectedModel` / `meta.selectedModel` is a **restore + continuity** carrier only — it is applied to the Wasm selection by id at boot/adopt/switch so the next submit reads the same live value it would have after any reopen |
 | Provider secrets / BYOK resolve | **Vercel backend** | DEK ciphertext; never Wasm/client |
 | Per-user MCP config UI | **DOM** | `/settings`, `/settings/mcp` — not dual chat; not Admin |
@@ -117,24 +117,25 @@ a boundary. On reload/hydrate (`pushSessionToBridge`) consecutive `tool_run`
 rows are coalesced via `mergeToolRunPayloads` into scannable groups (rolling at
 `TOOL_RUN_ITEMS_MAX`), never across an assistant/user/error boundary.
 
-**skill_attached display (server → host → Wasm):** `/api/agent` parses leading
-`/skill-name` and `/unskill slug`, resolves attached skill slugs via
-`lib/tenancy/skillInject.ts`, and folds the candidate set (sticky ∪ always-on)
-into system context as a **catalog** `skillsPreamble` appended **after the
-persona** — one line per skill (`<slug> — Name: description`, summaries only),
-with **no bodies** in the system-prefix catalog: the agent pulls a body on
-demand via `fetch_skill`. The durable model step does **not** parse slash
-commands (`command: none`); it re-resolves sticky / always-on slugs only. On the
-`/api/agent` wire it emits a
+**skill_attached display (server → host → Wasm):** Production `/harness`
+folds sticky ∪ always-on into system context as a **catalog** `skillsPreamble`
+appended **after the persona** — one line per skill (`<slug> — Name:
+description`, summaries only), with **no bodies** in the system-prefix catalog:
+the agent pulls a body on demand via `fetch_skill`. The durable model step does
+**not** parse slash commands (`command: none`); it re-resolves sticky /
+always-on slugs only. Typing `/skill-name` in the composer does **not** attach
+a skill. Slash-command `/skill-name` / `/unskill slug` attach still lives on
+legacy `/api/agent` (tests/JSON); that path emits a
 `skill_attached {slug, action, ok}` SSE event (or `skillEvents` on the JSON
-path); the host pushes a display-only bridge message kind **7**
-(`MessageKind.SkillAttached`, session role `skill_attached`) whose text is just
-`Skill attached: <slug>` (or detached / not-attached). **Wasm owns the row
-paint** (`paintSkillAttached`, protocol v12); kind 7 shows only the skill NAME.
-A `fetch_skill` body reaches the client/Wasm only as a tool result (`tool_result`
-preview → `tool_run` row); it is not painted on the kind-7 attach row and is
-never the system-prefix inject (that block is catalog-only: slug + name +
-description). Attachment is session-sticky via
+path) whose `attachedSlugs` is the **sticky persist set** (always-on stripped,
+matching JSON `attachedSkills`). The host pushes a display-only bridge message
+kind **7** (`MessageKind.SkillAttached`, session role `skill_attached`) whose
+text is just `Skill attached: <slug>` (or detached / not-attached). **Wasm owns
+the row paint** (`paintSkillAttached`, protocol v12); kind 7 shows only the
+skill NAME. A `fetch_skill` body reaches the client/Wasm only as a tool result
+(`tool_result` preview → `tool_run` row); it is not painted on the kind-7
+attach row and is never the system-prefix inject (that block is catalog-only:
+slug + name + description). Sticky attachment rides
 `meta.attachedSkills` (slugs only), re-resolved each turn as a catalog line.
 
 ## Key source paths

@@ -260,9 +260,10 @@ read-only `find_skill` / `fetch_skill`, which stay unchanged.
   The catalog is safety-railed by the unchanged **256 KiB**
   `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES` inject ceiling: a maxed CJK
   name+description library of 32 sticky + 8 always-on can exceed that ceiling,
-  so each line is UTF-8-truncated to a per-line budget derived from those
-  count caps — every resolvable slug still appears (no stored-but-never-listed
-  skip). No cap was raised or lowered. Because no body is injected at attach
+  so lines pack by remaining budget (occupancy 1 may use the full 256 KiB; the
+  32+8 count caps are the row ceiling, not a per-line tax) — every resolvable
+  slug still appears (no stored-but-never-listed skip). No cap was raised or
+  lowered. Because no body is injected at attach
   time, an attach is no longer size-rejected: an over-256 KiB skill can attach
   and be catalog-listed, and its body is only ever returned by `fetch_skill` /
   `meta_skill_read` truncated to the 256 KiB `SKILL_FETCH_MAX_RETURN_BYTES`

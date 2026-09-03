@@ -37,6 +37,7 @@ import {
 } from '../../../lib/tenancy/skillInject';
 import { isEnvelopeStore } from '../../../lib/sessions/sessionStore';
 import { isMetaToolName } from '../../../lib/agent/metaTools';
+import { parseAttachedSkills } from '../../../lib/sessionCloudCaps';
 
 export const runtime = 'nodejs';
 // Vercel Pro/Enterprise Fluid extended max is 1800s (30m). 3600s is not offered.
@@ -148,12 +149,15 @@ export async function POST(req: Request): Promise<Response> {
         : parsed.prompt;
 
   // Map skill outcomes to the display-only SSE event shape (slug only — never a
-  // body). Every skill_attached event of a turn carries the SAME final
-  // `attachedSlugs` set (Nit L6) so the host applies it last-writes-wins and can
-  // persist it as sticky `meta.attachedSkills` on the next PUT — the host-carrier
-  // that stops a host PUT from ever wiping the set (adversarial-review Blocker).
-  // Catalog list fail-open still carries the **command-applied** set (`[]` only
-  // when that set is actually empty = detach-all).
+  // body). Every skill_attached event of a turn carries the SAME final sticky
+  // persist set (Nit L6) so the host applies it last-writes-wins and can persist
+  // it as sticky `meta.attachedSkills` on the next PUT — the host-carrier that
+  // stops a host PUT from ever wiping the set (adversarial-review Blocker).
+  // This MUST match JSON `attachedSkills` (always-on stripped). Copying the
+  // catalog `attachedSlugs` (sticky ∪ always-on) would host-PUT an always-on
+  // slug as sticky, so toggling it off would leave it attached until `/unskill`.
+  // Catalog list fail-open still carries the **command-applied sticky** set
+  // (`[]` only when that set is actually empty = detach-all).
   const skillToEvent = (
     e: ResolveSkillResult['events'][number],
   ): AgentStreamEvent => ({
@@ -162,7 +166,9 @@ export async function POST(req: Request): Promise<Response> {
     action: e.action,
     ok: e.ok,
     ...(e.ok ? {} : { reason: e.reason }),
-    ...(skills ? { attachedSlugs: skills.attachedSlugs } : {}),
+    ...(skills
+      ? { attachedSlugs: parseAttachedSkills(skills.attachedSkills) }
+      : {}),
   });
 
   // Server secrets resolved once at the root (phase-2 DI) — scrubbed from
