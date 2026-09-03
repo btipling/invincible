@@ -140,7 +140,8 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
         let matched = query
           ? result.value.filter((s) => {
               // Haystack is the listed catalog line with the same punctuation
-              // normalize as the query, so a copy of `slug — name: desc` hits.
+              // normalize as the query, so a copy of `slug — name: desc` (or
+              // ASCII `slug - name: desc`) hits.
               const hay = normalizeFindText(buildCatalogLine(s));
               return hay.includes(query);
             })
