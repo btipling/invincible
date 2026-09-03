@@ -230,6 +230,40 @@ describe('createSkillTools', () => {
     expect(findOut).not.toMatch(/^review — /m);
   });
 
+  it('find_skill: query copied from a buildCatalogLine hits despite newline/NEL', async () => {
+    const newlineEntry = {
+      slug: 'short-review',
+      name: 'Short review',
+      description: 'short\nreview playbook',
+    };
+    const nelEntry = {
+      slug: 'nel-review',
+      name: 'NEL review',
+      description: 'nel\u0085review playbook',
+    };
+    const us = makeUserSkills({
+      listUserSkills: vi.fn(async () => ({
+        ok: true as const,
+        value: [newlineEntry, nelEntry],
+      })),
+    });
+    const { find_skill } = createSkillTools({ userId: 'user-1', userSkills: us });
+
+    const newlineLine = buildCatalogLine(newlineEntry);
+    const newlineQuery = newlineLine.slice(newlineLine.indexOf(': ') + 2);
+    expect(newlineQuery).toBe('short review playbook');
+    const newlineOut = String(
+      await find_skill.execute!({ query: newlineQuery }, execOpts),
+    );
+    expect(newlineOut).toBe(newlineLine);
+
+    const nelLine = buildCatalogLine(nelEntry);
+    const nelQuery = nelLine.slice(nelLine.indexOf(': ') + 2);
+    expect(nelQuery).toBe('nel review playbook');
+    const nelOut = String(await find_skill.execute!({ query: nelQuery }, execOpts));
+    expect(nelOut).toBe(nelLine);
+  });
+
   it('fetch_skill: unknown slug → not_found with no partial body', async () => {
     const us = makeUserSkills();
     const { fetch_skill } = createSkillTools({ userId: 'user-1', userSkills: us });

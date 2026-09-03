@@ -22,7 +22,7 @@
 import { jsonSchema, tool } from 'ai';
 import { SKILL_FETCH_MAX_RETURN_BYTES, SKILL_FIND_RESULT_MAX } from '../sessionCloudCaps';
 import { SKILL_SLUG_RE } from '../sessionCloudCaps';
-import { buildCatalogLine } from '../tenancy/skillInject';
+import { buildCatalogLine, flattenCatalogText } from '../tenancy/skillInject';
 
 /** System-prompt addendum shown whenever the skill tools are on the tool surface. */
 export const SKILL_TOOLS_SYSTEM_ADDENDUM =
@@ -124,7 +124,12 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
         }
         let matched = query
           ? result.value.filter((s) => {
-              const hay = `${s.slug} ${s.name} ${s.description ?? ''}`.toLowerCase();
+              // Same flatten as buildCatalogLine so a query copied from a
+              // listed line still hits when the stored description has
+              // newline/NEL.
+              const hay = flattenCatalogText(
+                `${s.slug} ${s.name} ${s.description ?? ''}`,
+              ).toLowerCase();
               return hay.includes(query);
             })
           : result.value;
