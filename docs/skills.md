@@ -159,8 +159,10 @@ preview → `tool_run` row), never as the kind-7 attach display.
 
 ## Agent skill-search tools (`find_skill` / `fetch_skill`)
 
-The agent gets two read-only tools, assembled server-side on `/api/agent` in
-`lib/agent/skillTools.ts`:
+The agent gets two read-only tools, assembled server-side on Production
+durable turns (`POST /api/turns` → in-step `assembleDurableToolWorld` →
+`buildToolWorld` from `lib/agent/skillTools.ts`). The legacy `/api/agent`
+tests/JSON path assembles the same tools:
 
 - **`find_skill`** — search your skills by a substring (case-insensitive) across
   their **slug, name, and description**. Returns only summaries (no bodies), up
@@ -188,10 +190,12 @@ either in Settings or through the separate `meta_skill_*` authoring tools below.
 ## Agent skill-authoring tools (`meta_skill_*`)
 
 `meta_skill_*` is the **authoring** counterpart to the read-only search tools
-above. It is a first-party tool family on `/api/agent`
-(`lib/agent/metaTools.ts`), always available, and operates only on the signed-in
+above. It is a first-party tool family assembled on Production durable turns
+(`POST /api/turns` → `assembleDurableToolWorld` / `buildToolWorld` from
+`lib/agent/metaTools.ts`), always available, and operates only on the signed-in
 caller's own skills (same grants as Settings, confused-deputy bound to the
-route user). Tools and their semantics:
+route user). The legacy `/api/agent` tests/JSON path assembles the same family.
+Tools and their semantics:
 
 - **`meta_skill_list`** — list your skills (summaries: id, slug, name,
   description — never body), bounded.

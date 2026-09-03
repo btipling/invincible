@@ -8,6 +8,7 @@ import {
   getSkillById,
   getSkillBySlug,
   skillExistsBySlug,
+  skillExistsBySlugs,
   getSkillVersion,
   listAlwaysOnSkills,
   listSkillVersions,
@@ -230,6 +231,66 @@ describe('userSkills', () => {
     expect(malformed.ok).toBe(true);
     if (!malformed.ok) throw new Error('expected ok');
     expect(malformed.value).toBe(false);
+  });
+
+  it('skillExistsBySlugs is one IN (no body): owner present, other-user/missing/malformed omitted', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    await createUserSkill(
+      { userId, name: 'A', slug: 'a', body: 'body-A-must-not-hydrate' },
+      { db: db as never },
+    );
+    await createUserSkill(
+      { userId, name: 'B', slug: 'b', body: 'body-B-must-not-hydrate' },
+      { db: db as never },
+    );
+
+    const own = await skillExistsBySlugs(userId, ['b', 'a', 'a', 'missing', 'Not-A-Slug'], {
+      db: db as never,
+    });
+    expect(own.ok).toBe(true);
+    if (!own.ok) throw new Error('expected ok');
+    expect([...own.value].sort()).toEqual(['a', 'b']);
+    expect(own.value.every((s) => typeof s === 'string')).toBe(true);
+
+    const empty = await skillExistsBySlugs(userId, [], { db: db as never });
+    expect(empty.ok).toBe(true);
+    if (!empty.ok) throw new Error('expected ok');
+    expect(empty.value).toEqual([]);
+
+    const { userId: otherId } = await seedUser('t2', 'other@example.com');
+    const cross = await skillExistsBySlugs(otherId, ['a', 'b'], {
+      db: db as never,
+    });
+    expect(cross.ok).toBe(true);
+    if (!cross.ok) throw new Error('expected ok');
+    expect(cross.value).toEqual([]);
+  });
+
+  it('skillExistsBySlugs slices IN to sticky+always-on+1 (keeps first N)', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    await createUserSkill(
+      { userId, name: 'First', slug: 's0', body: 'x' },
+      { db: db as never },
+    );
+    const inCapSlug = `s${HARNESS_SESSION_MAX_ATTACHED_SKILLS + USER_ALWAYS_ON_SKILLS_MAX}`;
+    const droppedSlug = `s${HARNESS_SESSION_MAX_ATTACHED_SKILLS + USER_ALWAYS_ON_SKILLS_MAX + 1}`;
+    await createUserSkill(
+      { userId, name: 'InCap', slug: inCapSlug, body: 'x' },
+      { db: db as never },
+    );
+    await createUserSkill(
+      { userId, name: 'Dropped', slug: droppedSlug, body: 'x' },
+      { db: db as never },
+    );
+    const slugs = Array.from(
+      { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS + USER_ALWAYS_ON_SKILLS_MAX + 2 },
+      (_, i) => `s${i}`,
+    );
+    const listed = await skillExistsBySlugs(userId, slugs, { db: db as never });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error('expected ok');
+    expect([...listed.value].sort()).toEqual(['s0', inCapSlug].sort());
+    expect(listed.value).not.toContain(droppedSlug);
   });
 
   it('getSkillById returns the FULL body for the owner; other-user / foreign id → null (no leak)', async () => {

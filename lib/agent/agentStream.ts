@@ -44,9 +44,10 @@ export type AgentStreamEvent =
   | {
       /**
        * Protocol v12 / phase 2 (#517): display-only skill attach/detach outcome.
-       * Carries ONLY the slug + outcome — never a skill body (bodies stay
-       * server-side in the model's system context). Emitted by the server at the
-       * START of a turn (before the model), or alone on a NO-MODEL `/unskill`.
+       * Carries ONLY the slug + outcome — never a skill body. After catalog-not-
+       * bodies, the system context lists catalog names only; the playbook body
+       * reaches the model as a `fetch_skill` `tool_result`. Emitted by the server
+       * at the START of a turn (before the model), or alone on a NO-MODEL `/unskill`.
        */
       type: 'skill_attached';
       slug: string;

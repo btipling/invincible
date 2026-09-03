@@ -2025,6 +2025,10 @@ describe('POST /api/agent', () => {
         ok: true as const,
         value: true,
       })),
+      skillExistsBySlugs: vi.fn(async (_uid: string, slugs: readonly string[]) => ({
+        ok: true as const,
+        value: [...slugs],
+      })),
       listUserSkills: vi.fn(async () => ({
         ok: false as const,
         code: 'unavailable',
@@ -2103,6 +2107,10 @@ describe('POST /api/agent', () => {
         ok: true as const,
         value: true,
       })),
+      skillExistsBySlugs: vi.fn(async (_uid: string, slugs: readonly string[]) => ({
+        ok: true as const,
+        value: [...slugs],
+      })),
       listUserSkills: vi.fn(async () => ({
         ok: false as const,
         code: 'unavailable',
@@ -2174,6 +2182,10 @@ describe('POST /api/agent', () => {
       skillExistsBySlug: vi.fn(async () => ({
         ok: true as const,
         value: true,
+      })),
+      skillExistsBySlugs: vi.fn(async (_uid: string, slugs: readonly string[]) => ({
+        ok: true as const,
+        value: [...slugs],
       })),
       listUserSkills: vi.fn(async () => ({
         ok: false as const,

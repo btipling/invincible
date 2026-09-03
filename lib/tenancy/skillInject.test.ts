@@ -149,11 +149,13 @@ function readerOf(
   rows: Partial<Record<string, { body?: string } | null | boolean>>,
 ): SkillExistsReader {
   return {
-    async skillExistsBySlug(_userId: string, slug: string) {
-      const row = rows[slug];
-      if (row === true) return { ok: true as const, value: true };
-      if (row && typeof row === 'object') return { ok: true as const, value: true };
-      return { ok: true as const, value: false };
+    async skillExistsBySlugs(_userId: string, slugs: readonly string[]) {
+      const present: string[] = [];
+      for (const slug of slugs) {
+        const row = rows[slug];
+        if (row === true || (row && typeof row === 'object')) present.push(slug);
+      }
+      return { ok: true as const, value: present };
     },
   };
 }
@@ -522,7 +524,7 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
   it('store listUserSkills fail-open: unavailable skillExistsBySlug keeps sticky (cannot tell missing)', async () => {
     const store = new FakeStore(makeEnvelope({ attachedSkills: '["kept"]' }));
     const unavailable: SkillExistsReader = {
-      async skillExistsBySlug() {
+      async skillExistsBySlugs() {
         return { ok: false as const, error: 'down' };
       },
     };
@@ -544,7 +546,7 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
   it('fail-open re-attach of already-sticky slug with exists-unavailable stays ok:true', async () => {
     const store = new FakeStore(makeEnvelope({ attachedSkills: '["kept"]' }));
     const unavailable: SkillExistsReader = {
-      async skillExistsBySlug() {
+      async skillExistsBySlugs() {
         return { ok: false as const, error: 'down' };
       },
     };
@@ -564,7 +566,7 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
     expect(res.attachedSkills).toBe('["kept"]');
   });
 
-  it('store listUserSkills fail-open: GC does not call getSkillBySlug (exists-only, one call per slug)', async () => {
+  it('store listUserSkills fail-open: GC does not call getSkillBySlug (exists-only, one batched call)', async () => {
     const sticky = Array.from(
       { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS - 1 },
       (_, i) => `skill-${String(i).padStart(2, '0')}`,
@@ -578,9 +580,12 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
     const reader: SkillExistsReader & {
       getSkillBySlug: (userId: string, slug: string) => Promise<unknown>;
     } = {
-      async skillExistsBySlug(_userId, slug) {
+      async skillExistsBySlugs(_userId, slugs) {
         existsCalls += 1;
-        return { ok: true as const, value: present[slug] === true };
+        return {
+          ok: true as const,
+          value: slugs.filter((slug) => present[slug] === true),
+        };
       },
       async getSkillBySlug() {
         bodyCalls += 1;
@@ -600,8 +605,8 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
     });
     // Lightweight path only: never SELECT a body for fail-open GC / attach.
     expect(bodyCalls).toBe(0);
-    // One exists lookup per unique slug (pending attach is cached, not double-fetched).
-    expect(existsCalls).toBe(sticky.length + 1);
+    // One batched exists lookup for sticky ∪ pending (not one round-trip per slug).
+    expect(existsCalls).toBe(1);
     expect(res.attachedSlugs).toHaveLength(sticky.length + 1);
     expect(res.preamble).not.toContain('SHOULD-NOT-READ');
     expect(res.preamble?.split('\n\n')).toHaveLength(sticky.length + 1);
@@ -680,9 +685,9 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
     const reader: SkillExistsReader & {
       getSkillBySlug: (userId: string, slug: string) => Promise<unknown>;
     } = {
-      async skillExistsBySlug() {
+      async skillExistsBySlugs() {
         existsReads += 1;
-        return { ok: true as const, value: true };
+        return { ok: true as const, value: [] as string[] };
       },
       async getSkillBySlug(_userId: string, slug: string) {
         bodyReads += 1;
@@ -1225,9 +1230,12 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
     );
     let existsCalls = 0;
     const reader: SkillExistsReader = {
-      async skillExistsBySlug(_userId, slug) {
+      async skillExistsBySlugs(_userId, slugs) {
         existsCalls += 1;
-        return { ok: true as const, value: present[slug] === true };
+        return {
+          ok: true as const,
+          value: slugs.filter((slug) => present[slug] === true),
+        };
       },
     };
     const store = new ValidatingStore(
@@ -1256,8 +1264,8 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
     expect(JSON.parse(store.upserts[0]!.meta?.attachedSkills as string)).toHaveLength(
       HARNESS_SESSION_MAX_ATTACHED_SKILLS,
     );
-    // Post-GC refuse: exists walks sticky ∪ always-on; pending is not fetched.
-    expect(existsCalls).toBe(sticky.length + alwaysOn.length);
+    // Post-GC refuse: one batched exists of sticky ∪ always-on ∪ pending.
+    expect(existsCalls).toBe(1);
   });
 
   it('32 sticky minus N missing (fail-open exists): /new-skill attaches this turn', async () => {

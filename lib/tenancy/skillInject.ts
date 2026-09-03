@@ -6,7 +6,7 @@
  * per-turn slash commands:
  *
  *   - `/skill-name`  → attach: existence via catalog summary (happy path) or
- *                      `skillExistsBySlug` (list fail-open). The body is NOT
+ *                      `skillExistsBySlugs` (list fail-open, one IN). The body is NOT
  *                      auto-injected — the slug joins the catalog and the model
  *                      reads the body on demand via `fetch_skill`.
  *   - `/unskill slug` → detach: remove the slug from the sticky set (no-op when
@@ -24,8 +24,8 @@
  *
  * Fail-closed / offline-safe semantics mirror `personaInject`:
  *   - unknown / foreign / malformed slug → NO inject + a `{ ok:false }` event
- *     (never a leak): `skillExistsBySlug` is tenant+user scoped and returns
- *     false for other-user rows.
+ *     (never a leak): `skillExistsBySlugs` is tenant+user scoped and returns
+ *     no other-user slugs.
  *   - store down OR no session key available → fail-open: the attach still
  *     resolves THIS turn, only the sticky `meta.attachedSkills` persist is
  *     skipped when the *envelope* is unavailable (same as persona). A catalog
@@ -36,7 +36,7 @@
  *     drop an in-turn `/skill-name` / `/unskill` (omit = host leave-untouched
  *     restores the pre-command set while events already said `ok: true`) or
  *     wipe the session (`[]` = host detach-all). Sticky/always-on slugs are
- *     existence-checked via `skillExistsBySlug` when exists still answers: a
+ *     existence-checked via `skillExistsBySlugs` when exists still answers: a
  *     missing row is dropped from catalog + sticky (ghost GC); an unavailable
  *     exists keeps the slug (cannot tell missing from store-down). Returning the
  *     in-memory `set` cannot be detach-all unless that set is actually empty.
@@ -124,17 +124,18 @@ export function parseSkillCommand(prompt: string): ParsedSkillCommand {
 }
 
 /**
- * Lightweight existence seam (owned rows only; false = no-row / other-user).
+ * Lightweight existence seam (owned rows only; missing slugs omitted).
  * Used for attach / sticky GC on catalog-list fail-open only — never hydrates
  * a body. Happy-path attach existence is a summary lookup. The store
- * implementation (`skillExistsBySlug`) SELECTs `slug` only.
+ * implementation (`skillExistsBySlugs`) SELECTs `slug` only, one IN + one
+ * membership lookup for the whole candidate set.
  */
 export type SkillExistsReader = {
-  skillExistsBySlug(
+  skillExistsBySlugs(
     userId: string,
-    slug: string,
+    slugs: readonly string[],
   ): Promise<
-    | { ok: true; value: boolean }
+    | { ok: true; value: string[] }
     | { ok: false; error: string }
   >;
 };
@@ -205,7 +206,7 @@ export type ResolveSkillResult = {
    * Final attached slug set (de-duplicated, insert order preserved), including
    * always-on. Always set after a successful resolve — including catalog
    * `listUserSkills` fail-open, where it is the **command-applied** candidate
-   * set after skillExistsBySlug GC (missing sticky drops when exists still
+   * set after skillExistsBySlugs GC (missing sticky drops when exists still
    * answers; unavailable exists keeps the slug). `[]` is a
    * real empty set (host detach-all), never a "we don't know" signal.
    */
@@ -372,7 +373,7 @@ export function truncateUtf8(s: string, maxBytes: number): string {
  * The **command-applied candidate set is persisted and returned** so an
  * in-turn `/skill-name` / `/unskill` is not undone by host leave-untouched,
  * and so `[]` is only ever a real empty set (host detach-all). On that path,
- * missing sticky/always-on slugs are dropped when `skillExistsBySlug` still
+ * missing sticky/always-on slugs are dropped when `skillExistsBySlugs` still
  * answers (ghost GC); an unavailable exists keeps the slug. Each catalog line
  * is flattened to one line and packed by remaining budget (not the worst-case
  * 40-slot share) so occupancy 1 is not chopped while bytes remain; the 32+8
@@ -383,7 +384,7 @@ export function truncateUtf8(s: string, maxBytes: number): string {
  *
  * Sticky re-resolves are SILENT (no event). An **attach** emits exactly one
  * event: `ok:true` when the skill is catalog-listable (or existence-confirmed
- * via `skillExistsBySlug` on list fail-open), or `ok:false` with a reason
+ * via `skillExistsBySlugs` on list fail-open), or `ok:false` with a reason
  * (`unknown skill` / `unavailable` / `invalid slug` / `sticky limit reached
  * (N)`). A new slug is refused when the **post-GC** sticky set is already at
  * `HARNESS_SESSION_MAX_ATTACHED_SKILLS` (the envelope write cap): otherwise
@@ -457,7 +458,7 @@ export async function resolveSkillPreamble(
 
   // Pending attach: existence is confirmed AFTER the catalog list (summaries
   // already prove the row exists — no body read and no exists lookup on the
-  // happy path). On list fail-open we fall back to skillExistsBySlug.
+  // happy path). On list fail-open we fall back to skillExistsBySlugs.
   let pendingAttach: { slug: string } | null = null;
 
   // 2. Apply the current command (attach/detach). Detach is applied now;
@@ -518,27 +519,26 @@ export async function resolveSkillPreamble(
 
   if (storeError) {
     // Fail-open for the full catalog (no name/description this turn). Honor
-    // the command-applied set: existence-check sticky/always-on via
-    // skillExistsBySlug (slug-only SELECT, never the body) when exists still
-    // answers. A missing row is dropped from catalog + sticky (ghost GC);
-    // an unavailable exists keeps the slug. Cap is counted on that post-GC
-    // occupancy, then a pending attach is confirmed the same way. Persist
-    // and return that set. Still emit a slug-only catalog so strip-/slug is
-    // safe — attach ok:true never pairs with an empty preamble while the set
-    // is non-empty. `[]` here is a real empty set. Existence results are
-    // cached per slug so a re-attach is not fetched twice after GC.
-    const existenceCache = new Map<string, { present: boolean; unavailable: boolean }>();
-    const checkExists = async (slug: string) => {
-      const cached = existenceCache.get(slug);
-      if (cached) return cached;
-      const result = await skillExists(userId, slug, userSkills);
-      existenceCache.set(slug, result);
-      return result;
-    };
+    // the command-applied set: one batched skillExistsBySlugs (slug-only IN,
+    // never the body; one membership) covers sticky ∪ always-on ∪ pending.
+    // A missing row is dropped from catalog + sticky (ghost GC); an
+    // unavailable exists keeps the slug. Cap is counted on that post-GC
+    // occupancy, then a pending attach is confirmed from the same batch.
+    // Persist and return that set. Still emit a slug-only catalog so
+    // strip-/slug is safe — attach ok:true never pairs with an empty preamble
+    // while the set is non-empty. `[]` here is a real empty set. Slice-miss
+    // slugs are kept (same as happy-path: do not GC what the IN did not ask).
+    const existence = await skillExistsMany(userId, candidateSlugs, userSkills);
     for (const slug of set) {
-      const exists = await checkExists(slug);
-      // exists answered missing → drop. Present or exists-unavailable → keep.
-      if (!exists.unavailable && !exists.present) continue;
+      // exists answered missing → drop. Present, exists-unavailable, or
+      // slice-miss (not in the IN) → keep.
+      if (
+        !existence.unavailable &&
+        queried.has(slug) &&
+        !existence.present.has(slug)
+      ) {
+        continue;
+      }
       finalSlugs.push(slug);
       // Unquoted slug token — same fetch_skill-safe shape as catalog lines.
       blocks.push(slug);
@@ -560,20 +560,27 @@ export async function resolveSkillPreamble(
         // Match happy-path re-attach: ok:true so the host does not paint
         // "Skill not attached" while preamble still lists the slug.
         events.push({ action: 'attach', slug: pendingAttach.slug, ok: true });
-      } else {
-        const res = await checkExists(pendingAttach.slug);
-        if (!res.present) {
+      } else if (existence.unavailable) {
+        events.push({
+          action: 'attach',
+          slug: pendingAttach.slug,
+          ok: false,
+          reason: 'unavailable',
+        });
+      } else if (!existence.present.has(pendingAttach.slug)) {
+        // Missing only counts as unknown when the IN actually queried it.
+        if (queried.has(pendingAttach.slug)) {
           events.push({
             action: 'attach',
             slug: pendingAttach.slug,
             ok: false,
-            reason: res.unavailable ? 'unavailable' : 'unknown skill',
+            reason: 'unknown skill',
           });
-        } else {
-          finalSlugs.push(pendingAttach.slug);
-          blocks.push(pendingAttach.slug);
-          events.push({ action: 'attach', slug: pendingAttach.slug, ok: true });
         }
+      } else {
+        finalSlugs.push(pendingAttach.slug);
+        blocks.push(pendingAttach.slug);
+        events.push({ action: 'attach', slug: pendingAttach.slug, ok: true });
       }
       pendingAttach = null;
     }
@@ -675,16 +682,17 @@ export async function resolveSkillPreamble(
   };
 }
 
-async function skillExists(
+async function skillExistsMany(
   userId: string,
-  slug: string,
+  slugs: readonly string[],
   userSkills: SkillExistsReader,
-): Promise<{ present: boolean; unavailable: boolean }> {
+): Promise<{ present: Set<string>; unavailable: boolean }> {
+  if (slugs.length === 0) return { present: new Set(), unavailable: false };
   try {
-    const res = await userSkills.skillExistsBySlug(userId, slug);
-    if (!res.ok) return { present: false, unavailable: true };
-    return { present: res.value === true, unavailable: false };
+    const res = await userSkills.skillExistsBySlugs(userId, slugs);
+    if (!res.ok) return { present: new Set(), unavailable: true };
+    return { present: new Set(res.value), unavailable: false };
   } catch {
-    return { present: false, unavailable: true };
+    return { present: new Set(), unavailable: true };
   }
 }
