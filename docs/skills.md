@@ -147,11 +147,13 @@ always-on toggle. If you want persona-specific recommendations instead, see
 
 ### What the UI shows
 
-The transcript shows **only the skill name**: a compact `Skill attached:
-<slug>` row in the canvas. The skill **body is never displayed in the canvas
-and never sent to the client**. The model reads the body on demand via the
-`fetch_skill` tool; it is **not** injected into the system prompt (that block
-is catalog-only: slug + name + description).
+The transcript attach row is **name-only**: a compact `Skill attached:
+<slug>` canvas row (message kind 7, display-only). That kind-7 row and the
+system-prompt catalog are summaries only (slug + name + description) — the
+skill **body is not painted on the attach row** and is **not** injected into
+the system prompt. The model reads the body on demand via `fetch_skill`;
+that body reaches the client/Wasm only as a tool result (`tool_result`
+preview → `tool_run` row), never as the kind-7 attach display.
 
 ## Agent skill-search tools (`find_skill` / `fetch_skill`)
 
@@ -174,8 +176,10 @@ The agent gets two read-only tools, assembled server-side on `/api/agent` in
 Both tools are **bound to the caller's identity**: they operate on the
 route-resolved user only, and no identity a model passes is ever used
 (confused-deputy guard). They are pure **reads** of your own skills — the agent
-does not create, edit, or delete a skill through these two tools, and no body
-ever travels to the client/Wasm. Authoring (create / edit / delete) happens
+does not create, edit, or delete a skill through these two tools. A
+`fetch_skill` body reaches the client/Wasm only as a tool result (`tool_result`
+preview → `tool_run` row); it is not injected into the system prompt and is
+not painted on the kind-7 attach row. Authoring (create / edit / delete) happens
 either in Settings or through the separate `meta_skill_*` authoring tools below.
 
 ## Agent skill-authoring tools (`meta_skill_*`)
@@ -232,8 +236,10 @@ Because a skill is updated/deleted **by id** while read resolves **by slug**,
 call `meta_skill_list` first to obtain the `id`/`slug` you need. Authoring runs
 **as the signed-in user** with immediate effect (no separate confirm surface),
 consistent with Settings' own mutating actions. Skill bodies are non-secret user
-content: they are returned to the model **only** on an explicit `*_read` and
-never reach the client/Wasm. These are write tools — they are distinct from the
+content: they are returned to the model **only** on an explicit `*_read`. A
+read body reaches the client/Wasm only as a tool result (`tool_result` preview
+→ `tool_run` row), never as the kind-7 attach display or the catalog inject.
+These are write tools — they are distinct from the
 read-only `find_skill` / `fetch_skill`, which stay unchanged.
 
 ## Guidance

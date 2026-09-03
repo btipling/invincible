@@ -35,9 +35,12 @@
  *     and return the **command-applied** sticky set: omit/`[]` would either
  *     drop an in-turn `/skill-name` / `/unskill` (omit = host leave-untouched
  *     restores the pre-command set while events already said `ok: true`) or
- *     wipe the session (`[]` = host detach-all). Returning the in-memory
- *     `set` cannot be detach-all unless that set is actually empty. Never
- *     paint attach `ok:true` with an empty catalog this turn.
+ *     wipe the session (`[]` = host detach-all). Sticky/always-on slugs are
+ *     existence-checked via `getSkillBySlug` when get still answers: a missing
+ *     row is dropped from catalog + sticky (ghost GC); an unavailable get
+ *     keeps the slug (cannot tell missing from store-down). Returning the
+ *     in-memory `set` cannot be detach-all unless that set is actually empty.
+ *     Never paint attach `ok:true` with an empty catalog this turn.
  *   - a malformed stored `attachedSkills` fails closed at read (defense in
  *     depth even beyond the write-side `validateMetaFields` branch).
  *
@@ -199,7 +202,8 @@ export type ResolveSkillResult = {
    * Final attached slug set (de-duplicated, insert order preserved), including
    * always-on. Always set after a successful resolve — including catalog
    * `listUserSkills` fail-open, where it is the **command-applied** candidate
-   * set (deleted slugs are not dropped; we could not re-resolve). `[]` is a
+   * set after getSkillBySlug existence GC (missing sticky drops when get still
+   * answers; unavailable get keeps the slug). `[]` is a
    * real empty set (host detach-all), never a "we don't know" signal.
    */
   attachedSlugs: string[];
@@ -298,8 +302,9 @@ export function truncateUtf8(s: string, maxBytes: number): string {
  * in-memory set so the model keeps identity this turn after strip-`/slug`.
  * The **command-applied candidate set is persisted and returned** so an
  * in-turn `/skill-name` / `/unskill` is not undone by host leave-untouched,
- * and so `[]` is only ever a real empty set (host detach-all). Deleted slugs
- * are not dropped on that path (we could not re-resolve). Each catalog line
+ * and so `[]` is only ever a real empty set (host detach-all). On that path,
+ * missing sticky/always-on slugs are dropped when `getSkillBySlug` still
+ * answers (ghost GC); an unavailable get keeps the slug. Each catalog line
  * is flattened to one line and UTF-8-truncated to a per-line budget derived
  * from the existing 32+8 count caps so a maxed CJK library cannot skip a
  * resolvable slug off the preamble while keeping it sticky (the retired
@@ -420,10 +425,12 @@ export async function resolveSkillPreamble(
   if (storeError) {
     // Fail-open for the full catalog (no name/description this turn). Honor
     // the command-applied set: confirm a pending attach via getSkillBySlug
-    // (existence only), do not drop deleted slugs (can't re-resolve), persist
-    // and return the in-memory set. Still emit a slug-only catalog so
-    // strip-/slug is safe — attach ok:true never pairs with an empty
-    // preamble while the set is non-empty. `[]` here is a real empty set.
+    // (existence only), then existence-check remaining sticky/always-on slugs
+    // the same way when get still answers. A missing row is dropped from
+    // catalog + sticky (ghost GC); an unavailable get keeps the slug. Persist
+    // and return that set. Still emit a slug-only catalog so strip-/slug is
+    // safe — attach ok:true never pairs with an empty preamble while the set
+    // is non-empty. `[]` here is a real empty set.
     if (pendingAttach) {
       const res = await readSkillBody(userId, pendingAttach.slug, userSkills);
       if (!res.value) {
@@ -440,6 +447,9 @@ export async function resolveSkillPreamble(
       pendingAttach = null;
     }
     for (const slug of set) {
+      const exists = await readSkillBody(userId, slug, userSkills);
+      // get answered missing → drop. Present or get-unavailable → keep.
+      if (!exists.unavailable && exists.value === null) continue;
       finalSlugs.push(slug);
       // Unquoted slug token — same fetch_skill-safe shape as catalog lines.
       blocks.push(slug);

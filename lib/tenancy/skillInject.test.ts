@@ -385,6 +385,49 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
     expect(res.preamble).toContain('b — B: second');
   });
 
+  it('store listUserSkills fail-open: getSkillBySlug-missing sticky is dropped from catalog and sticky (ghost GC)', async () => {
+    const store = new FakeStore(
+      makeEnvelope({ attachedSkills: '["kept","old-playbook"]' }),
+    );
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'none' },
+      sessionStore: store,
+      sessionKey: KEY,
+      userSkills: readerOf({ kept: { body: 'K' }, 'old-playbook': null }),
+      listUserSkills: failingLister('ok-false'),
+    });
+    // Present sticky stays slug-only; deleted sticky is GC'd, not ghosted.
+    expect(res.preamble).toBe('kept');
+    expect(res.preamble).not.toContain('old-playbook');
+    expect(res.attachedSlugs).toEqual(['kept']);
+    expect(res.attachedSkills).toBe('["kept"]');
+    expect(store.upserts).toHaveLength(1);
+    expect(store.upserts[0]!.meta?.attachedSkills).toBe('["kept"]');
+  });
+
+  it('store listUserSkills fail-open: unavailable getSkillBySlug keeps sticky (cannot tell missing)', async () => {
+    const store = new FakeStore(makeEnvelope({ attachedSkills: '["kept"]' }));
+    const unavailable: SkillBodyReader = {
+      async getSkillBySlug() {
+        return { ok: false as const, error: 'down' };
+      },
+    };
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'none' },
+      sessionStore: store,
+      sessionKey: KEY,
+      userSkills: unavailable,
+      listUserSkills: failingLister('throw'),
+    });
+    // get did not answer — do not GC; slug-only catalog + sticky stay.
+    expect(res.preamble).toBe('kept');
+    expect(res.attachedSlugs).toEqual(['kept']);
+    expect(res.attachedSkills).toBe('["kept"]');
+    expect(store.upserts[0]!.meta?.attachedSkills).toBe('["kept"]');
+  });
+
   it('store listUserSkills error → fail-open: slug-only catalog, command-applied set persisted (not omit, not detach-all)', async () => {
     for (const mode of ['ok-false', 'throw'] as const) {
       const store = new FakeStore(makeEnvelope({ attachedSkills: '["kept"]' }));
