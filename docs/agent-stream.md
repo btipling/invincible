@@ -143,13 +143,16 @@ reserved-`meta` carriers are defined in
   transcript is never put in the event log (O(n²) entity storage / the 2k-event
   slow-replay line). The transcript and the checkpoint live in **Blob**; the
   event log is Vercel's replay history, not the transcript store.
-- **Re-resolve every tool AND model step.** Each `'use step'`
-  (`modelGenerateStep`, `toolExecuteStep`, `persistStep`) re-resolves its world
-  from the serialized `scope` on every invocation — BYOK/grants, the sandbox
-  bind, MCP servers, and `http_get` are re-resolved **inside the step**, never
-  captured as a closure arg. Nothing the orchestrator holds is a live resource;
-  replay re-derives it. This is why a turn survives a Function recycle: the step
-  boundary is the unit of re-resolution.
+- **Re-resolve the tool world; re-construct the persist seam.**
+  `modelGenerateStep` and `toolExecuteStep` re-resolve the tool world
+  (`assembleDurableToolWorld`) from the serialized `scope` on every
+  invocation — BYOK/grants, the sandbox bind, MCP servers, and `http_get`
+  are re-resolved **inside the step**, never captured as a closure arg.
+  `persistStep` re-constructs the Blob+envelope persist seam from the same
+  `scope` (`createPersistStepSeam`); it does not assemble the tool world.
+  Nothing the orchestrator holds is a live resource; replay re-derives it.
+  This is why a turn survives a Function recycle: the step boundary is the
+  unit of re-resolution.
 - **Checkpoint-as-Blob.** The message checkpoint (the bounded `{role, content}[]`
   replay projection the loop truncates with `truncateMessageCheckpoint`) is
   written as its **own Blob object** — row/byte-capped at
