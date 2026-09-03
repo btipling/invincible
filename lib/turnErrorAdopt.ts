@@ -9,7 +9,8 @@
  * stays LWW source of truth. GET `ok` unions F21 queue / usage via
  * `mergeAdoptedUsage`, keeps the fail-fold `turnStatus` / `turnRunId`, and
  * suffixes host-only error/system rows. GET fail freezes `updatedAt` so a
- * later GET wins.
+ * later GET wins — and `shouldHoldCloudPut` keeps the *next* host persist
+ * from stamping `Date.now()` onto that thin snapshot and PUT-clobbering.
  */
 import { mergeAdoptedUsage } from './sessionRepository';
 import type { CloudGetResult } from './sessionRepository';
@@ -28,6 +29,14 @@ export function shouldAdoptWorkerTranscriptOnError(input: {
   );
 }
 
+/** GET miss (freeze `updatedAt: 0`) — hold cloud PUT until a later GET merges. */
+export function shouldHoldCloudPut(adopted: {
+  skipCloud: boolean;
+  session: { updatedAt: number };
+}): boolean {
+  return adopted.skipCloud && adopted.session.updatedAt === 0;
+}
+
 const HOST_ONLY_ROLES = new Set<SessionMessage['role']>(['error', 'system']);
 
 /** Local Turn-ended / system rows the worker checkpoint never carries. */
@@ -39,6 +48,23 @@ export function withHostOnlySuffix(
     if (!HOST_ONLY_ROLES.has(m.role)) return false;
     return !worker.some((w) => w.role === m.role && w.text === m.text);
   });
+  if (extras.length === 0) return worker.slice();
+  return [...worker, ...extras];
+}
+
+/**
+ * Suffix any local-only rows (new user after the wall, ember Turn-ended, …)
+ * the worker snapshot lacks. Used when recovering a GET-miss before the next
+ * host PUT so a follow-up prompt is not dropped and the worker head is not
+ * replaced by a thin flatten.
+ */
+export function withLocalOnlySuffix(
+  worker: ReadonlyArray<SessionMessage>,
+  local: ReadonlyArray<SessionMessage>,
+): SessionMessage[] {
+  const extras = local.filter(
+    (m) => !worker.some((w) => w.role === m.role && w.text === m.text),
+  );
   if (extras.length === 0) return worker.slice();
   return [...worker, ...extras];
 }
@@ -91,4 +117,35 @@ export async function adoptWorkerTranscriptOnError(opts: {
     session: { ...opts.session, updatedAt: 0 },
     skipCloud: true,
   };
+}
+
+/**
+ * After an error-adopt GET miss (`shouldHoldCloudPut`), GET+merge the worker
+ * head before the next host PUT. GET ok → worker transcript + local-only
+ * suffix, `skipCloud: false` (a flatten of the merged head is safe). GET miss
+ * → keep local, `skipCloud: true` (still do not PUT a thin snapshot).
+ */
+export async function recoverWorkerTranscriptBeforePut(opts: {
+  get: ((id: string) => Promise<CloudGetResult>) | undefined;
+  session: SessionSnapshot;
+}): Promise<{ session: SessionSnapshot; skipCloud: boolean }> {
+  if (!opts.get) {
+    return { session: opts.session, skipCloud: true };
+  }
+  try {
+    const pulled = await opts.get(opts.session.id);
+    if (pulled.action === 'ok') {
+      const merged = mergeAdoptedUsage(pulled.snapshot, opts.session);
+      return {
+        session: {
+          ...merged,
+          messages: withLocalOnlySuffix(merged.messages, opts.session.messages),
+        },
+        skipCloud: false,
+      };
+    }
+  } catch {
+    /* still cannot see the worker head */
+  }
+  return { session: opts.session, skipCloud: true };
 }

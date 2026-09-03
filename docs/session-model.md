@@ -308,7 +308,10 @@ reconstruct uses), so the head chunk itself carries prior + this-run history
 even when the pointer was a this-run-only mid-turn overlay — durability is
 worker-owned. After SSE `error` the host adopts that worker transcript (GET)
 for local paint only and **does not** flatten-PUT (a host-clock PUT would
-LWW-clobber the worker pointer — plan #934 / source #933). Host terminal PUT on `done` may additionally
+LWW-clobber the worker pointer — plan #934 / source #933). A GET miss holds
+later host PUTs until a GET merges the worker head. Host GET of a completed
+merged head fail-softs to the head messages when an ancestor walk fails;
+live `running` overlays stay fail-closed (never this-chunk-only). Host terminal PUT on `done` may additionally
 **flatten** to a full trimmed snapshot with **`prev` / `depth` omitted**
 (flatten root).
 Reconstruct walks `prev` when present. Persist refuses to append when the

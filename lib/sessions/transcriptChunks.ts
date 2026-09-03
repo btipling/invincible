@@ -11,7 +11,9 @@
  * and `isBound`. Mid-turn persist is **head-only** — it must not call
  * reconstruct. Terminal persist (plan #934) reconstructs the bound prior
  * chain so the head `messages` are prior + this-run after a this-run-only
- * overlay (the production wall-cap path).
+ * overlay (the production wall-cap path). Host GET of a **completed**
+ * merged head fail-softs to that head when an ancestor walk fails (the head
+ * is self-contained). Mid-turn `running` overlays stay fail-closed.
  */
 import { TRANSCRIPT_CHUNK_WALK_MAX, isRedisSafeOpaqueId } from '../sessionCloudCaps';
 import {
@@ -190,4 +192,36 @@ export function flattenReconstructedBody(
     rec.updatedAt = 0;
   }
   return rec;
+}
+
+/**
+ * Plan #934 / adversarial #935: after a reconstruct walk, pick the blob GET
+ * should parse.
+ *
+ * - Walk ok → flatten the merged chain (existing #886 path).
+ * - Walk fail + live (`running` / `cancelling`) overlay → `null` (fail-closed;
+ *   the head is this-run-only; never this-chunk-only).
+ * - Walk fail + terminal / unset status → flatten the **head's own messages**
+ *   when they parse. The #934 terminal head already carries prior + this-run;
+ *   an ancestor 5xx must not throw that complete head away.
+ */
+export function blobAfterReconstructWalk(input: {
+  sessionId: string;
+  headBody: unknown;
+  walked: ReconstructChainResult;
+  turnStatus?: string;
+}): Record<string, unknown> | null {
+  if (input.walked.ok) {
+    return flattenReconstructedBody(
+      input.headBody,
+      input.sessionId,
+      input.walked.messages,
+    );
+  }
+  const live =
+    input.turnStatus === 'running' || input.turnStatus === 'cancelling';
+  if (live) return null;
+  const headMsgs = snapshotMessagesFromUnknown(input.headBody, input.sessionId);
+  if (headMsgs === null) return null;
+  return flattenReconstructedBody(input.headBody, input.sessionId, headMsgs);
 }

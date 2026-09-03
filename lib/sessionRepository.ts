@@ -29,7 +29,7 @@ import {
   type TurnStatus,
 } from './sessionCloudCaps';
 import {
-  flattenReconstructedBody,
+  blobAfterReconstructWalk,
   reconstructTranscriptChain,
   transcriptChunkPrev,
 } from './sessions/transcriptChunks';
@@ -897,11 +897,16 @@ export function createHttpSessionRepository(
             },
             isBound: (oid) => isRedisSafeOpaqueId(oid),
           });
-          if (!walked.ok) {
-            // Fail-closed: do not paint this-chunk-only on a broken chain.
+          const resolved = blobAfterReconstructWalk({
+            sessionId: id,
+            headBody: blobJson,
+            walked,
+            turnStatus: sanitizeTurnStatus(env.meta?.turnStatus),
+          });
+          if (resolved === null) {
             return cloudGetFromEnvelopeMeta(id, env.meta, null);
           }
-          blobJson = flattenReconstructedBody(blobJson, id, walked.messages);
+          blobJson = resolved;
         }
         return cloudGetFromEnvelopeMeta(id, env.meta, blobJson);
       } catch {

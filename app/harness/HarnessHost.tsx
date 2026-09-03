@@ -39,7 +39,9 @@ import {
 import { cancelTurn } from '../../lib/turnApi';
 import {
   adoptWorkerTranscriptOnError,
+  recoverWorkerTranscriptBeforePut,
   shouldAdoptWorkerTranscriptOnError,
+  shouldHoldCloudPut,
 } from '../../lib/turnErrorAdopt';
 import { decideHotResume, decideSendAttach, shouldPaintAttachFollowUpNote, shouldPaintAttachFollowUpDetachNote, shouldRepostAttachFollowUp, shouldSkipAttachHotResume, shouldKickHotResume, ATTACH_FOLLOW_UP_NOTE, ATTACH_FOLLOW_UP_DETACH_NOTE, isAttachFollowUpHostNote, coldAttachFromSnapshot, type HeapApplied } from '../../lib/turnAttach';
 import {
@@ -314,6 +316,12 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     snapshot: SessionSnapshot;
   } | null>(null);
   const inflightRef = useRef(false);
+  /**
+   * Plan #934 / adversarial #935 — error-adopt GET missed (`updatedAt: 0`).
+   * Hold coalesced cloud PUTs until a later GET merges the worker head so a
+   * follow-up `appendMessage` / `queueAppend` cannot LWW-orphan it.
+   */
+  const holdCloudPutRef = useRef(false);
   /**
    * Plan #887 — session-scoped one-shot auto-continue flag. Clears on the next
    * operator submit. Not persisted.
@@ -594,7 +602,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     (next: SessionSnapshot, opts?: { paintQuota?: boolean; cloud?: boolean }) => {
       writeLocalSession(next, opts);
       // Hybrid cloud push — never blocks the turn; coalesced per session in repo.
-      if (opts?.cloud !== false) repoRef.current?.put(next.id, next);
+      if (opts?.cloud !== false && !holdCloudPutRef.current) repoRef.current?.put(next.id, next);
     },
     [writeLocalSession],
   );
@@ -719,6 +727,17 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       // Adversarial #844: capture the repo object NOW. Unmount cleanup nulls
       // `repoRef` before the abort microtask reaches persistTurn/finally.
       const repo = repoRef.current;
+      // Plan #934 / adversarial #935: a prior error-adopt GET miss left the
+      // worker merged head as LWW source of truth. GET+merge it before this
+      // turn's host PUTs so a follow-up prompt cannot flatten-clobber it.
+      if (holdCloudPutRef.current && repo) {
+        const recovered = await recoverWorkerTranscriptBeforePut({
+          get: (id) => repo.get(id),
+          session: sessionRef.current,
+        });
+        writeLocalSession(recovered.session);
+        if (!recovered.skipCloud) holdCloudPutRef.current = false;
+      }
       const persistTurn = (
         snapshot: SessionSnapshot,
         paintQuota = true,
@@ -909,6 +928,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           if (liveEffort) folded.reasoningEffort = liveEffort;
           else delete folded.reasoningEffort;
           skipCloud = adopted.skipCloud;
+          holdCloudPutRef.current = shouldHoldCloudPut(adopted);
         }
         // Always persist — including user Stop/cancel (and late abort after a finished
         // stream). Dropping session on signal.aborted left SessionStore behind Wasm:

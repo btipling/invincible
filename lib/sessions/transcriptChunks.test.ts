@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { TRANSCRIPT_CHUNK_WALK_MAX } from '../sessionCloudCaps';
 import {
+  blobAfterReconstructWalk,
   flattenReconstructedBody,
   reconstructTranscriptChain,
   transcriptChunkChainLength,
@@ -213,6 +214,61 @@ describe('flatten', () => {
     expect((body.messages as { text: string }[]).map((m) => m.text)).toEqual([
       'x',
       'y',
+    ]);
+  });
+});
+
+describe('blobAfterReconstructWalk (plan #934 / adversarial #935)', () => {
+  const missing = {
+    ok: false as const,
+    code: 'missing' as const,
+    error: 'bound transcript prev object is missing',
+  };
+
+  it('walk ok flattens the reconstructed chain', () => {
+    const head = snap([msg('m2', 'this-run')], 't_prev', 2);
+    const body = blobAfterReconstructWalk({
+      sessionId: SESSION,
+      headBody: head,
+      walked: { ok: true, messages: [msg('m1', 'prior'), msg('m2', 'this-run')] },
+    });
+    expect(body).not.toBeNull();
+    expect(body?.prev).toBeUndefined();
+    expect((body?.messages as { text: string }[]).map((m) => m.text)).toEqual([
+      'prior',
+      'this-run',
+    ]);
+  });
+
+  it('walk fail on a running overlay fail-closes (not this-chunk-only)', () => {
+    const head = snap([msg('m2', 'this-run')], 't_missing', 2);
+    expect(
+      blobAfterReconstructWalk({
+        sessionId: SESSION,
+        headBody: head,
+        walked: missing,
+        turnStatus: 'running',
+      }),
+    ).toBeNull();
+  });
+
+  it('walk fail on a completed #934 head fail-softs to the head messages', () => {
+    const head = snap(
+      [msg('h1', 'turn-1 user'), msg('h2', 'wrap-up: 3 tests still fail')],
+      't_overlay',
+      3,
+    );
+    const body = blobAfterReconstructWalk({
+      sessionId: SESSION,
+      headBody: head,
+      walked: missing,
+      turnStatus: 'completed',
+    });
+    expect(body).not.toBeNull();
+    expect(body?.prev).toBeUndefined();
+    expect((body?.messages as { text: string }[]).map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'wrap-up: 3 tests still fail',
     ]);
   });
 });

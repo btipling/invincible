@@ -2,8 +2,11 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   adoptWorkerTranscriptOnError,
+  recoverWorkerTranscriptBeforePut,
   shouldAdoptWorkerTranscriptOnError,
+  shouldHoldCloudPut,
   withHostOnlySuffix,
+  withLocalOnlySuffix,
 } from './turnErrorAdopt';
 import { createEmptySession } from './sessionStore';
 import type { CloudGetResult } from './sessionRepository';
@@ -152,6 +155,74 @@ describe('adoptWorkerTranscriptOnError', () => {
   });
 });
 
+describe('shouldHoldCloudPut / recoverWorkerTranscriptBeforePut (adversarial #935)', () => {
+  it('holds only on skipCloud + frozen updatedAt (GET miss)', () => {
+    expect(shouldHoldCloudPut({ skipCloud: true, session: { updatedAt: 0 } })).toBe(
+      true,
+    );
+    expect(shouldHoldCloudPut({ skipCloud: true, session: { updatedAt: 8_000 } })).toBe(
+      false,
+    );
+    expect(shouldHoldCloudPut({ skipCloud: false, session: { updatedAt: 0 } })).toBe(
+      false,
+    );
+  });
+
+  it('withLocalOnlySuffix keeps a follow-up user the worker snapshot lacks', () => {
+    const worker = [
+      { id: 'h1', role: 'user' as const, text: 'run the suite', at: 1 },
+      { id: 'h2', role: 'assistant' as const, text: 'wrap-up', at: 2 },
+    ];
+    const local = [
+      { id: 'e1', role: 'error' as const, text: 'Turn ended · turn wall clock exceeded', at: 3 },
+      { id: 'u2', role: 'user' as const, text: 'fix the remaining 3', at: 4 },
+    ];
+    expect(withLocalOnlySuffix(worker, local).map((m) => m.text)).toEqual([
+      'run the suite',
+      'wrap-up',
+      'Turn ended · turn wall clock exceeded',
+      'fix the remaining 3',
+    ]);
+  });
+
+  it('GET ok recover suffixes the follow-up and clears skipCloud so a flatten PUT is safe', async () => {
+    const local = createEmptySession('sess_1');
+    local.updatedAt = 0;
+    local.messages = [
+      { id: 'e1', role: 'error', text: 'Turn ended · turn wall clock exceeded', at: 9 },
+      { id: 'u2', role: 'user', text: 'fix the remaining 3', at: 10 },
+    ];
+    const worker = createEmptySession('sess_1');
+    worker.updatedAt = 8_000;
+    worker.messages = [
+      { id: 'h1', role: 'user', text: 'run the suite', at: 1 },
+      { id: 'h2', role: 'assistant', text: 'wrap-up: 3 tests still fail', at: 2 },
+    ];
+    const got = await recoverWorkerTranscriptBeforePut({
+      get: async () => ({ action: 'ok', snapshot: worker }),
+      session: local,
+    });
+    expect(got.skipCloud).toBe(false);
+    expect(got.session.messages.map((m) => m.text)).toEqual([
+      'run the suite',
+      'wrap-up: 3 tests still fail',
+      'Turn ended · turn wall clock exceeded',
+      'fix the remaining 3',
+    ]);
+  });
+
+  it('GET miss recover keeps skipCloud so a thin snapshot is not PUT', async () => {
+    const local = createEmptySession('sess_1');
+    local.updatedAt = 0;
+    const got = await recoverWorkerTranscriptBeforePut({
+      get: async () => ({ action: 'error', status: 500, message: 'boom' }),
+      session: local,
+    });
+    expect(got.skipCloud).toBe(true);
+    expect(got.session.updatedAt).toBe(0);
+  });
+});
+
 describe('HarnessHost adopt glue (plan #934 adversarial)', () => {
   it('skips cloud PUT after error adopt; never stamps Date.now() on the GET-ok path', () => {
     const src = readFileSync('app/harness/HarnessHost.tsx', 'utf8');
@@ -162,7 +233,11 @@ describe('HarnessHost adopt glue (plan #934 adversarial)', () => {
     const glue = src.slice(start, end);
     expect(glue).toContain('adoptWorkerTranscriptOnError');
     expect(glue).toContain('skipCloud = adopted.skipCloud');
+    expect(glue).toContain('shouldHoldCloudPut');
     expect(glue).not.toContain('Date.now()');
     expect(src).toContain('cloud: skipCloud ? false : undefined');
+    expect(src).toContain('holdCloudPutRef');
+    expect(src).toContain('recoverWorkerTranscriptBeforePut');
+    expect(src).toContain('!holdCloudPutRef.current');
   });
 });
