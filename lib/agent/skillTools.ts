@@ -96,10 +96,14 @@ function boundBody(slug: string, body: string): string {
  * line still hits. `buildCatalogLine` uses an em-dash and a colon
  * (`slug — name: desc`) while matching is otherwise flattened spaces;
  * treating those marks as spaces on both sides makes a full-line or
- * punctuated `name: desc` copy match. Hyphens inside slugs stay intact.
+ * punctuated `name: desc` copy match. Tokenizers/copy-paste often replace
+ * the em-dash with ASCII ` - `; a hyphen with spaces on both sides is a
+ * separator too. Hyphens inside slugs (`create-plan`) stay intact.
  */
 function normalizeFindText(s: string): string {
-  return flattenCatalogText(s.replace(/[\u2013\u2014:]+/g, ' ')).toLowerCase();
+  return flattenCatalogText(
+    s.replace(/[\u2013\u2014:]+/g, ' ').replace(/\s+-\s+/g, ' '),
+  ).toLowerCase();
 }
 
 export function createSkillTools(opts: CreateSkillToolsOptions) {

@@ -296,6 +296,21 @@ describe('createSkillTools', () => {
     );
     expect(newlineOut).toBe(newlineLine);
 
+    // Tokenizer/copy-paste often replaces the em-dash with ASCII ` - `.
+    const asciiDashLine = newlineLine.replace(/\u2014/g, '-');
+    expect(asciiDashLine).toContain(' - ');
+    expect(asciiDashLine).not.toContain('\u2014');
+    const asciiOut = String(
+      await find_skill.execute!({ query: asciiDashLine }, execOpts),
+    );
+    expect(asciiOut).toBe(newlineLine);
+
+    // Slug hyphens are not separators (`short-review` still hits).
+    const slugOut = String(
+      await find_skill.execute!({ query: 'short-review' }, execOpts),
+    );
+    expect(slugOut).toBe(newlineLine);
+
     // Punctuated `name: desc` (colon, no em-dash) also hits the same row.
     const punctuated = `${newlineEntry.name}: ${flattenCatalogText(newlineEntry.description)}`;
     const punctuatedOut = String(
