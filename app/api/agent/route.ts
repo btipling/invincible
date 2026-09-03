@@ -152,7 +152,8 @@ export async function POST(req: Request): Promise<Response> {
   // `attachedSlugs` set (Nit L6) so the host applies it last-writes-wins and can
   // persist it as sticky `meta.attachedSkills` on the next PUT — the host-carrier
   // that stops a host PUT from ever wiping the set (adversarial-review Blocker).
-  // Catalog list fail-open omits `attachedSlugs` (`[]` = detach-all; omit = leave).
+  // Catalog list fail-open still carries the **command-applied** set (`[]` only
+  // when that set is actually empty = detach-all).
   const skillToEvent = (
     e: ResolveSkillResult['events'][number],
   ): AgentStreamEvent => ({
@@ -161,9 +162,7 @@ export async function POST(req: Request): Promise<Response> {
     action: e.action,
     ok: e.ok,
     ...(e.ok ? {} : { reason: e.reason }),
-    ...(skills?.attachedSlugs !== undefined
-      ? { attachedSlugs: skills.attachedSlugs }
-      : {}),
+    ...(skills ? { attachedSlugs: skills.attachedSlugs } : {}),
   });
 
   // Server secrets resolved once at the root (phase-2 DI) — scrubbed from
@@ -354,8 +353,8 @@ export async function POST(req: Request): Promise<Response> {
         summarizeSkillEvents(skills?.events ?? []) || 'No prompt to send.';
       const sseEvents = (skills?.events ?? []).map(skillToEvent);
       const skillEvents = skills?.events?.length ? skills.events : undefined;
-      // Catalog fail-open omits attachedSkills (undefined). `"[]"` is detach-all
-      // and is still spread; omit = host leave-untouched.
+      // Catalog fail-open still carries the command-applied sticky set.
+      // `"[]"` is detach-all (the set is actually empty) and still spreads.
       const attachedSkills = skills?.attachedSkills;
       if (stream) {
         const encoder = new TextEncoder();
@@ -395,7 +394,8 @@ export async function POST(req: Request): Promise<Response> {
       // still carry the current sticky set, so the host folds it before persisting
       // — otherwise a host PUT without slugs can wipe the blob copy of a skill that
       // was attached this turn (the envelope mirror still has it, but GET may not).
-      // Catalog list fail-open leaves `attachedSkills` undefined (omit, not `"[]"`).
+      // Catalog list fail-open still carries the command-applied sticky set
+      // (`"[]"` only when that set is empty = detach-all).
       return Response.json(
         {
           error,
@@ -708,7 +708,7 @@ export async function POST(req: Request): Promise<Response> {
           error: 'Empty model response.',
           // Fold-before-persist (fail/cancel): the 502 after resolve still carries
           // the sticky set so the host never wipes a skill attached this turn.
-          // Catalog list fail-open omits the field (undefined), never `"[]"`.
+          // Catalog list fail-open still carries the command-applied set.
           ...(skills?.attachedSkills ? { attachedSkills: skills.attachedSkills } : {}),
         },
         { status: 502 },
@@ -725,7 +725,7 @@ export async function POST(req: Request): Promise<Response> {
       // completion; absent when the provider reported no usable token counts.
       ...(usage ? { usage } : {}),
       ...(skills?.events?.length ? { skillEvents: skills.events } : {}),
-      // Catalog fail-open omits attachedSkills; `"[]"` (detach-all) still spreads.
+      // Catalog fail-open still carries the command-applied set; `"[]"` (detach-all) still spreads.
       ...(skills?.attachedSkills ? { attachedSkills: skills.attachedSkills } : {}),
     });
   } catch (err) {
@@ -738,7 +738,7 @@ export async function POST(req: Request): Promise<Response> {
           // host PUT that wipes a skill attached this turn (fold-before-persist
           // incl. fail/cancel). For the stream path the `skill_attached` events
           // already folded it; this guards the JSON (non-stream) abort path.
-          // Catalog list fail-open omits the field (undefined), never `"[]"`.
+          // Catalog list fail-open still carries the command-applied set.
           ...(skills?.attachedSkills ? { attachedSkills: skills.attachedSkills } : {}),
         },
         { status: 499 },
@@ -755,7 +755,7 @@ export async function POST(req: Request): Promise<Response> {
         // fail/cancel"): even a FAILED model turn carries the session's current
         // sticky set, so the host folds it before persisting and a host PUT never
         // wipes a skill that was attached this turn before the model errored.
-        // Catalog list fail-open omits the field (undefined), never `"[]"`.
+        // Catalog list fail-open still carries the command-applied set.
         ...(skills?.attachedSkills ? { attachedSkills: skills.attachedSkills } : {}),
       },
       { status },

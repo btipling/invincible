@@ -175,7 +175,7 @@ describe('parseAttachedSkills / serializeAttachedSkills (caps seam)', () => {
   });
 });
 
-describe('buildSkillBlock (legacy body-block helper, kept for the fallback path)', () => {
+describe('buildSkillBlock (retired body-block helper)', () => {
   it('labels the block with the slug', () => {
     expect(buildSkillBlock('create-plan', 'Plan sections:\n- goals')).toBe(
       '### Skill attached: create-plan\nPlan sections:\n- goals',
@@ -337,7 +337,7 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
     expect(res.preamble).toContain('`b` — B: second');
   });
 
-  it('store listUserSkills error → fail-open: no catalog, no sticky rewrite, no host detach-all', async () => {
+  it('store listUserSkills error → fail-open: no catalog, command-applied set persisted (not omit, not detach-all)', async () => {
     for (const mode of ['ok-false', 'throw'] as const) {
       const store = new FakeStore(makeEnvelope({ attachedSkills: '["kept"]' }));
       const res = await resolveSkillPreamble({
@@ -349,13 +349,80 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
         listUserSkills: failingLister(mode),
       });
       expect(res.preamble).toBeUndefined();
-      // Host contract: omit = leave the set; `[]` / `"[]"` = detach-all.
-      // Catalog fail-open must omit (or preserve), never signal detach-all.
-      expect(res.attachedSlugs).toBeUndefined();
-      expect(res.attachedSkills).toBeUndefined();
-      expect(store.upserts).toHaveLength(0);
-      expect(store.env?.meta?.attachedSkills).toBe('["kept"]');
+      // Command-applied set is returned and persisted so a later attach/detach
+      // on this path is honored. `[]` would be host detach-all; omit would
+      // undo an in-turn command. `["kept"]` is the pre-command set here.
+      expect(res.attachedSlugs).toEqual(['kept']);
+      expect(res.attachedSkills).toBe('["kept"]');
+      expect(store.upserts).toHaveLength(1);
+      expect(store.upserts[0]!.meta?.attachedSkills).toBe('["kept"]');
     }
+  });
+
+  it('store listUserSkills error + /skill-name attach persists the new slug (events ok:true is honest)', async () => {
+    const store = new FakeStore(makeEnvelope({ attachedSkills: '["kept"]' }));
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'attach', slug: 'create-plan', rest: '' },
+      sessionStore: store,
+      sessionKey: KEY,
+      userSkills: readerOf({
+        kept: { body: 'K' },
+        'create-plan': { body: 'PLAN BODY' },
+      }),
+      listUserSkills: failingLister('ok-false'),
+    });
+    expect(res.preamble).toBeUndefined();
+    expect(readEventActions(res)).toEqual([
+      { action: 'attach', slug: 'create-plan', ok: true },
+    ]);
+    expect(res.attachedSlugs).toEqual(['kept', 'create-plan']);
+    expect(res.attachedSkills).toBe('["kept","create-plan"]');
+    expect(store.upserts[0]!.meta?.attachedSkills).toBe('["kept","create-plan"]');
+  });
+
+  it('store listUserSkills error + /unskill persists the removal (events ok:true is honest)', async () => {
+    const store = new FakeStore(makeEnvelope({ attachedSkills: '["kept","other"]' }));
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'detach', slug: 'kept', rest: '' },
+      sessionStore: store,
+      sessionKey: KEY,
+      userSkills: readerOf({ kept: { body: 'K' }, other: { body: 'O' } }),
+      listUserSkills: failingLister('throw'),
+    });
+    expect(res.preamble).toBeUndefined();
+    expect(readEventActions(res)).toEqual([
+      { action: 'detach', slug: 'kept', ok: true },
+    ]);
+    expect(res.attachedSlugs).toEqual(['other']);
+    expect(res.attachedSkills).toBe('["other"]');
+    expect(store.upserts[0]!.meta?.attachedSkills).toBe('["other"]');
+  });
+
+  it('happy-path attach does not hydrate the body (existence is a summary lookup)', async () => {
+    let bodyReads = 0;
+    const reader: SkillBodyReader = {
+      async getSkillBySlug(_userId, slug) {
+        bodyReads += 1;
+        return { ok: true as const, value: { body: `BODY-${slug}` } };
+      },
+    };
+    const store = new FakeStore(makeEnvelope({}));
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'attach', slug: 'create-plan', rest: '' },
+      sessionStore: store,
+      sessionKey: KEY,
+      userSkills: reader,
+      listUserSkills: listerOf(CATALOG_ROWS),
+    });
+    expect(bodyReads).toBe(0);
+    expect(readEventActions(res)).toEqual([
+      { action: 'attach', slug: 'create-plan', ok: true },
+    ]);
+    expect(res.preamble).toContain('`create-plan` — Create plan: writes a plan issue');
+    expect(res.preamble).not.toContain('BODY-create-plan');
   });
 
   it('unknown slug attach still fails closed (no leak, no sticky add)', async () => {
@@ -511,52 +578,5 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
     });
     expect(res.events[0]).toMatchObject({ action: 'attach', ok: false, reason: 'invalid slug' });
     expect(res.preamble).toBeUndefined();
-  });
-});
-
-describe('resolveSkillPreamble — legacy fallback (no listUserSkills seam)', () => {
-  it('without the lister seam, bodies are still folded greedily under the 256 KiB inject budget', async () => {
-    const store = new FakeStore(makeEnvelope({ attachedSkills: '["a","b"]' }));
-    const res = await resolveSkillPreamble({
-      userId: KEY.userId,
-      command: { type: 'none' },
-      sessionStore: store,
-      sessionKey: KEY,
-      userSkills: readerOf({ a: { body: 'Body A' }, b: { body: 'Body B' } }),
-      // no listUserSkills — legacy callers keep the body-block inject
-    });
-    expect(res.preamble).toContain('### Skill attached: a');
-    expect(res.preamble).toContain('Body A');
-    expect(res.preamble).toContain('### Skill attached: b');
-    expect(res.attachedSlugs).toEqual(['a', 'b']);
-  });
-
-  it('legacy fallback (no lister seam): over-budget attach commits + body drops from preamble (no too_large on this path)', async () => {
-    // The attach-time too_large/budget gating lived in the old step-3 budget
-    // gate, which is retired. On the legacy fallback the greedy build below
-    // simply refuses to inject the oversized body while the slug stays
-    // attached (never a silent dis-attach) — the "silent lie" class the
-    // catalog path has no use for.
-    const bigBody = 'x'.repeat(HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES + 1);
-    const store = new FakeStore(makeEnvelope({}));
-    const res = await resolveSkillPreamble({
-      userId: KEY.userId,
-      command: { type: 'attach', slug: 'huge', rest: '' },
-      sessionStore: store,
-      sessionKey: KEY,
-      userSkills: readerOf({ huge: { body: bigBody } }),
-    });
-    // No budget gate at attach (step 3 is budget-free); the greedy build is
-    // the final word on what is injected this turn.
-    expect(res.events[0]).toMatchObject({
-      action: 'attach',
-      slug: 'huge',
-      ok: true,
-    });
-    // The oversized body is NOT injected (over the remaining budget)…
-    expect(res.preamble).toBeUndefined();
-    // …but the slug stays attached (never a silent dis-attach).
-    expect(res.attachedSlugs).toEqual(['huge']);
-    expect(store.upserts[0]!.meta?.attachedSkills).toBe('["huge"]');
   });
 });

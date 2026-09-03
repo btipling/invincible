@@ -1950,7 +1950,7 @@ describe('POST /api/agent', () => {
     expect(body.attachedSkills).toBe('["create-plan"]');
   });
 
-  it('catalog listUserSkills fail-open omits attachedSkills so the host does not detach-all', async () => {
+  it('catalog listUserSkills fail-open returns the command-applied sticky set (not omit, not detach-all)', async () => {
     mockAuthedSession();
     mockMcpEmpty();
     mockByokOk();
@@ -2006,15 +2006,15 @@ describe('POST /api/agent', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { attachedSkills?: string; text?: string };
     expect(body.text).toBe('ok');
-    // Omit = host leave-untouched. `"[]"` would wipe sticky on the next PUT.
-    expect(body.attachedSkills).toBeUndefined();
-    expect(fakeSessionStore.upsertEnvelope).not.toHaveBeenCalled();
+    // Command-applied set is returned so the host folds it (not omit, not `"[]"`).
+    expect(body.attachedSkills).toBe('["create-plan"]');
+    expect(fakeSessionStore.upsertEnvelope).toHaveBeenCalled();
     const parsed = parseJsonAgentBody(res, body);
     expect(parsed.ok).toBe(true);
-    if (parsed.ok) expect(parsed.attachedSlugs).toBeUndefined();
+    if (parsed.ok) expect(parsed.attachedSlugs).toEqual(['create-plan']);
   });
 
-  it('catalog listUserSkills fail-open omits attachedSkills on 502 (no host wipe)', async () => {
+  it('catalog listUserSkills fail-open still carries attachedSkills on 502 (no host wipe)', async () => {
     mockAuthedSession();
     mockMcpEmpty();
     mockByokOk();
@@ -2070,14 +2070,14 @@ describe('POST /api/agent', () => {
     expect(res.status).toBe(502);
     const body = (await res.json()) as { attachedSkills?: string; error?: string };
     expect(body.error).toBeTruthy();
-    expect(body.attachedSkills).toBeUndefined();
-    expect(fakeSessionStore.upsertEnvelope).not.toHaveBeenCalled();
+    expect(body.attachedSkills).toBe('["create-plan"]');
+    expect(fakeSessionStore.upsertEnvelope).toHaveBeenCalled();
     const parsed = parseJsonAgentBody(res, body);
     expect(parsed.ok).toBe(false);
-    if (!parsed.ok) expect(parsed.attachedSlugs).toBeUndefined();
+    if (!parsed.ok) expect(parsed.attachedSlugs).toEqual(['create-plan']);
   });
 
-  it('catalog listUserSkills fail-open: skill_attached omits attachedSlugs (not detach-all)', async () => {
+  it('catalog listUserSkills fail-open: skill_attached carries command-applied attachedSlugs', async () => {
     mockAuthedSession();
     mockMcpEmpty();
     mockByokOk();
@@ -2151,9 +2151,10 @@ describe('POST /api/agent', () => {
     const skillEv = events.find((e) => e.type === 'skill_attached');
     expect(skillEv).toBeTruthy();
     expect(skillEv?.slug).toBe('create-plan');
-    // Omit = leave; `[]` would fold detach-all on the live stream.
-    expect(skillEv?.attachedSlugs).toBeUndefined();
-    expect(fakeSessionStore.upsertEnvelope).not.toHaveBeenCalled();
+    // Command-applied set includes the new attach + the pre-command sticky.
+    // `[]` would fold detach-all; omit would drop the in-turn attach.
+    expect(skillEv?.attachedSlugs).toEqual(['kept', 'create-plan']);
+    expect(fakeSessionStore.upsertEnvelope).toHaveBeenCalled();
   });
 
   it('seeds resolve from the envelope activeSandboxId when a sessionId is present, no body sandboxId (blocker B1 A1)', async () => {

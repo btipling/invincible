@@ -16,20 +16,26 @@
  *
  * Unlike the locked persona (`meta.personaSnapshot`), skills are **staff of
  * work**, not identity: we store **slugs only** in `meta.attachedSkills` and
- * re-resolve their bodies from the store every turn. So a mid-session skill edit
- * applies next turn, and a deleted skill silently stops attaching. `meta` stays
- * small (slugs ≪ the meta cap).
+ * re-resolve their **summaries** from the store every turn into a catalog
+ * (bodies ride on-demand `fetch_skill`). So a mid-session description edit
+ * applies next turn, a body edit applies on the next fetch, and a deleted
+ * skill silently drops from the catalog. `meta` stays small (slugs ≪ the
+ * meta cap).
  *
  * Fail-closed / offline-safe semantics mirror `personaInject`:
  *   - unknown / foreign / malformed slug → NO inject + a `{ ok:false }` event
  *     (never a leak): `getSkillBySlug` is tenant+user scoped and returns null
  *     for other-user rows.
  *   - store down OR no session key available → fail-open: the attach still
- *     resolves + injects THIS turn, only the sticky `meta.attachedSkills`
- *     persist is skipped (same as persona). A catalog `listUserSkills` failure
- *     is also fail-open: no catalog block, no sticky rewrite, and the return
- *     **omits** `attachedSkills` / `attachedSlugs` (never `"[]"` / `[]` —
- *     that is the host detach-all signal; omit = leave the host set untouched).
+ *     resolves THIS turn, only the sticky `meta.attachedSkills` persist is
+ *     skipped when the *envelope* is unavailable (same as persona). A catalog
+ *     `listUserSkills` failure is also fail-open for the **preamble** (no
+ *     catalog block, the round still runs with the base system) but MUST
+ *     still persist and return the **command-applied** sticky set: omit/`[]`
+ *     would either drop an in-turn `/skill-name` / `/unskill` (omit = host
+ *     leave-untouched restores the pre-command set while events already said
+ *     `ok: true`) or wipe the session (`[]` = host detach-all). Returning the
+ *     in-memory `set` cannot be detach-all unless that set is actually empty.
  *   - a malformed stored `attachedSkills` fails closed at read (defense in
  *     depth even beyond the write-side `validateMetaFields` branch).
  *
@@ -108,8 +114,9 @@ export function parseSkillCommand(prompt: string): ParsedSkillCommand {
 
 /**
  * Skill-body read seam (owned rows only; null = no-row / other-user).
- * Used for attach existence checks only — bodies are never injected by the
- * catalog path (the model pulls them via `fetch_skill`).
+ * Used for attach existence checks on catalog-list fail-open only — bodies
+ * are never injected by the catalog path (the model pulls them via
+ * `fetch_skill`). Happy-path attach existence is a summary lookup.
  */
 export type SkillBodyReader = {
   getSkillBySlug(
@@ -123,7 +130,8 @@ export type SkillBodyReader = {
 
 /**
  * Skill-summary list seam for the catalog. Mirrors the read-only discovery
- * surface (`listUserSkills` → summaries only, no body). Fail-open on error.
+ * surface (`listUserSkills` → summaries only, no body). Fail-open on error
+ * for the preamble; the command-applied sticky set is still returned.
  */
 export type SkillSummaryLister = {
   listUserSkills(
@@ -169,28 +177,31 @@ export type ResolveSkillCommandInput = {
   sessionKey?: SessionRecordKey;
   userSkills: SkillBodyReader;
   /**
-   * Skill-summary lister (plan #557 / #931). When set, the inject is a bounded
-   * CATALOG built from `listUserSkills` summaries (no bodies). When omitted,
-   * the resolver falls back to the legacy body-block build (callers without a
-   * lister — kept so the seam stays optional and tests can exercise both).
+   * Skill-summary lister (plan #557 / #931). REQUIRED — the inject is a bounded
+   * CATALOG built from `listUserSkills` summaries (no bodies). Omitting this
+   * used to silently select the legacy greedy body-block inject (up to 256 KiB
+   * of playbooks back in the stable prefix); that fallback is gone.
    */
-  listUserSkills?: SkillSummaryLister;
+  listUserSkills: SkillSummaryLister;
 };
 
 export type ResolveSkillResult = {
   /** Labelled system-preamble block(s) to append AFTER the persona preamble. */
   preamble?: string;
   /**
-   * Final attached slug set (de-duplicated, insert order preserved).
-   * Omitted on catalog `listUserSkills` fail-open so the host leave-untouched
-   * contract applies (`[]` would be detach-all).
+   * Final attached slug set (de-duplicated, insert order preserved), including
+   * always-on. Always set after a successful resolve — including catalog
+   * `listUserSkills` fail-open, where it is the **command-applied** candidate
+   * set (deleted slugs are not dropped; we could not re-resolve). `[]` is a
+   * real empty set (host detach-all), never a "we don't know" signal.
    */
-  attachedSlugs?: string[];
+  attachedSlugs: string[];
   /**
    * JSON-array string writer value for sticky persist / host fold.
-   * `undefined` = omit (leave host set); `"[]"` = explicit detach-all.
+   * Always the command-applied sticky set (always-on stripped). `"[]"` is
+   * explicit detach-all (the set is actually empty), never a store-error signal.
    */
-  attachedSkills: string | undefined;
+  attachedSkills: string;
   /** Per-command display events (attach/detach outcomes) — sticky re-resolves are silent. */
   events: SkillEvent[];
 };
@@ -225,29 +236,28 @@ function byteLength(s: string): number {
  * `skill_attached` rows) plus a `preamble` to append after the persona, plus
  * the final slug set to persist best-effort.
  *
- * **Catalog inject (plan #557 / #931):** when `listUserSkills` is provided the
- * preamble is a bounded CATALOG of the candidate set (sticky ∪ always-on,
- * exactly the slugs that used to be body-injected): one line per skill
- * (slug + name + one-line description), built from summaries only — bodies are
- * pulled on demand via `fetch_skill`. A sticky/always-on slug whose skill was
- * deleted has no summary and silently drops from the catalog (same as it
- * silently stopped body-injecting). A store error → fail-open: no catalog
- * block, no sticky rewrite, and no host detach-all signal (`attachedSkills` /
- * `attachedSlugs` omitted — never `"[]"` / `[]`). The round still runs with
- * the base system. The catalog is bounded by
- * the `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES` ceiling as a safety rail (a
+ * **Catalog inject (plan #557 / #931):** the preamble is a bounded CATALOG of
+ * the candidate set (sticky ∪ always-on, exactly the slugs that used to be
+ * body-injected): one line per skill (slug + name + one-line description),
+ * built from `listUserSkills` summaries only — bodies are pulled on demand
+ * via `fetch_skill`. A sticky/always-on slug whose skill was deleted has no
+ * summary and silently drops from the catalog (same as it silently stopped
+ * body-injecting). A store error → fail-open for the **preamble** (no catalog
+ * block; the round still runs with the base system) but the **command-applied
+ * candidate set is persisted and returned** so an in-turn `/skill-name` /
+ * `/unskill` is not undone by host leave-untouched, and so `[]` is only ever
+ * a real empty set (host detach-all). Deleted slugs are not dropped on that
+ * path (we could not re-resolve). The catalog is bounded by the
+ * `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES` ceiling as a safety rail (a
  * catalog of ≤ 32 + 8 entries is a few KiB — far under 256 KiB).
  *
- * When `listUserSkills` is NOT provided the legacy greedy body-block build is
- * kept (256 KiB inject budget) so callers without a lister still work.
- *
  * Sticky re-resolves are SILENT (no event). An **attach** emits exactly one
- * event: `ok:true` when the skill is catalog-listable, or `ok:false` with a
- * reason (`unknown skill` / `unavailable` / `invalid slug`). No body is
- * injected at attach time, so the former `too_large` / `budget` body-budget
- * rejections no longer fire: an over-256 KiB skill can attach and be
- * catalog-listed (its body is reachable via `fetch_skill`, truncated to the
- * 256 KiB return cap).
+ * event: `ok:true` when the skill is catalog-listable (or existence-confirmed
+ * via `getSkillBySlug` on list fail-open), or `ok:false` with a reason
+ * (`unknown skill` / `unavailable` / `invalid slug`). No body is injected at
+ * attach time, so the former `too_large` / `budget` body-budget rejections no
+ * longer fire: an over-256 KiB skill can attach and be catalog-listed (its
+ * body is reachable via `fetch_skill`, truncated to the 256 KiB return cap).
  */
 export async function resolveSkillPreamble(
   input: ResolveSkillCommandInput,
@@ -280,8 +290,8 @@ export async function resolveSkillPreamble(
   const events: SkillEvent[] = [];
   // Ordered candidate set (insertion order preserved, de-duplicated).
   // Always-on slugs (plan #720 phase 2) are prepended BEFORE the sticky set
-  // so they are resolved first in the greedy budget build — but they are
-  // NEVER added to the sticky set or persisted to `meta.attachedSkills`.
+  // so they are listed first — but they are NEVER added to the sticky set or
+  // persisted to `meta.attachedSkills`.
   const alwaysOn = alwaysOnSlugs?.filter((s) => SKILL_SLUG_RE.test(s)) ?? [];
   const set: string[] = [];
   // Prepending always-on slugs first (order = auto-attach, then sticky).
@@ -292,7 +302,7 @@ export async function resolveSkillPreamble(
   for (const slug of attached) {
     if (!set.includes(slug)) set.push(slug);
   }
-  // Track always-on slugs so step 5 never persists them.
+  // Track always-on slugs so persist never writes them.
   const alwaysOnSet = new Set(alwaysOn);
   const hasSlug = (slug: string) => set.includes(slug);
   const removeSlug = (slug: string) => {
@@ -303,30 +313,18 @@ export async function resolveSkillPreamble(
     if (i >= 0) set.splice(i, 1);
   };
 
-  // Pending attach resolved for this turn (slug); confirmed against the store
-  // (existence only) before being committed to the sticky set. No body is read
-  // for injection — the catalog path never injects bodies.
+  // Pending attach: existence is confirmed AFTER the catalog list (summaries
+  // already prove the row exists — no full-body `getSkillBySlug` on the happy
+  // path). On list fail-open we fall back to getSkillBySlug for existence only.
   let pendingAttach: { slug: string } | null = null;
 
-  // 2. Apply the current command (attach/detach).
+  // 2. Apply the current command (attach/detach). Detach is applied now;
+  //    attach waits on the list so existence is a summary lookup.
   if (command.type === 'attach') {
     if (!SKILL_SLUG_RE.test(command.slug)) {
       events.push({ action: 'attach', slug: command.slug, ok: false, reason: 'invalid slug' });
-    } else if (hasSlug(command.slug)) {
-      // Idempotent re-attach of an already-attached slug still confirms.
-      pendingAttach = { slug: command.slug };
     } else {
-      const res = await readSkillBody(userId, command.slug, userSkills);
-      if (!res.value) {
-        events.push({
-          action: 'attach',
-          slug: command.slug,
-          ok: false,
-          reason: res.unavailable ? 'unavailable' : 'unknown skill',
-        });
-      } else {
-        pendingAttach = { slug: command.slug };
-      }
+      pendingAttach = { slug: command.slug };
     }
   } else if (command.type === 'detach') {
     // Always-on slugs cannot be detached: they are user-global, not session
@@ -342,61 +340,67 @@ export async function resolveSkillPreamble(
     }
   }
 
-  // 3. Commit the pending attach. The former `too_large` / `budget` attach-time
-  //    body-budget rejection is RETIRED (plan #557 / #931): no body is injected
-  //    any more, so a 4 MiB stored body is no longer a prompt-size hazard at
-  //    attach time — the slug joins the catalog and the body is only ever
-  //    fetched on demand (truncated to the 256 KiB `fetch_skill` return cap).
-  //    The store cap (`SKILL_BODY_MAX_BYTES`, 4 MiB) still bounds storage.
-  if (pendingAttach) {
-    if (!set.includes(pendingAttach.slug)) set.push(pendingAttach.slug);
-    events.push({ action: 'attach', slug: pendingAttach.slug, ok: true });
-    pendingAttach = null;
-  }
-
-  // 4. Build the inject.
-  //    - Catalog path (default, plan #557 / #931): with a `listUserSkills`
-  //      seam the inject is the bounded CATALOG of the candidate set
-  //      (sticky ∪ always-on) — one line per skill (slug + name + one-line
-  //      description), NO bodies (the model pulls bodies on demand via
-  //      `fetch_skill`). A slug whose skill was deleted has no summary →
-  //      silently drops from the catalog AND from the sticky set
-  //      (staff-of-work semantics: the sticky set stays resolvable-only). The
-  //      catalog is bounded by the `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES`
-  //      inject ceiling as a safety rail — unreachable in practice at ≤ 32
-  //      sticky + 8 always-on entries (a few KiB), never unbounded.
-  //    - Legacy fallback (no lister seam): greedy body blocks under the same
-  //      inject budget — the pre-catalog behavior, kept for callers without
-  //      the seam (the attach-time `too_large` / `budget` rejections live on
-  //      this path only).
+  // 3. List summaries, then commit a pending attach + build the catalog.
+  //    The former `too_large` / `budget` attach-time body-budget rejection is
+  //    RETIRED (plan #557 / #931): no body is injected any more, so a 4 MiB
+  //    stored body is no longer a prompt-size hazard at attach time — the
+  //    slug joins the catalog and the body is only ever fetched on demand
+  //    (truncated to the 256 KiB `fetch_skill` return cap). The store cap
+  //    (`SKILL_BODY_MAX_BYTES`, 4 MiB) still bounds storage.
   const finalSlugs: string[] = [];
   const blocks: string[] = [];
   let used = 0;
-  if (listUserSkills) {
-    let summaries: { slug: string; name: string; description: string }[] = [];
-    let storeError = false;
-    try {
-      const listed = await listUserSkills.listUserSkills(userId);
-      if (listed.ok) {
-        summaries = listed.value;
-      } else {
-        storeError = true;
-      }
-    } catch {
+  let summaries: { slug: string; name: string; description: string }[] = [];
+  let storeError = false;
+  try {
+    const listed = await listUserSkills.listUserSkills(userId);
+    if (listed.ok) {
+      summaries = listed.value;
+    } else {
       storeError = true;
     }
-    if (storeError) {
-      // Fail-open: no catalog this turn (the round still runs with the base
-      // system). Do not rewrite sticky, and do not return `"[]"` / `[]` —
-      // the host treats those as detach-all. Omit the fields so host
-      // leave-untouched applies.
-      return {
-        preamble: undefined,
-        attachedSkills: undefined,
-        events,
-      };
+  } catch {
+    storeError = true;
+  }
+
+  if (storeError) {
+    // Fail-open for the preamble (no catalog this turn). Honor the
+    // command-applied set: confirm a pending attach via getSkillBySlug
+    // (existence only), do not drop deleted slugs (can't re-resolve), persist
+    // and return the in-memory set. `[]` here is a real empty sticky set.
+    if (pendingAttach) {
+      const res = await readSkillBody(userId, pendingAttach.slug, userSkills);
+      if (!res.value) {
+        events.push({
+          action: 'attach',
+          slug: pendingAttach.slug,
+          ok: false,
+          reason: res.unavailable ? 'unavailable' : 'unknown skill',
+        });
+      } else {
+        if (!set.includes(pendingAttach.slug)) set.push(pendingAttach.slug);
+        events.push({ action: 'attach', slug: pendingAttach.slug, ok: true });
+      }
+      pendingAttach = null;
     }
+    for (const slug of set) finalSlugs.push(slug);
+  } else {
     const bySlug = new Map(summaries.map((s) => [s.slug, s]));
+    if (pendingAttach) {
+      const summary = bySlug.get(pendingAttach.slug);
+      if (!summary) {
+        events.push({
+          action: 'attach',
+          slug: pendingAttach.slug,
+          ok: false,
+          reason: 'unknown skill',
+        });
+      } else {
+        if (!set.includes(pendingAttach.slug)) set.push(pendingAttach.slug);
+        events.push({ action: 'attach', slug: pendingAttach.slug, ok: true });
+      }
+      pendingAttach = null;
+    }
     for (const slug of set) {
       const summary = bySlug.get(slug);
       if (!summary) continue; // deleted/stale slug silently drops from sticky
@@ -409,24 +413,9 @@ export async function resolveSkillPreamble(
       blocks.push(line);
       used += bytes;
     }
-  } else {
-    // Legacy fallback (no lister seam): greedy body blocks under the inject
-    // budget — the pre-catalog behavior, kept for callers without the seam.
-    for (const slug of set) {
-      const res = await readSkillBody(userId, slug, userSkills);
-      if (!res.value) continue; // deleted/stale slug silently drops from sticky
-      const body = res.value;
-      finalSlugs.push(slug); // resolve-able sticky slug stays attached
-      const bytes = byteLength(body);
-      if (used + bytes > HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES) {
-        continue; // exceeds remaining inject budget → not in this turn's preamble
-      }
-      blocks.push(buildSkillBlock(slug, body));
-      used += bytes;
-    }
   }
 
-  // 5. Persist best-effort via the ENVELOPE seam (never legacy get/put), only
+  // 4. Persist best-effort via the ENVELOPE seam (never legacy get/put), only
   //    when `readEnvelope` succeeded (a real envelope/record exists), with
   //    `updatedAt` left UNCHANGED, skipping on conflict. The host PUT is the
   //    source of truth; this mirror must never bump the clock or fight a newer
@@ -437,7 +426,7 @@ export async function resolveSkillPreamble(
   const attachedSkills = serializeAttachedSkills(stickySlugs);
   if (envelope && sessionStore && sessionKey) {
     try {
-      const input: SessionEnvelopeInput = {
+      const persistInput: SessionEnvelopeInput = {
         id: envelope.id,
         userId: envelope.userId,
         tenantId: envelope.tenantId,
@@ -445,8 +434,9 @@ export async function resolveSkillPreamble(
         // Copy-forward then override: store replaces whole meta (omit = clear).
         meta: { ...envelope.meta, attachedSkills },
       };
-      const result = await sessionStore.upsertEnvelope(sessionKey, input);
+      const result = await sessionStore.upsertEnvelope(sessionKey, persistInput);
       // `result.status === 'conflict'` → a newer write won; skip (host source of truth).
+      void result;
     } catch {
       /* fail-open: skip sticky persist */
     }

@@ -311,10 +311,9 @@ async function resolveInStepPreambles(args: {
         userId: args.userId,
         command: { type: 'none' },
         userSkills: args.services.userSkills,
-        // Catalog seam REQUIRED on the durable path (plan #557/#931): omitting
-        // this argument silently selects the legacy greedy body-block inject
-        // (up to 256 KiB bodies back in the stable prefix). Locked by
-        // turnLoop.test.ts (modelGenerateStep passes listUserSkills).
+        // Catalog seam REQUIRED (plan #557/#931): the inject is summaries
+        // only. listUserSkills is a required field on ResolveSkillCommandInput
+        // so dropping it is a type error, not a silent body-block revert.
         listUserSkills: args.services.userSkills,
         alwaysOnSlugs,
         ...(envelopeStore && sessionKey
