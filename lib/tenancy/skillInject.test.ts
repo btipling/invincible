@@ -1138,6 +1138,56 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
     expect(validateMetaFields({ attachedSkills: persisted }).ok).toBe(true);
   });
 
+  it('32 sticky minus N missing summaries: /new-skill attaches this turn (GC before cap)', async () => {
+    const missingCount = 5;
+    const sticky = Array.from(
+      { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS },
+      (_, i) => `s${i}`,
+    );
+    const missing = sticky.slice(0, missingCount);
+    const kept = sticky.slice(missingCount);
+    const alwaysOn = Array.from(
+      { length: USER_ALWAYS_ON_SKILLS_MAX },
+      (_, i) => `a${i}`,
+    );
+    const pending = 'new-skill';
+    const present = [...alwaysOn, ...kept, pending];
+    const rows = present.map((slug) => ({
+      slug,
+      name: slug,
+      description: '',
+    }));
+    const store = new ValidatingStore(
+      makeEnvelope({ attachedSkills: JSON.stringify(sticky) }),
+    );
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'attach', slug: pending, rest: '' },
+      sessionStore: store,
+      sessionKey: KEY,
+      alwaysOnSlugs: alwaysOn,
+      userSkills: readerOf(
+        Object.fromEntries(present.map((s) => [s, { body: 'B' }])),
+      ),
+      listUserSkills: listerOf(rows),
+    });
+    expect(readEventActions(res)).toEqual([
+      { action: 'attach', slug: pending, ok: true },
+    ]);
+    expect(res.preamble).toContain(`${pending} —`);
+    expect(res.attachedSlugs).toContain(pending);
+    for (const slug of missing) {
+      expect(res.attachedSlugs).not.toContain(slug);
+    }
+    const stickyReturned = JSON.parse(res.attachedSkills) as string[];
+    expect(stickyReturned).toHaveLength(kept.length + 1);
+    expect(stickyReturned).toContain(pending);
+    expect(validateMetaFields({ attachedSkills: res.attachedSkills }).ok).toBe(true);
+    expect(JSON.parse(store.upserts[0]!.meta?.attachedSkills as string)).toHaveLength(
+      kept.length + 1,
+    );
+  });
+
   it('32 sticky + 8 always-on fail-open attach is refused (does not grow sticky to 33)', async () => {
     const sticky = Array.from(
       { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS },
@@ -1183,8 +1233,50 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
     expect(JSON.parse(store.upserts[0]!.meta?.attachedSkills as string)).toHaveLength(
       HARNESS_SESSION_MAX_ATTACHED_SKILLS,
     );
-    // Refuse is before catalog IN, so exists GC walks sticky ∪ always-on only.
+    // Post-GC refuse: exists walks sticky ∪ always-on; pending is not fetched.
     expect(existsCalls).toBe(sticky.length + alwaysOn.length);
+  });
+
+  it('32 sticky minus N missing (fail-open exists): /new-skill attaches this turn', async () => {
+    const missingCount = 5;
+    const sticky = Array.from(
+      { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS },
+      (_, i) => `s${i}`,
+    );
+    const missing = sticky.slice(0, missingCount);
+    const kept = sticky.slice(missingCount);
+    const alwaysOn = Array.from(
+      { length: USER_ALWAYS_ON_SKILLS_MAX },
+      (_, i) => `a${i}`,
+    );
+    const present: Record<string, boolean> = Object.fromEntries(
+      [...kept, ...alwaysOn, 'new-skill'].map((s) => [s, true]),
+    );
+    const store = new ValidatingStore(
+      makeEnvelope({ attachedSkills: JSON.stringify(sticky) }),
+    );
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'attach', slug: 'new-skill', rest: '' },
+      sessionStore: store,
+      sessionKey: KEY,
+      alwaysOnSlugs: alwaysOn,
+      userSkills: readerOf(present),
+      listUserSkills: failingLister('ok-false'),
+    });
+    expect(readEventActions(res)).toEqual([
+      { action: 'attach', slug: 'new-skill', ok: true },
+    ]);
+    expect(res.preamble).toContain('new-skill');
+    expect(res.attachedSlugs).toContain('new-skill');
+    for (const slug of missing) {
+      expect(res.attachedSlugs).not.toContain(slug);
+    }
+    expect(JSON.parse(res.attachedSkills)).toHaveLength(kept.length + 1);
+    expect(validateMetaFields({ attachedSkills: res.attachedSkills }).ok).toBe(true);
+    expect(JSON.parse(store.upserts[0]!.meta?.attachedSkills as string)).toHaveLength(
+      kept.length + 1,
+    );
   });
 
   it('31 sticky + 8 always-on: new attach is catalog-listed and persisted as 32', async () => {

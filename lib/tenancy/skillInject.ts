@@ -330,6 +330,18 @@ function wantedCatalogSlugs(
   return wanted;
 }
 
+/** Sticky occupancy: candidate slugs that are not always-on. */
+function stickyOccupancy(
+  slugs: readonly string[],
+  alwaysOn: ReadonlySet<string>,
+): number {
+  let n = 0;
+  for (const s of slugs) {
+    if (!alwaysOn.has(s)) n += 1;
+  }
+  return n;
+}
+
 /** Prefix-preserving UTF-8 truncate (never splits a code point). */
 export function truncateUtf8(s: string, maxBytes: number): string {
   if (maxBytes <= 0) return '';
@@ -373,13 +385,15 @@ export function truncateUtf8(s: string, maxBytes: number): string {
  * event: `ok:true` when the skill is catalog-listable (or existence-confirmed
  * via `skillExistsBySlug` on list fail-open), or `ok:false` with a reason
  * (`unknown skill` / `unavailable` / `invalid slug` / `sticky limit reached
- * (N)`). A new slug is refused when sticky is already at
+ * (N)`). A new slug is refused when the **post-GC** sticky set is already at
  * `HARNESS_SESSION_MAX_ATTACHED_SKILLS` (the envelope write cap): otherwise
  * `ok:true` plus a 41st catalog line (32 sticky + 8 always-on + pending) is
  * dropped by `CATALOG_ROW_MAX`, and persist of 33 sticky slugs fails
  * `validateMetaFields` (catch fail-opens; next turn the attach is gone).
- * Re-attach of an already-sticky or always-on slug at the cap stays `ok:true`
- * (the set does not grow). No body is injected at attach time, so the former
+ * Cap is counted after list/exists GC so deleted stickies free a slot this
+ * turn; a full post-GC 32 still refuses the 33rd. Re-attach of an
+ * already-sticky or always-on slug at the cap stays `ok:true` (the set does
+ * not grow). No body is injected at attach time, so the former
  * `too_large` / `budget` body-budget rejections no longer fire: an over-256 KiB
  * skill can attach and be catalog-listed (its body is reachable via
  * `fetch_skill`, truncated to the 256 KiB return cap).
@@ -452,24 +466,9 @@ export async function resolveSkillPreamble(
     if (!SKILL_SLUG_RE.test(command.slug)) {
       events.push({ action: 'attach', slug: command.slug, ok: false, reason: 'invalid slug' });
     } else {
-      // Envelope `meta.attachedSkills` is capped at 32 sticky slugs. Refuse a
-      // 33rd before catalog IN / paint so we never emit ok:true for a line
-      // CATALOG_ROW_MAX then drops, and never serialize 33 slugs that
-      // `assertValidSessionEnvelope` rejects (catch fail-opens).
-      const stickyCount = set.filter((s) => !alwaysOnSet.has(s)).length;
-      if (
-        !hasSlug(command.slug) &&
-        stickyCount >= HARNESS_SESSION_MAX_ATTACHED_SKILLS
-      ) {
-        events.push({
-          action: 'attach',
-          slug: command.slug,
-          ok: false,
-          reason: `sticky limit reached (${HARNESS_SESSION_MAX_ATTACHED_SKILLS})`,
-        });
-      } else {
-        pendingAttach = { slug: command.slug };
-      }
+      // Cap is checked AFTER list/exists GC so deleted stickies free a slot
+      // this turn. Pending still rides the IN list first (existence + catalog).
+      pendingAttach = { slug: command.slug };
     }
   } else if (command.type === 'detach') {
     // Always-on slugs cannot be detached: they are user-global, not session
@@ -519,15 +518,15 @@ export async function resolveSkillPreamble(
 
   if (storeError) {
     // Fail-open for the full catalog (no name/description this turn). Honor
-    // the command-applied set: confirm a pending attach via skillExistsBySlug
-    // (slug-only SELECT, never the body), then existence-check remaining
-    // sticky/always-on slugs the same way when exists still answers. A missing
-    // row is dropped from catalog + sticky (ghost GC); an unavailable exists
-    // keeps the slug. Persist and return that set. Still emit a slug-only
-    // catalog so strip-/slug is safe — attach ok:true never pairs with an
-    // empty preamble while the set is non-empty. `[]` here is a real empty
-    // set. Existence results are cached per slug so a pending attach is not
-    // fetched twice in the GC loop.
+    // the command-applied set: existence-check sticky/always-on via
+    // skillExistsBySlug (slug-only SELECT, never the body) when exists still
+    // answers. A missing row is dropped from catalog + sticky (ghost GC);
+    // an unavailable exists keeps the slug. Cap is counted on that post-GC
+    // occupancy, then a pending attach is confirmed the same way. Persist
+    // and return that set. Still emit a slug-only catalog so strip-/slug is
+    // safe — attach ok:true never pairs with an empty preamble while the set
+    // is non-empty. `[]` here is a real empty set. Existence results are
+    // cached per slug so a re-attach is not fetched twice after GC.
     const existenceCache = new Map<string, { present: boolean; unavailable: boolean }>();
     const checkExists = async (slug: string) => {
       const cached = existenceCache.get(slug);
@@ -536,21 +535,6 @@ export async function resolveSkillPreamble(
       existenceCache.set(slug, result);
       return result;
     };
-    if (pendingAttach) {
-      const res = await checkExists(pendingAttach.slug);
-      if (!res.present) {
-        events.push({
-          action: 'attach',
-          slug: pendingAttach.slug,
-          ok: false,
-          reason: res.unavailable ? 'unavailable' : 'unknown skill',
-        });
-      } else {
-        if (!set.includes(pendingAttach.slug)) set.push(pendingAttach.slug);
-        events.push({ action: 'attach', slug: pendingAttach.slug, ok: true });
-      }
-      pendingAttach = null;
-    }
     for (const slug of set) {
       const exists = await checkExists(slug);
       // exists answered missing → drop. Present or exists-unavailable → keep.
@@ -559,27 +543,39 @@ export async function resolveSkillPreamble(
       // Unquoted slug token — same fetch_skill-safe shape as catalog lines.
       blocks.push(slug);
     }
-  } else {
-    const bySlug = new Map(summaries.map((s) => [s.slug, s]));
     if (pendingAttach) {
-      const summary = bySlug.get(pendingAttach.slug);
-      if (!summary) {
-        // Missing only counts as unknown when the IN actually queried it.
-        // A slice miss must not look like a deleted skill.
-        if (queried.has(pendingAttach.slug)) {
+      const already = finalSlugs.includes(pendingAttach.slug);
+      if (
+        !already &&
+        stickyOccupancy(finalSlugs, alwaysOnSet) >= HARNESS_SESSION_MAX_ATTACHED_SKILLS
+      ) {
+        events.push({
+          action: 'attach',
+          slug: pendingAttach.slug,
+          ok: false,
+          reason: `sticky limit reached (${HARNESS_SESSION_MAX_ATTACHED_SKILLS})`,
+        });
+      } else {
+        const res = await checkExists(pendingAttach.slug);
+        if (!res.present) {
           events.push({
             action: 'attach',
             slug: pendingAttach.slug,
             ok: false,
-            reason: 'unknown skill',
+            reason: res.unavailable ? 'unavailable' : 'unknown skill',
           });
+        } else {
+          if (!already) {
+            finalSlugs.push(pendingAttach.slug);
+            blocks.push(pendingAttach.slug);
+          }
+          events.push({ action: 'attach', slug: pendingAttach.slug, ok: true });
         }
-      } else {
-        if (!set.includes(pendingAttach.slug)) set.push(pendingAttach.slug);
-        events.push({ action: 'attach', slug: pendingAttach.slug, ok: true });
       }
       pendingAttach = null;
     }
+  } else {
+    const bySlug = new Map(summaries.map((s) => [s.slug, s]));
     const rawLines: string[] = [];
     const rawSlugs: string[] = [];
     for (const slug of set) {
@@ -596,6 +592,42 @@ export async function resolveSkillPreamble(
         rawLines.push(buildCatalogLine(summary));
         rawSlugs.push(slug);
       }
+    }
+    if (pendingAttach) {
+      const summary = bySlug.get(pendingAttach.slug);
+      const already = finalSlugs.includes(pendingAttach.slug);
+      if (
+        !already &&
+        stickyOccupancy(finalSlugs, alwaysOnSet) >= HARNESS_SESSION_MAX_ATTACHED_SKILLS
+      ) {
+        events.push({
+          action: 'attach',
+          slug: pendingAttach.slug,
+          ok: false,
+          reason: `sticky limit reached (${HARNESS_SESSION_MAX_ATTACHED_SKILLS})`,
+        });
+      } else if (!summary) {
+        // Missing only counts as unknown when the IN actually queried it.
+        // A slice miss must not look like a deleted skill.
+        if (queried.has(pendingAttach.slug)) {
+          events.push({
+            action: 'attach',
+            slug: pendingAttach.slug,
+            ok: false,
+            reason: 'unknown skill',
+          });
+        }
+      } else {
+        if (!already) {
+          finalSlugs.push(pendingAttach.slug);
+          if (rawLines.length < CATALOG_ROW_MAX) {
+            rawLines.push(buildCatalogLine(summary));
+            rawSlugs.push(pendingAttach.slug);
+          }
+        }
+        events.push({ action: 'attach', slug: pendingAttach.slug, ok: true });
+      }
+      pendingAttach = null;
     }
     const packed = packCatalogLines(rawLines);
     for (let i = 0; i < packed.length; i++) {
