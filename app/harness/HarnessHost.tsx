@@ -1230,6 +1230,12 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                 })
               ) {
                 const cancelSessionId = stopSession.id;
+                // Capture repo + snapshot at Stop fire: unmount cleanup nulls
+                // `repoRef`, and switch replaces `sessionRef`. Failed ack must
+                // PUT keep-running onto THIS session (adversarial-review #927
+                // pass 4) — never onto liveNow.
+                const cancelRepo = repoRef.current;
+                const cancelSnapshot = stopSession;
                 cancelPostedRunIdsRef.current.add(stopRunId);
                 // Optimistic pre-ack: persistTurn after abort folds cancelling.
                 // A failed/terminal ack overwrites this (plan #816 race table).
@@ -1260,9 +1266,22 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                       cancelPostedRunIdsRef.current.delete(stopRunId);
                     }
                     if (apply.commit === 'drop') return;
-                    pendingStopFoldRef.current = { runId: stopRunId, fold: apply.fold };
-                    if (apply.commit === 'persist') {
-                      persist(applyStopFoldToSession(liveNow, stopRunId, apply.fold));
+                    if (apply.commit === 'persist-detached') {
+                      const folded = applyStopFoldToSession(
+                        cancelSnapshot,
+                        stopRunId,
+                        apply.fold,
+                      );
+                      const detached = { ...folded, id: cancelSessionId };
+                      cancelRepo?.put(cancelSessionId, detached);
+                      if (sessionRef.current.id === cancelSessionId) {
+                        persist(detached);
+                      }
+                    } else {
+                      pendingStopFoldRef.current = { runId: stopRunId, fold: apply.fold };
+                      if (apply.commit === 'persist') {
+                        persist(applyStopFoldToSession(liveNow, stopRunId, apply.fold));
+                      }
                     }
                     if (apply.fold.kind === 'keep-running') {
                       // Soft note only — never a fake cancel; the run continues

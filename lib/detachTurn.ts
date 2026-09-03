@@ -248,14 +248,21 @@ export type StopFoldAction =
 
 /**
  * Fold the session-side Stop decision BEFORE knowing the cancel POST outcome.
- * Only the durable path (live `turnRunId` + `running`) routes to the server
- * cancel; everything else keeps today's legacy clear fold.
+ * A live durable id in `running` **or** `cancelling` routes to the server
+ * cancel. `'cancelling'` is the optimistic pre-ack marker (and the accepted
+ * overlay) — it must still be a POST candidate so a poisoned `'cancelling'`
+ * (failed ack + switch/unmount) can retry Stop after the posted-id is
+ * dropped. The in-memory `cancelPostedRunIdsRef` is the once-per-run skip.
+ * Everything else keeps today's legacy clear fold.
  */
 export function decideStopFoldPre(input: {
   turnRunId?: string;
   turnStatus?: TurnStatus;
 }): Extract<StopFoldAction, { kind: 'legacy-clear' | 'cancelling' }> {
-  if (input.turnRunId !== undefined && input.turnStatus === 'running') {
+  if (
+    input.turnRunId !== undefined &&
+    (input.turnStatus === 'running' || input.turnStatus === 'cancelling')
+  ) {
     return { kind: 'cancelling' };
   }
   return { kind: 'legacy-clear' };
@@ -283,16 +290,20 @@ export function decideStopFoldPost(input: {
 }
 
 /**
- * True when a session already carries `turnStatus: 'cancelling'` for this
- * `turnRunId` — a second Stop/Esc must never re-POST the cancel (bounded,
- * once per run id) **after an accepted cancel**. A failed POST must persist
- * `running` so this returns false and Stop can retry (plan #816 race table).
+ * True when a second Stop/Esc must not re-POST for this run.
+ *
+ * Pass 4 (adversarial-review #927): session `'cancelling'` is the optimistic
+ * pre-ack marker, **not** the accepted-ack skip. A poisoned `'cancelling'`
+ * (failed ack + switch/unmount/F5) must be able to retry Stop. The in-memory
+ * `cancelPostedRunIdsRef` is the once-per-run skip (in-flight / accepted).
+ * Always false — kept as a named seam so the host poll source-lock still
+ * names it; the posted-id set is the real skip.
  */
-export function shouldSkipCancelPost(input: {
+export function shouldSkipCancelPost(_input: {
   turnRunId?: string;
   turnStatus?: TurnStatus;
 }): boolean {
-  return input.turnRunId !== undefined && input.turnStatus === 'cancelling';
+  return false;
 }
 
 /**
@@ -324,23 +335,27 @@ export function applyStopFoldToSession<
 }
 
 /**
- * What the G22 cancel-ack `then()` should do (adversarial-review #927 pass 3).
+ * What the G22 cancel-ack `then()` should do (adversarial-review #927 pass 4).
  *
  * Pass 1: a failed POST must drop the posted-id and fold `keep-running` so
  * Stop can retry. Pass 2 skipped the *entire* ack when `inflight` so a slow
  * persist could not stomp the next prompt — and that return also skipped the
- * posted-id delete, restoring ghost spend. Split the commit:
+ * posted-id delete, restoring ghost spend. Pass 3 split the commit but used
+ * `drop` for switch/unmount, which left optimistic `'cancelling'` on the
+ * abandoned session. Pass 4 persists onto `cancelSessionId` for those leave
+ * sites (captured snapshot + captured repo) and only `drop`s Clear.
  *
  * | Condition | `commit` | posted-id |
  * |-----------|----------|-----------|
- * | unmount / switched session / discarded / newer `turnRunId` | `drop` | still drop on failed/terminal |
- * | new `runPrompt` inflight | `pending-only` (set pendingFold, no persist) | drop on failed/terminal |
+ * | discarded (Clear) / newer `turnRunId` on the **same** session | `drop` | still drop on failed/terminal |
+ * | unmount / switched session | `persist-detached` onto `cancelSessionId` | drop on failed/terminal |
+ * | new `runPrompt` inflight (same session) | `pending-only` (set pendingFold, no persist) | drop on failed/terminal |
  * | same session, idle | `persist` the fold onto `liveNow` | drop on failed/terminal |
  *
  * `dropPostedId` is true for `keep-running` / `clear-terminal` (retry / orphan
  * unstick) and false for `accepted` `'cancelling'` (once per run id).
  */
-export type CancelAckCommit = 'drop' | 'pending-only' | 'persist';
+export type CancelAckCommit = 'drop' | 'pending-only' | 'persist' | 'persist-detached';
 
 export type CancelAckApply = {
   fold: StopFoldAction;
@@ -360,14 +375,24 @@ export function decideCancelAckApply(input: {
 }): CancelAckApply {
   const dropPostedId =
     input.fold.kind === 'keep-running' || input.fold.kind === 'clear-terminal';
-  if (
-    input.unmounted ||
-    input.liveSessionId !== input.cancelSessionId ||
-    (input.liveTurnRunId !== input.stopRunId &&
-      input.liveTurnRunId !== undefined) ||
-    input.discarded
-  ) {
+  // Clear resurrection — never PUT a deleted row.
+  if (input.discarded) {
     return { fold: input.fold, dropPostedId, commit: 'drop' };
+  }
+  const switched = input.liveSessionId !== input.cancelSessionId;
+  const newerOnSameSession =
+    !switched &&
+    input.liveTurnRunId !== input.stopRunId &&
+    input.liveTurnRunId !== undefined;
+  // A newer run id on the same session must not be clobbered by keep-running.
+  if (newerOnSameSession) {
+    return { fold: input.fold, dropPostedId, commit: 'drop' };
+  }
+  // Switch / unmount: persist onto cancelSessionId (captured snapshot + repo),
+  // never onto liveNow. Unmount cleanup nulls repoRef — the host captures the
+  // repo object at Stop fire (same pattern as adversarial #844).
+  if (input.unmounted || switched) {
+    return { fold: input.fold, dropPostedId, commit: 'persist-detached' };
   }
   if (input.inflight) {
     return { fold: input.fold, dropPostedId, commit: 'pending-only' };
