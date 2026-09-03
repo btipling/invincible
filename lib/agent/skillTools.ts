@@ -22,6 +22,7 @@
 import { jsonSchema, tool } from 'ai';
 import { SKILL_FETCH_MAX_RETURN_BYTES, SKILL_FIND_RESULT_MAX } from '../sessionCloudCaps';
 import { SKILL_SLUG_RE } from '../sessionCloudCaps';
+import { buildCatalogLine } from '../tenancy/skillInject';
 
 /** System-prompt addendum shown whenever the skill tools are on the tool surface. */
 export const SKILL_TOOLS_SYSTEM_ADDENDUM =
@@ -72,14 +73,11 @@ export type CreateSkillToolsOptions = {
 function summarize(result: ListSkillsResult): string {
   const val = result.ok ? result.value : [];
   if (val.length === 0) return 'No skills found.';
-  // Unquoted slug first (same shape as buildCatalogLine) so the model can
-  // follow up with fetch_skill; summaries only, no body.
+  // Shared with the inject catalog so a stored newline/NEL in name or
+  // description cannot split find_skill into a fake second row.
   return val
     .slice(0, SKILL_FIND_RESULT_MAX)
-    .map(
-      (s) =>
-        `${s.slug} — ${s.name}${s.description ? `: ${s.description}` : ''}`,
-    )
+    .map((s) => buildCatalogLine(s))
     .join('\n');
 }
 
