@@ -27,6 +27,8 @@ import {
   SKILL_VERSION_MAX,
   USER_ALWAYS_ON_SKILLS_MAX,
 } from '../sessionCloudCaps';
+import { resolveSystem } from '../agent/agentSystem';
+import { resolveSkillPreamble } from './skillInject';
 import {
   createIsolatedTestDb,
   getSharedDb,
@@ -718,6 +720,22 @@ describe('setAlwaysOn + listAlwaysOnSkills (plan #720 phase 2)', () => {
     if (!before.ok) throw new Error('expected ok');
     expect(before.value).toEqual(['alpha', 'beta']);
 
+    const deps = { db: db as never };
+    const resolvePreamble = (alwaysOnSlugs: string[]) =>
+      resolveSkillPreamble({
+        userId,
+        command: { type: 'none' },
+        alwaysOnSlugs,
+        userSkills: {
+          skillExistsBySlugs: (uid, slugs) => skillExistsBySlugs(uid, slugs, deps),
+        },
+        listUserSkills: {
+          listUserSkillsBySlugs: (uid, slugs) =>
+            listUserSkillsBySlugs(uid, slugs, deps),
+        },
+      });
+    const preambleBefore = await resolvePreamble(before.value);
+
     // Body-only edit bumps updatedAt; slug order must not flip (Goal 5).
     const edited = await updateUserSkillBody(
       userId,
@@ -731,6 +749,22 @@ describe('setAlwaysOn + listAlwaysOnSkills (plan #720 phase 2)', () => {
     expect(after.ok).toBe(true);
     if (!after.ok) throw new Error('expected ok');
     expect(after.value).toEqual(['alpha', 'beta']);
+
+    const preambleAfter = await resolvePreamble(after.value);
+    expect(preambleBefore.preamble).toBe(preambleAfter.preamble);
+    const systemBefore = resolveSystem(
+      { skillsPreamble: preambleBefore.preamble },
+      false,
+    );
+    const systemAfter = resolveSystem(
+      { skillsPreamble: preambleAfter.preamble },
+      false,
+    );
+    expect(systemBefore).toContain('<attached_skills>');
+    expect(systemBefore).toBe(systemAfter);
+    expect(systemBefore.indexOf('alpha —')).toBeLessThan(
+      systemBefore.indexOf('beta —'),
+    );
   });
 
   it('setAlwaysOn returns not_found for a foreign/non-existent skill', async () => {
