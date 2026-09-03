@@ -587,6 +587,10 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     async (prompt: string, opts?: RunPromptOpts) => {
       const bridge = bridgeRef.current;
       if (!bridge || inflightRef.current) return;
+      // Adversarial-review #927: a leftover Stop fold from the previous
+      // turn must not ride persistTurn of this prompt (pre-headers snapshot
+      // may still carry the old id, or have cleared it).
+      pendingStopFoldRef.current = null;
 
       // Plan #887: next operator submit (not attach, not auto-continue) clears
       // the one-shot flag so a later recoverable can fire again.
@@ -1241,6 +1245,10 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                     if (liveNow.turnRunId !== stopRunId && liveNow.turnRunId !== undefined) {
                       return;
                     }
+                    // Adversarial-review #927: a new runPrompt is inflight
+                    // (pre-headers still carries the old id). Do not persist
+                    // this ack onto that generation.
+                    if (inflightRef.current) return;
                     const fold = decideStopFoldPost({
                       pre: stopFoldPre,
                       outcome,

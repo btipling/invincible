@@ -478,6 +478,14 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     expect(poll).toContain('setHostNote(');
     expect(poll).toContain('persist(applyStopFoldToSession(');
     expect(poll).toContain('cancelPostedRunIdsRef.current.delete');
+    // Adversarial-review #927: late ack must not persist onto a new runPrompt.
+    expect(poll).toContain('if (inflightRef.current) return');
+  });
+
+  it('runPrompt nulls pendingStopFoldRef so a leftover fold cannot ride the next persistTurn (adversarial-review #927)', () => {
+    const runStart = host.indexOf('const runPrompt = useCallback');
+    const run = host.slice(runStart, host.indexOf('useEffect(() => {', runStart));
+    expect(run).toContain('pendingStopFoldRef.current = null');
   });
 
   it('persistTurn applies pendingStopFold so harnessChat cannot beat a failed ack (adversarial-review #927)', () => {
@@ -623,6 +631,19 @@ describe('G22 Stop/Esc server-cancel fold planner (plan #816)', () => {
           { kind: 'keep-running' },
         ),
       ).toEqual({ turnRunId: 'wr_newer', turnStatus: 'running' });
+    });
+
+    it('never plants a cleared id (adversarial-review #927)', () => {
+      const cleared = { turnRunId: undefined, turnStatus: 'completed' as const };
+      expect(
+        applyStopFoldToSession(cleared, 'wr_live', { kind: 'keep-running' }),
+      ).toEqual(cleared);
+      expect(
+        applyStopFoldToSession(cleared, 'wr_live', { kind: 'cancelling' }),
+      ).toEqual(cleared);
+      expect(
+        applyStopFoldToSession(cleared, 'wr_live', { kind: 'clear-terminal' }),
+      ).toEqual(cleared);
     });
 
     it('legacy-clear is a no-op on the snapshot', () => {

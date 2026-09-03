@@ -302,12 +302,15 @@ export function shouldSkipCancelPost(input: {
  * optimistic `'cancelling'` abort-fold cannot win a race against a failed
  * cancel POST (plan #816: failed ack keeps `running` so Stop can retry).
  * A newer `turnRunId` on the snapshot is never clobbered.
+ * A snapshot that already cleared `turnRunId` is never planted back
+ * (adversarial-review #927: leftover pendingFold must not resurrect a
+ * cleared id onto the next prompt's pre-headers persist).
  */
 export function applyStopFoldToSession<
   T extends { turnRunId?: string; turnStatus?: TurnStatus },
 >(session: T, runId: string, fold: StopFoldAction): T {
   if (fold.kind === 'legacy-clear') return session;
-  if (session.turnRunId !== undefined && session.turnRunId !== runId) {
+  if (session.turnRunId === undefined || session.turnRunId !== runId) {
     return session;
   }
   switch (fold.kind) {
