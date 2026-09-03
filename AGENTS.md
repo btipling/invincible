@@ -265,6 +265,17 @@ ops inventory).
 
 ### Vercel Workflows (backend-agents)
 
+- **Architecture — the Workflow run owns the turn.** A durable turn is owned by
+  the Workflow run started at `POST /api/turns`, independent of any attached
+  viewport: it survives tab close / refresh / logout. A viewport **attaches** to
+  a live run (hydrate from Blob + `GET /api/turns/:runId/stream`);
+  unmount/switch/New/Clear/logout is **detach only**, never a cancel — cancel is
+  the explicit `POST /api/turns/:runId/cancel`. **Tools are steps:** one
+  `'use step'` = one model round **or** one **`toolExecuteStep` (one model
+  round's `toolCalls` / waves)** **or** one persist — never a mega-step, never
+  wrap `runAgentStream` in a single step. Inference is
+  server-side: production turns use `/api/turns`; `/api/agent` is the legacy
+  tests/JSON path.
 - **Wiring ships by Git deploy:** `workflow` dependency + `withWorkflow(nextConfig)`
   in `next.config.js`; `"use workflow"` fixtures/xhr live server-side
   (`lib/workflows/*`, `app/api/workflows/smoke`).
