@@ -1059,7 +1059,9 @@ export async function setAlwaysOn(
 /**
  * List slugs of the user's always-on skills (plan #720 phase 2).
  * Returns only the slugs of rows with `is_always_on = true`, ordered by
- * updatedAt desc (deterministic for the inject merge).
+ * updatedAt desc (deterministic for the inject merge). Caps on read at
+ * `USER_ALWAYS_ON_SKILLS_MAX` so a concurrent `setAlwaysOn` race cannot
+ * overflow the catalog IN slice and GC sticky as a false delete.
  */
 export async function listAlwaysOnSkills(
   userId: string,
@@ -1082,7 +1084,8 @@ export async function listAlwaysOnSkills(
             eq(userSkills.isAlwaysOn, true),
           ),
         )
-        .orderBy(desc(userSkills.updatedAt));
+        .orderBy(desc(userSkills.updatedAt))
+        .limit(USER_ALWAYS_ON_SKILLS_MAX);
       return { ok: true as const, value: rows.map((r) => r.slug) };
     });
   } catch (err) {
@@ -1099,7 +1102,8 @@ export async function listAlwaysOnSkills(
  * Settings library is not full-scanned every model round. Empty `slugs`
  * returns [] without querying. Invalid slugs are dropped. The IN list is
  * sliced to sticky + always-on + one pending attach (existing count caps,
- * not a new cap).
+ * not a new cap). Callers must put the pending attach first so the slice
+ * cannot drop it ahead of sticky/always-on.
  */
 export async function listUserSkillsBySlugs(
   userId: string,

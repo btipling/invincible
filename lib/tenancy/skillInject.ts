@@ -63,8 +63,9 @@
  * as the inject **ceiling** (a safety rail over the catalog, never the default
  * inject). A maxed 32 sticky + 8 always-on catalog of CJK name+description
  * lines can exceed 256 KiB, so each line is flattened (one line per skill)
- * and UTF-8-truncated to a per-line budget derived from those count caps —
- * every resolvable slug still appears; the skip-from-preamble path is gone.
+ * and packed by remaining budget (occupancy 1 may use the full ceiling; the
+ * 40-row count cap is the row ceiling, not a per-line tax) — every resolvable
+ * slug still appears; the skip-from-preamble path is gone.
  * Because no body is injected at attach time any more, the former attach-time
  * `too_large` / `budget` body-budget rejection is **retired** for the catalog
  * path: an over-256 KiB skill can now attach and be catalog-listed; its body
@@ -259,20 +260,74 @@ function byteLength(s: string): number {
   return new TextEncoder().encode(s).length;
 }
 
+/** Catalog row ceiling: sticky + always-on. Existing count caps, not a new cap. */
+const CATALOG_ROW_MAX =
+  HARNESS_SESSION_MAX_ATTACHED_SKILLS + USER_ALWAYS_ON_SKILLS_MAX;
+
+/** Candidate IN list: catalog rows + one pending attach. Existing count caps. */
+const CATALOG_IN_MAX = CATALOG_ROW_MAX + 1;
+
 /**
- * Per-line UTF-8 budget so a full sticky+always-on catalog cannot skip a
- * resolvable slug. Derived from existing count caps + the inject ceiling
- * (join `\n\n` reserved) — not a new cap. 40 × max CJK name+description
- * lines overflow 256 KiB; truncating each line to this budget keeps every
- * slug visible and the joined preamble under the ceiling.
+ * Worst-case per-line UTF-8 share at full occupancy (40 slots). Used as a
+ * ceiling invariant, not as the occupancy-1 truncate. Packing uses
+ * `packCatalogLines` (remaining budget / remaining slots).
  */
 export function catalogLineMaxBytes(): number {
-  const slots =
-    HARNESS_SESSION_MAX_ATTACHED_SKILLS + USER_ALWAYS_ON_SKILLS_MAX;
-  const joinOverhead = 2 * Math.max(0, slots - 1); // `\n\n` between lines
-  return Math.floor(
-    (HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES - joinOverhead) / slots,
-  );
+  return catalogLineBudget(HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES, CATALOG_ROW_MAX);
+}
+
+/** Fair-share UTF-8 budget for `slotsLeft` lines inside `remainingBytes` (`\n\n` reserved). */
+function catalogLineBudget(remainingBytes: number, slotsLeft: number): number {
+  if (slotsLeft <= 0) return 0;
+  const joinOverhead = 2 * Math.max(0, slotsLeft - 1);
+  return Math.max(0, Math.floor((remainingBytes - joinOverhead) / slotsLeft));
+}
+
+/**
+ * Pack catalog lines by remaining budget so occupancy 1 is not truncated to
+ * the 40-slot worst-case share. Each line's UTF-8 budget is remaining / slots
+ * left (join `\n\n` reserved). Truncate only when a line exceeds that share.
+ * At most `CATALOG_ROW_MAX` rows.
+ */
+export function packCatalogLines(
+  lines: readonly string[],
+  ceilingBytes: number = HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES,
+): string[] {
+  const packed = lines.slice(0, CATALOG_ROW_MAX);
+  if (packed.length === 0) return [];
+  const out: string[] = [];
+  let remaining = ceilingBytes;
+  for (let i = 0; i < packed.length; i++) {
+    const slotsLeft = packed.length - i;
+    const joinThis = out.length > 0 ? 2 : 0;
+    const remainingAfterJoin = remaining - joinThis;
+    const lineBudget = catalogLineBudget(remainingAfterJoin, slotsLeft);
+    let line = packed[i]!;
+    if (byteLength(line) > lineBudget) {
+      line = truncateUtf8(line, lineBudget);
+    }
+    out.push(line);
+    remaining -= joinThis + byteLength(line);
+  }
+  return out;
+}
+
+/**
+ * Candidate IN order: pending attach first, then the in-memory set (always-on
+ * already capped + prepended, then sticky). First-N slice in the store cannot
+ * drop the pending slug ahead of sticky/always-on.
+ */
+function wantedCatalogSlugs(
+  set: readonly string[],
+  pendingSlug: string | null,
+): string[] {
+  const wanted: string[] = [];
+  if (pendingSlug) wanted.push(pendingSlug);
+  for (const slug of set) {
+    if (wanted.length >= CATALOG_IN_MAX) break;
+    if (!wanted.includes(slug)) wanted.push(slug);
+  }
+  return wanted;
 }
 
 /** Prefix-preserving UTF-8 truncate (never splits a code point). */
@@ -307,8 +362,9 @@ export function truncateUtf8(s: string, maxBytes: number): string {
  * and so `[]` is only ever a real empty set (host detach-all). On that path,
  * missing sticky/always-on slugs are dropped when `skillExistsBySlug` still
  * answers (ghost GC); an unavailable exists keeps the slug. Each catalog line
- * is flattened to one line and UTF-8-truncated to a per-line budget derived
- * from the existing 32+8 count caps so a maxed CJK library cannot skip a
+ * is flattened to one line and packed by remaining budget (not the worst-case
+ * 40-slot share) so occupancy 1 is not chopped while bytes remain; the 32+8
+ * count caps are the row ceiling. A maxed CJK library cannot skip a
  * resolvable slug off the preamble while keeping it sticky (the retired
  * silent-lie class). The joined catalog stays under
  * `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES`.
@@ -353,8 +409,11 @@ export async function resolveSkillPreamble(
   // Ordered candidate set (insertion order preserved, de-duplicated).
   // Always-on slugs (plan #720 phase 2) are prepended BEFORE the sticky set
   // so they are listed first — but they are NEVER added to the sticky set or
-  // persisted to `meta.attachedSkills`.
-  const alwaysOn = alwaysOnSlugs?.filter((s) => SKILL_SLUG_RE.test(s)) ?? [];
+  // persisted to `meta.attachedSkills`. Cap on read so a concurrent
+  // setAlwaysOn race cannot overflow the IN slice and GC sticky.
+  const alwaysOnRaw =
+    alwaysOnSlugs?.filter((s) => SKILL_SLUG_RE.test(s)) ?? [];
+  const alwaysOn = alwaysOnRaw.slice(0, USER_ALWAYS_ON_SKILLS_MAX);
   const set: string[] = [];
   // Prepending always-on slugs first (order = auto-attach, then sticky).
   for (const slug of alwaysOn) {
@@ -415,10 +474,11 @@ export async function resolveSkillPreamble(
   const blocks: string[] = [];
   let summaries: { slug: string; name: string; description: string }[] = [];
   let storeError = false;
-  const candidateSlugs: string[] = [...set];
-  if (pendingAttach && !candidateSlugs.includes(pendingAttach.slug)) {
-    candidateSlugs.push(pendingAttach.slug);
-  }
+  const candidateSlugs = wantedCatalogSlugs(
+    set,
+    pendingAttach ? pendingAttach.slug : null,
+  );
+  const queried = new Set(candidateSlugs);
   try {
     const listed = await listUserSkills.listUserSkillsBySlugs(
       userId,
@@ -480,28 +540,43 @@ export async function resolveSkillPreamble(
     if (pendingAttach) {
       const summary = bySlug.get(pendingAttach.slug);
       if (!summary) {
-        events.push({
-          action: 'attach',
-          slug: pendingAttach.slug,
-          ok: false,
-          reason: 'unknown skill',
-        });
+        // Missing only counts as unknown when the IN actually queried it.
+        // A slice miss must not look like a deleted skill.
+        if (queried.has(pendingAttach.slug)) {
+          events.push({
+            action: 'attach',
+            slug: pendingAttach.slug,
+            ok: false,
+            reason: 'unknown skill',
+          });
+        }
       } else {
         if (!set.includes(pendingAttach.slug)) set.push(pendingAttach.slug);
         events.push({ action: 'attach', slug: pendingAttach.slug, ok: true });
       }
       pendingAttach = null;
     }
-    const lineMax = catalogLineMaxBytes();
+    const rawLines: string[] = [];
+    const rawSlugs: string[] = [];
     for (const slug of set) {
       const summary = bySlug.get(slug);
-      if (!summary) continue; // deleted/stale slug silently drops from sticky
-      finalSlugs.push(slug); // resolvable candidate slug stays attached
-      let line = buildCatalogLine(summary);
-      if (byteLength(line) > lineMax) {
-        line = truncateUtf8(line, lineMax);
+      if (!summary) {
+        if (!queried.has(slug)) {
+          // Slice miss: keep sticky/always-on; do not GC as deleted.
+          finalSlugs.push(slug);
+        }
+        continue;
       }
-      if (!line) line = `\`${slug}\``;
+      finalSlugs.push(slug);
+      if (rawLines.length < CATALOG_ROW_MAX) {
+        rawLines.push(buildCatalogLine(summary));
+        rawSlugs.push(slug);
+      }
+    }
+    const packed = packCatalogLines(rawLines);
+    for (let i = 0; i < packed.length; i++) {
+      let line = packed[i]!;
+      if (!line) line = rawSlugs[i]!;
       blocks.push(line);
     }
   }

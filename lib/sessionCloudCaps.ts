@@ -75,8 +75,9 @@ export const HARNESS_SESSION_MAX_ATTACHED_SKILLS = 32;
  * on-demand `fetch_skill` tool), so this value is now a **safety rail over the
  * catalog**, not the default inject. A typical 32+8 one-liner catalog is a
  * few KiB; a maxed CJK name+description library can exceed 256 KiB, so
- * `skillInject` flattens each entry to one line and UTF-8-truncates to a
- * per-line budget derived from those count caps — every resolvable slug still
+ * `skillInject` flattens each entry to one line and packs by remaining
+ * budget (occupancy 1 may use this full ceiling; the 32+8 count caps are the
+ * row ceiling, not a per-line tax) — every resolvable slug still
  * appears. Kept UNCHANGED as the inject ceiling (not raised, not lowered —
  * no human cap-gate triggered).
  *
@@ -162,7 +163,7 @@ export const PERSONA_VERSION_MAX = 100;
  * NEW generous cap — 8 catalog lines (name ≤ 200, description ≤ 2000). A
  * maxed CJK library of 32 sticky + 8 always-on can exceed the 256 KiB
  * `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES` ceiling; catalog assembly
- * truncates per line so every resolvable slug still appears. No existing
+ * packs by remaining budget so occupancy 1 is not chopped. No existing
  * cap changed.
  */
 export const USER_ALWAYS_ON_SKILLS_MAX = 8;

@@ -21,7 +21,11 @@ import {
   updateUserSkillBody,
   updateUserSkillSummary,
 } from './userSkills';
-import { SKILL_VERSION_MAX, USER_ALWAYS_ON_SKILLS_MAX } from '../sessionCloudCaps';
+import {
+  HARNESS_SESSION_MAX_ATTACHED_SKILLS,
+  SKILL_VERSION_MAX,
+  USER_ALWAYS_ON_SKILLS_MAX,
+} from '../sessionCloudCaps';
 import {
   createIsolatedTestDb,
   getSharedDb,
@@ -468,6 +472,33 @@ describe('userSkills', () => {
     expect(cross.value).toEqual([]);
   });
 
+  it('listUserSkillsBySlugs slices IN to sticky+always-on+1 (keeps first N)', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    await createUserSkill(
+      { userId, name: 'First', slug: 's0', body: 'x' },
+      { db: db as never },
+    );
+    const inCapSlug = `s${HARNESS_SESSION_MAX_ATTACHED_SKILLS + USER_ALWAYS_ON_SKILLS_MAX}`;
+    const droppedSlug = `s${HARNESS_SESSION_MAX_ATTACHED_SKILLS + USER_ALWAYS_ON_SKILLS_MAX + 1}`;
+    await createUserSkill(
+      { userId, name: 'InCap', slug: inCapSlug, body: 'x' },
+      { db: db as never },
+    );
+    await createUserSkill(
+      { userId, name: 'Dropped', slug: droppedSlug, body: 'x' },
+      { db: db as never },
+    );
+    const slugs = Array.from(
+      { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS + USER_ALWAYS_ON_SKILLS_MAX + 2 },
+      (_, i) => `s${i}`,
+    );
+    const listed = await listUserSkillsBySlugs(userId, slugs, { db: db as never });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error('expected ok');
+    expect(listed.value.map((s) => s.slug).sort()).toEqual(['s0', inCapSlug].sort());
+    expect(listed.value.map((s) => s.slug)).not.toContain(droppedSlug);
+  });
+
   it('empty user → empty list; missing userId create → no_membership', async () => {
     const { userId } = await seedUser('t1', 'u@example.com');
     const listed = await listUserSkills(userId, { db: db as never });
@@ -580,6 +611,26 @@ describe('setAlwaysOn + listAlwaysOnSkills (plan #720 phase 2)', () => {
     // Now we have one slot; setting true after freeing a slot works.
     const refill = await setAlwaysOn(userId, ids[USER_ALWAYS_ON_SKILLS_MAX], true, { db: db as never });
     expect(refill.ok).toBe(true);
+  });
+
+  it('listAlwaysOnSkills caps on read at USER_ALWAYS_ON_SKILLS_MAX (race-safe)', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    for (let i = 0; i < USER_ALWAYS_ON_SKILLS_MAX + 1; i++) {
+      const c = await createUserSkill(
+        { userId, name: `S${i}`, slug: `s_${i}`, body: `body ${i}` },
+        { db: db as never },
+      );
+      expect(c.ok).toBe(true);
+    }
+    // Bypass setAlwaysOn write cap (simulates a concurrent race past the cap).
+    await db
+      .update(schema.userSkills)
+      .set({ isAlwaysOn: true })
+      .where(eq(schema.userSkills.userId, userId));
+    const listed = await listAlwaysOnSkills(userId, { db: db as never });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error('expected ok');
+    expect(listed.value).toHaveLength(USER_ALWAYS_ON_SKILLS_MAX);
   });
 
   it('setAlwaysOn returns not_found for a foreign/non-existent skill', async () => {

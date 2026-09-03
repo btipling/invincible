@@ -16,6 +16,7 @@ import {
   buildSkillBlock,
   catalogLineMaxBytes,
   flattenCatalogText,
+  packCatalogLines,
   parseSkillCommand,
   resolveSkillPreamble,
   truncateUtf8,
@@ -80,6 +81,28 @@ function listerOf(
       return {
         ok: true as const,
         value: rows.filter((r) => wanted.has(r.slug)),
+      };
+    },
+  };
+}
+
+/** Catalog lister that mirrors `listUserSkillsBySlugs` first-N IN slice. */
+function slicingLister(
+  rows: { slug: string; name: string; description: string }[],
+): SkillSummaryLister {
+  const max =
+    HARNESS_SESSION_MAX_ATTACHED_SKILLS + USER_ALWAYS_ON_SKILLS_MAX + 1;
+  return {
+    async listUserSkillsBySlugs(_userId: string, slugs: readonly string[]) {
+      const wanted: string[] = [];
+      for (const raw of slugs) {
+        if (wanted.length >= max) break;
+        if (!wanted.includes(raw)) wanted.push(raw);
+      }
+      const keep = new Set(wanted);
+      return {
+        ok: true as const,
+        value: rows.filter((r) => keep.has(r.slug)),
       };
     },
   };
@@ -255,6 +278,22 @@ describe('catalog line budget (adversarial-review #932)', () => {
     const cut = truncateUtf8(s, 10); // 10 bytes; each 中 is 3 bytes → 3 chars
     expect(cut).toBe('中'.repeat(3));
     expect(new TextEncoder().encode(cut).length).toBe(9);
+  });
+
+  it('occupancy-1 max CJK name+desc is not chopped while budget remains', () => {
+    const raw = buildCatalogLine({
+      slug: 'always-cjk',
+      name: '中'.repeat(200),
+      description: '文'.repeat(2000),
+    });
+    expect(new TextEncoder().encode(raw).length).toBeGreaterThan(catalogLineMaxBytes());
+    expect(packCatalogLines([raw])).toEqual([raw]);
+  });
+
+  it('packCatalogLines keeps the 40-row ceiling', () => {
+    const slots = HARNESS_SESSION_MAX_ATTACHED_SKILLS + USER_ALWAYS_ON_SKILLS_MAX;
+    const lines = Array.from({ length: slots + 1 }, (_, i) => `s${i} — n`);
+    expect(packCatalogLines(lines)).toHaveLength(slots);
   });
 });
 
@@ -851,5 +890,184 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
     expect(new TextEncoder().encode(firstLine).length).toBeLessThanOrEqual(
       catalogLineMaxBytes(),
     );
+  });
+
+  it('occupancy-1 always-on max CJK name+desc is not chopped while budget remains', async () => {
+    const row = {
+      slug: 'always-cjk',
+      name: '中'.repeat(200),
+      description: '文'.repeat(2000),
+    };
+    const rawLine = buildCatalogLine(row);
+    expect(new TextEncoder().encode(rawLine).length).toBeGreaterThan(catalogLineMaxBytes());
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'none' },
+      alwaysOnSlugs: ['always-cjk'],
+      userSkills: readerOf({ 'always-cjk': { body: 'B' } }),
+      listUserSkills: listerOf([row]),
+    });
+    expect(res.preamble).toBe(rawLine);
+    expect(new TextEncoder().encode(res.preamble ?? '').length).toBeLessThanOrEqual(
+      HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES,
+    );
+  });
+
+  it('pending attach is first in the catalog IN list', async () => {
+    const sticky = Array.from(
+      { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS },
+      (_, i) => `s${i}`,
+    );
+    const alwaysOn = Array.from(
+      { length: USER_ALWAYS_ON_SKILLS_MAX + 1 },
+      (_, i) => `a${i}`,
+    );
+    const pending = 'new-skill';
+    const seen: string[][] = [];
+    const rows = [...alwaysOn, ...sticky, pending].map((slug) => ({
+      slug,
+      name: slug,
+      description: '',
+    }));
+    const lister: SkillSummaryLister = {
+      async listUserSkillsBySlugs(_userId, slugs) {
+        seen.push([...slugs]);
+        return {
+          ok: true as const,
+          value: rows.filter((r) => slugs.includes(r.slug)),
+        };
+      },
+    };
+    const store = new FakeStore(
+      makeEnvelope({ attachedSkills: JSON.stringify(sticky) }),
+    );
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'attach', slug: 'new-skill', rest: '' },
+      sessionStore: store,
+      sessionKey: KEY,
+      alwaysOnSlugs: alwaysOn,
+      userSkills: readerOf(
+        Object.fromEntries(rows.map((r) => [r.slug, { body: 'B' }])),
+      ),
+      listUserSkills: lister,
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]![0]).toBe('new-skill');
+    expect(readEventActions(res)).toEqual([
+      { action: 'attach', slug: 'new-skill', ok: true },
+    ]);
+  });
+
+  it('9 always-on + 32 sticky + pending attach: slicing IN cannot yield unknown skill', async () => {
+    const sticky = Array.from(
+      { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS },
+      (_, i) => `s${i}`,
+    );
+    const alwaysOn = Array.from(
+      { length: USER_ALWAYS_ON_SKILLS_MAX + 1 },
+      (_, i) => `a${i}`,
+    );
+    const pending = 'new-skill';
+    const rows = [...alwaysOn, ...sticky, pending].map((slug) => ({
+      slug,
+      name: slug,
+      description: '',
+    }));
+    const store = new FakeStore(
+      makeEnvelope({ attachedSkills: JSON.stringify(sticky) }),
+    );
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'attach', slug: pending, rest: '' },
+      sessionStore: store,
+      sessionKey: KEY,
+      alwaysOnSlugs: alwaysOn,
+      userSkills: readerOf(
+        Object.fromEntries(rows.map((r) => [r.slug, { body: 'B' }])),
+      ),
+      listUserSkills: slicingLister(rows),
+    });
+    expect(readEventActions(res)).toEqual([
+      { action: 'attach', slug: pending, ok: true },
+    ]);
+    expect(res.attachedSlugs).toContain(pending);
+    for (const slug of sticky) {
+      expect(res.attachedSlugs).toContain(slug);
+    }
+    expect(res.attachedSlugs).not.toContain(alwaysOn[USER_ALWAYS_ON_SKILLS_MAX]);
+  });
+
+  it('over-cap always-on does not GC last sticky via IN slice miss', async () => {
+    const sticky = Array.from(
+      { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS },
+      (_, i) => `s${i}`,
+    );
+    const lastSticky = sticky[sticky.length - 1]!;
+    const alwaysOn = Array.from(
+      { length: USER_ALWAYS_ON_SKILLS_MAX + 2 },
+      (_, i) => `a${i}`,
+    );
+    const rows = [...alwaysOn, ...sticky].map((slug) => ({
+      slug,
+      name: slug,
+      description: '',
+    }));
+    const store = new FakeStore(
+      makeEnvelope({ attachedSkills: JSON.stringify(sticky) }),
+    );
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'none' },
+      sessionStore: store,
+      sessionKey: KEY,
+      alwaysOnSlugs: alwaysOn,
+      userSkills: readerOf(
+        Object.fromEntries(rows.map((r) => [r.slug, { body: 'B' }])),
+      ),
+      listUserSkills: slicingLister(rows),
+    });
+    expect(res.attachedSlugs).toContain(lastSticky);
+    expect(store.upserts[0]!.meta?.attachedSkills).toBe(JSON.stringify(sticky));
+    expect(res.attachedSlugs.filter((s) => alwaysOn.includes(s))).toHaveLength(
+      USER_ALWAYS_ON_SKILLS_MAX,
+    );
+  });
+
+  it('IN slice miss of extra sticky is kept (not treated as deleted)', async () => {
+    const sticky = Array.from(
+      { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS + 1 },
+      (_, i) => `s${i}`,
+    );
+    const lastSticky = sticky[sticky.length - 1]!;
+    const alwaysOn = Array.from(
+      { length: USER_ALWAYS_ON_SKILLS_MAX },
+      (_, i) => `a${i}`,
+    );
+    const pending = 'new-skill';
+    const rows = [...alwaysOn, ...sticky, pending].map((slug) => ({
+      slug,
+      name: slug,
+      description: '',
+    }));
+    const store = new FakeStore(
+      makeEnvelope({ attachedSkills: JSON.stringify(sticky) }),
+    );
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'attach', slug: pending, rest: '' },
+      sessionStore: store,
+      sessionKey: KEY,
+      alwaysOnSlugs: alwaysOn,
+      userSkills: readerOf(
+        Object.fromEntries(rows.map((r) => [r.slug, { body: 'B' }])),
+      ),
+      listUserSkills: slicingLister(rows),
+    });
+    expect(readEventActions(res)).toEqual([
+      { action: 'attach', slug: pending, ok: true },
+    ]);
+    expect(res.attachedSlugs).toContain(pending);
+    expect(res.attachedSlugs).toContain(lastSticky);
   });
 });
