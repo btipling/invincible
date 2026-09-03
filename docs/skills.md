@@ -6,13 +6,18 @@ They are created and edited in **Settings → Skills** and stored in the per-use
 `user_skills` table. Skills are **non-secret plaintext user content** (no DEK)
 and are scoped to exactly one user + tenant.
 
-To use a skill in a session, **attach it with a slash command** — type
-`/skill-name` in the harness composer. The server resolves the skill and adds
-its slug to the session's attached set; the transcript shows a
-`Skill attached: <slug>` row. The agent can also **search / read your own
-skills directly** with the server-side `find_skill` and `fetch_skill` tools,
-**or manage your skills** (create / read / update / delete) through the
-`meta_skill_*` authoring tools
+The session catalog is **sticky ∪ always-on**. On Production `/harness`
+(durable turns via `POST /api/turns`) the durable model step re-resolves
+sticky / always-on skills only (`command: none`) — it does **not** parse
+slash commands. Typing `/skill-name` in the harness composer does **not**
+attach a skill or join the catalog there. Slash-command `/skill-name` /
+`/unskill slug` attach still lives on the legacy `/api/agent` path
+(tests/JSON); Production `runHarnessTurn` posts `/api/turns` and never
+calls `parseSkillCommand`. Toggle a skill **always-on** in Settings to
+have it auto-join every session's catalog. The agent can also **search /
+read your own skills directly** with the server-side `find_skill` and
+`fetch_skill` tools, **or manage your skills** (create / read / update /
+delete) through the `meta_skill_*` authoring tools
 (see [Agent skill-search tools](#agent-skill-search-tools-find_skill--fetch_skill)
 and [Agent skill-authoring tools](#agent-skill-authoring-tools-meta_skill_)).
 
@@ -85,7 +90,15 @@ works.
 
 ## Using a skill in a session
 
-Type a slash command in the harness composer:
+**Production `/harness` (durable turns):** `runHarnessTurn` posts `/api/turns`
+and never calls `parseSkillCommand`. The durable model step does **not** parse
+slash commands (`command: none`); it re-resolves sticky / always-on slugs
+only. Typing `/skill-name` in the composer does **not** attach a skill or
+populate the catalog. Toggle a skill **always-on** in Settings to auto-join
+every session; sticky slugs already on `meta.attachedSkills` (from a prior
+`/api/agent` attach) still re-resolve.
+
+**`/api/agent` (legacy tests/JSON):** type a slash command in the prompt:
 
 - **`/skill-name`** — attach the skill. `/create-plan please scaffold` attaches
   `create-plan` **and** sends the remaining prose (`please scaffold`) to the

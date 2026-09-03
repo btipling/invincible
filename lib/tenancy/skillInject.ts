@@ -221,8 +221,9 @@ export function buildSkillBlock(slug: string, body: string): string {
  * `find_skill`'s summary line in `lib/agent/skillTools.ts` (slug first so the
  * model can follow up with `fetch_skill`). Summaries only — never a body.
  *
- * Name and description are flattened to a single line (`\s+` → one space) so a
- * legal stored description cannot split the catalog into extra fake entries.
+ * Name and description are flattened to a single line (JS `\s` plus U+0085
+ * NEXT LINE, which `\s` misses) so a legal stored description cannot split
+ * the catalog into extra fake entries.
  */
 export function buildCatalogLine(entry: {
   slug: string;
@@ -234,9 +235,14 @@ export function buildCatalogLine(entry: {
   return `\`${entry.slug}\` — ${name}${description ? `: ${description}` : ''}`;
 }
 
-/** Collapse whitespace so each catalog entry is exactly one line. */
+/**
+ * Collapse whitespace so each catalog entry is exactly one line.
+ * JS `\s` is ECMA-262 WhiteSpace + LineTerminator and does not match U+0085
+ * NEXT LINE (NEL). Unicode TR#14 treats NEL as a line break, so flatten it
+ * too — otherwise `meta_skill_update_summary` can inject a fake second row.
+ */
 export function flattenCatalogText(s: string): string {
-  return s.replace(/\s+/g, ' ').trim();
+  return s.replace(/[\u0085\s]+/g, ' ').trim();
 }
 
 function byteLength(s: string): number {
