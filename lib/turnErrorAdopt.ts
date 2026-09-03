@@ -111,16 +111,25 @@ export function withHostOnlySuffix(
  * Worker this-run `user` is `turnWorkflow.userMessage` = production
  * `formatPromptWithHistory` fold. Host local is the composer line. Exact
  * text misses; `queueTextFromUserContent` unwraps the last `User:` line.
+ *
+ * Coverage is a **bag** of unwrap-keys, not set-membership: a same-text
+ * retry after the composer (or a re-ask of a prior history line) must not
+ * be treated as already covered (adversarial #935).
  */
-function workerCoversUser(
+function userCoverageKey(text: string): string {
+  return queueTextFromUserContent(text);
+}
+
+function workerUserCoverage(
   worker: ReadonlyArray<SessionMessage>,
-  text: string,
-): boolean {
-  return worker.some((w) => {
-    if (w.role !== 'user') return false;
-    if (w.text === text) return true;
-    return queueTextFromUserContent(w.text) === text;
-  });
+): Map<string, number> {
+  const remaining = new Map<string, number>();
+  for (const w of worker) {
+    if (w.role !== 'user') continue;
+    const k = userCoverageKey(w.text);
+    remaining.set(k, (remaining.get(k) ?? 0) + 1);
+  }
+  return remaining;
 }
 
 /**
@@ -132,15 +141,23 @@ function workerCoversUser(
  * *before* any extra user and would duplicate the worker wrap-up on flatten
  * PUT (adversarial #935). A worker history-fold covers the composer line via
  * `queueTextFromUserContent` so the this-turn user is not treated as extra.
+ * Each worker user consumes one local user of the same unwrap-key; a
+ * same-text retry after that slot is extra.
  */
 export function withLocalOnlySuffix(
   worker: ReadonlyArray<SessionMessage>,
   local: ReadonlyArray<SessionMessage>,
 ): SessionMessage[] {
+  const remaining = workerUserCoverage(worker);
   let seenExtraUser = false;
   const extras = local.filter((m) => {
     if (m.role === 'user') {
-      if (workerCoversUser(worker, m.text)) return false;
+      const k = userCoverageKey(m.text);
+      const n = remaining.get(k) ?? 0;
+      if (n > 0) {
+        remaining.set(k, n - 1);
+        return false;
+      }
       seenExtraUser = true;
       return true;
     }

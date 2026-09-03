@@ -178,7 +178,7 @@ transcript (GET + reconstruct) for local paint only (`skipCloud`) and unions
 F21 queue / host-only error rows onto that snapshot. A GET miss freezes
 `updatedAt` and holds later host PUTs (including model/effort-pick `repo.put`,
 not only `persist()`) until a GET merges the worker head (recover suffix is
-host-only error/system rows plus extra user lines and the assistant/tool rows that follow that extra user — not this-turn local assistants); a held-session local
+host-only error/system rows plus extra user lines and the assistant/tool rows that follow that extra user — not this-turn local assistants; user coverage is an unwrap-key bag so a same-text retry after the composer is extra); a held-session local
 write does not bump the clock (freeze-0 is the LWW fence — a follow-up prompt
 or F5 must not flatten-clobber it). Host GET of a prev-bearing head fail-closes
 on a broken walk (never this-chunk-only), including `turnStatus=completed` — a
