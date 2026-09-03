@@ -5,6 +5,10 @@ import type {
   SessionEnvelopeInput,
 } from '../sessions/sessionStore';
 import {
+  assertValidSessionEnvelope,
+  validateMetaFields,
+} from '../sessions/sessionStore';
+import {
   HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES,
   HARNESS_SESSION_MAX_ATTACHED_SKILLS,
   USER_ALWAYS_ON_SKILLS_MAX,
@@ -68,6 +72,28 @@ class FakeStore implements SessionStoreEnvelope {
     };
     this.upserts.push(input);
     return { status: 'stored', envelope: this.env };
+  }
+}
+
+/**
+ * Envelope persist that runs the real `assertValidSessionEnvelope` gate.
+ * FakeStore skips it, which hid a 33-sticky persist that Production rejects.
+ */
+class ValidatingStore extends FakeStore {
+  async upsertEnvelope(
+    key: unknown,
+    input: SessionEnvelopeInput,
+  ): Promise<EnvelopeUpsertResult> {
+    const envelope: SessionEnvelope = {
+      id: input.id,
+      userId: input.userId,
+      tenantId: input.tenantId,
+      createdAt: this.env?.createdAt ?? 1,
+      updatedAt: input.updatedAt,
+      meta: input.meta ?? {},
+    };
+    assertValidSessionEnvelope(envelope);
+    return super.upsertEnvelope(key, input);
   }
 }
 
@@ -517,7 +543,7 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
 
   it('store listUserSkills fail-open: GC does not call getSkillBySlug (exists-only, one call per slug)', async () => {
     const sticky = Array.from(
-      { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS },
+      { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS - 1 },
       (_, i) => `skill-${String(i).padStart(2, '0')}`,
     );
     const present: Record<string, boolean> = Object.fromEntries(
@@ -915,7 +941,7 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
 
   it('pending attach is first in the catalog IN list', async () => {
     const sticky = Array.from(
-      { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS },
+      { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS - 1 },
       (_, i) => `s${i}`,
     );
     const alwaysOn = Array.from(
@@ -959,9 +985,9 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
     ]);
   });
 
-  it('9 always-on + 32 sticky + pending attach: slicing IN cannot yield unknown skill', async () => {
+  it('9 always-on + 31 sticky + pending attach: slicing IN cannot yield unknown skill', async () => {
     const sticky = Array.from(
-      { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS },
+      { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS - 1 },
       (_, i) => `s${i}`,
     );
     const alwaysOn = Array.from(
@@ -1036,10 +1062,41 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
 
   it('IN slice miss of extra sticky is kept (not treated as deleted)', async () => {
     const sticky = Array.from(
-      { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS + 1 },
+      { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS + 2 },
       (_, i) => `s${i}`,
     );
     const lastSticky = sticky[sticky.length - 1]!;
+    const alwaysOn = Array.from(
+      { length: USER_ALWAYS_ON_SKILLS_MAX },
+      (_, i) => `a${i}`,
+    );
+    const rows = [...alwaysOn, ...sticky].map((slug) => ({
+      slug,
+      name: slug,
+      description: '',
+    }));
+    const store = new FakeStore(
+      makeEnvelope({ attachedSkills: JSON.stringify(sticky) }),
+    );
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'none' },
+      sessionStore: store,
+      sessionKey: KEY,
+      alwaysOnSlugs: alwaysOn,
+      userSkills: readerOf(
+        Object.fromEntries(rows.map((r) => [r.slug, { body: 'B' }])),
+      ),
+      listUserSkills: slicingLister(rows),
+    });
+    expect(res.attachedSlugs).toContain(lastSticky);
+  });
+
+  it('32 sticky + 8 always-on: /new-skill is refused (names the 32 cap); persist stays at 32', async () => {
+    const sticky = Array.from(
+      { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS },
+      (_, i) => `s${i}`,
+    );
     const alwaysOn = Array.from(
       { length: USER_ALWAYS_ON_SKILLS_MAX },
       (_, i) => `a${i}`,
@@ -1050,7 +1107,7 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
       name: slug,
       description: '',
     }));
-    const store = new FakeStore(
+    const store = new ValidatingStore(
       makeEnvelope({ attachedSkills: JSON.stringify(sticky) }),
     );
     const res = await resolveSkillPreamble({
@@ -1062,12 +1119,152 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
       userSkills: readerOf(
         Object.fromEntries(rows.map((r) => [r.slug, { body: 'B' }])),
       ),
-      listUserSkills: slicingLister(rows),
+      listUserSkills: listerOf(rows),
+    });
+    expect(res.events[0]).toEqual({
+      action: 'attach',
+      slug: pending,
+      ok: false,
+      reason: `sticky limit reached (${HARNESS_SESSION_MAX_ATTACHED_SKILLS})`,
+    });
+    expect(res.preamble).not.toContain(`${pending} —`);
+    expect(res.attachedSlugs).not.toContain(pending);
+    const stickyReturned = JSON.parse(res.attachedSkills) as unknown[];
+    expect(stickyReturned).toHaveLength(HARNESS_SESSION_MAX_ATTACHED_SKILLS);
+    expect(validateMetaFields({ attachedSkills: res.attachedSkills }).ok).toBe(true);
+    expect(store.upserts).toHaveLength(1);
+    const persisted = store.upserts[0]!.meta?.attachedSkills as string;
+    expect(JSON.parse(persisted)).toHaveLength(HARNESS_SESSION_MAX_ATTACHED_SKILLS);
+    expect(validateMetaFields({ attachedSkills: persisted }).ok).toBe(true);
+  });
+
+  it('32 sticky + 8 always-on fail-open attach is refused (does not grow sticky to 33)', async () => {
+    const sticky = Array.from(
+      { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS },
+      (_, i) => `s${i}`,
+    );
+    const alwaysOn = Array.from(
+      { length: USER_ALWAYS_ON_SKILLS_MAX },
+      (_, i) => `a${i}`,
+    );
+    const present: Record<string, boolean> = Object.fromEntries(
+      [...sticky, ...alwaysOn, 'new-skill'].map((s) => [s, true]),
+    );
+    let existsCalls = 0;
+    const reader: SkillExistsReader = {
+      async skillExistsBySlug(_userId, slug) {
+        existsCalls += 1;
+        return { ok: true as const, value: present[slug] === true };
+      },
+    };
+    const store = new ValidatingStore(
+      makeEnvelope({ attachedSkills: JSON.stringify(sticky) }),
+    );
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'attach', slug: 'new-skill', rest: '' },
+      sessionStore: store,
+      sessionKey: KEY,
+      alwaysOnSlugs: alwaysOn,
+      userSkills: reader,
+      listUserSkills: failingLister('ok-false'),
+    });
+    expect(res.events[0]).toEqual({
+      action: 'attach',
+      slug: 'new-skill',
+      ok: false,
+      reason: `sticky limit reached (${HARNESS_SESSION_MAX_ATTACHED_SKILLS})`,
+    });
+    expect(res.attachedSlugs).not.toContain('new-skill');
+    expect(JSON.parse(res.attachedSkills)).toHaveLength(
+      HARNESS_SESSION_MAX_ATTACHED_SKILLS,
+    );
+    expect(validateMetaFields({ attachedSkills: res.attachedSkills }).ok).toBe(true);
+    expect(JSON.parse(store.upserts[0]!.meta?.attachedSkills as string)).toHaveLength(
+      HARNESS_SESSION_MAX_ATTACHED_SKILLS,
+    );
+    // Refuse is before catalog IN, so exists GC walks sticky ∪ always-on only.
+    expect(existsCalls).toBe(sticky.length + alwaysOn.length);
+  });
+
+  it('31 sticky + 8 always-on: new attach is catalog-listed and persisted as 32', async () => {
+    const sticky = Array.from(
+      { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS - 1 },
+      (_, i) => `s${i}`,
+    );
+    const alwaysOn = Array.from(
+      { length: USER_ALWAYS_ON_SKILLS_MAX },
+      (_, i) => `a${i}`,
+    );
+    const pending = 'new-skill';
+    const rows = [...alwaysOn, ...sticky, pending].map((slug) => ({
+      slug,
+      name: slug,
+      description: '',
+    }));
+    const store = new ValidatingStore(
+      makeEnvelope({ attachedSkills: JSON.stringify(sticky) }),
+    );
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'attach', slug: pending, rest: '' },
+      sessionStore: store,
+      sessionKey: KEY,
+      alwaysOnSlugs: alwaysOn,
+      userSkills: readerOf(
+        Object.fromEntries(rows.map((r) => [r.slug, { body: 'B' }])),
+      ),
+      listUserSkills: listerOf(rows),
     });
     expect(readEventActions(res)).toEqual([
       { action: 'attach', slug: pending, ok: true },
     ]);
-    expect(res.attachedSlugs).toContain(pending);
-    expect(res.attachedSlugs).toContain(lastSticky);
+    expect(res.preamble).toContain(`${pending} —`);
+    expect(JSON.parse(res.attachedSkills)).toHaveLength(
+      HARNESS_SESSION_MAX_ATTACHED_SKILLS,
+    );
+    expect(validateMetaFields({ attachedSkills: res.attachedSkills }).ok).toBe(true);
+    expect(JSON.parse(store.upserts[0]!.meta?.attachedSkills as string)).toHaveLength(
+      HARNESS_SESSION_MAX_ATTACHED_SKILLS,
+    );
+  });
+
+  it('re-attach of an already-sticky slug at the 32 cap stays ok:true (set does not grow)', async () => {
+    const sticky = Array.from(
+      { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS },
+      (_, i) => `s${i}`,
+    );
+    const alwaysOn = Array.from(
+      { length: USER_ALWAYS_ON_SKILLS_MAX },
+      (_, i) => `a${i}`,
+    );
+    const existing = sticky[0]!;
+    const rows = [...alwaysOn, ...sticky].map((slug) => ({
+      slug,
+      name: slug,
+      description: '',
+    }));
+    const store = new ValidatingStore(
+      makeEnvelope({ attachedSkills: JSON.stringify(sticky) }),
+    );
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'attach', slug: existing, rest: '' },
+      sessionStore: store,
+      sessionKey: KEY,
+      alwaysOnSlugs: alwaysOn,
+      userSkills: readerOf(
+        Object.fromEntries(rows.map((r) => [r.slug, { body: 'B' }])),
+      ),
+      listUserSkills: listerOf(rows),
+    });
+    expect(readEventActions(res)).toEqual([
+      { action: 'attach', slug: existing, ok: true },
+    ]);
+    expect(res.preamble).toContain(`${existing} —`);
+    expect(JSON.parse(res.attachedSkills)).toHaveLength(
+      HARNESS_SESSION_MAX_ATTACHED_SKILLS,
+    );
+    expect(validateMetaFields({ attachedSkills: res.attachedSkills }).ok).toBe(true);
   });
 });

@@ -372,10 +372,17 @@ export function truncateUtf8(s: string, maxBytes: number): string {
  * Sticky re-resolves are SILENT (no event). An **attach** emits exactly one
  * event: `ok:true` when the skill is catalog-listable (or existence-confirmed
  * via `skillExistsBySlug` on list fail-open), or `ok:false` with a reason
- * (`unknown skill` / `unavailable` / `invalid slug`). No body is injected at
- * attach time, so the former `too_large` / `budget` body-budget rejections no
- * longer fire: an over-256 KiB skill can attach and be catalog-listed (its
- * body is reachable via `fetch_skill`, truncated to the 256 KiB return cap).
+ * (`unknown skill` / `unavailable` / `invalid slug` / `sticky limit reached
+ * (N)`). A new slug is refused when sticky is already at
+ * `HARNESS_SESSION_MAX_ATTACHED_SKILLS` (the envelope write cap): otherwise
+ * `ok:true` plus a 41st catalog line (32 sticky + 8 always-on + pending) is
+ * dropped by `CATALOG_ROW_MAX`, and persist of 33 sticky slugs fails
+ * `validateMetaFields` (catch fail-opens; next turn the attach is gone).
+ * Re-attach of an already-sticky or always-on slug at the cap stays `ok:true`
+ * (the set does not grow). No body is injected at attach time, so the former
+ * `too_large` / `budget` body-budget rejections no longer fire: an over-256 KiB
+ * skill can attach and be catalog-listed (its body is reachable via
+ * `fetch_skill`, truncated to the 256 KiB return cap).
  */
 export async function resolveSkillPreamble(
   input: ResolveSkillCommandInput,
@@ -445,7 +452,24 @@ export async function resolveSkillPreamble(
     if (!SKILL_SLUG_RE.test(command.slug)) {
       events.push({ action: 'attach', slug: command.slug, ok: false, reason: 'invalid slug' });
     } else {
-      pendingAttach = { slug: command.slug };
+      // Envelope `meta.attachedSkills` is capped at 32 sticky slugs. Refuse a
+      // 33rd before catalog IN / paint so we never emit ok:true for a line
+      // CATALOG_ROW_MAX then drops, and never serialize 33 slugs that
+      // `assertValidSessionEnvelope` rejects (catch fail-opens).
+      const stickyCount = set.filter((s) => !alwaysOnSet.has(s)).length;
+      if (
+        !hasSlug(command.slug) &&
+        stickyCount >= HARNESS_SESSION_MAX_ATTACHED_SKILLS
+      ) {
+        events.push({
+          action: 'attach',
+          slug: command.slug,
+          ok: false,
+          reason: `sticky limit reached (${HARNESS_SESSION_MAX_ATTACHED_SKILLS})`,
+        });
+      } else {
+        pendingAttach = { slug: command.slug };
+      }
     }
   } else if (command.type === 'detach') {
     // Always-on slugs cannot be detached: they are user-global, not session
