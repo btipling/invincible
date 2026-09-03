@@ -271,8 +271,9 @@ ops inventory).
   a live run (hydrate from Blob + `GET /api/turns/:runId/stream`);
   unmount/switch/New/Clear/logout is **detach only**, never a cancel — cancel is
   the explicit `POST /api/turns/:runId/cancel`. **Tools are steps:** one
-  `'use step'` = one model round **or** one tool execution **or** one persist —
-  never a mega-step, never wrap `runAgentStream` in a single step. Inference is
+  `'use step'` = one model round **or** one **`toolExecuteStep` (one model
+  round's `toolCalls` / waves)** **or** one persist — never a mega-step, never
+  wrap `runAgentStream` in a single step. Inference is
   server-side: production turns use `/api/turns`; `/api/agent` is the legacy
   tests/JSON path.
 - **Wiring ships by Git deploy:** `workflow` dependency + `withWorkflow(nextConfig)`
