@@ -541,6 +541,29 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
     expect(store.upserts[0]!.meta?.attachedSkills).toBe('["kept"]');
   });
 
+  it('fail-open re-attach of already-sticky slug with exists-unavailable stays ok:true', async () => {
+    const store = new FakeStore(makeEnvelope({ attachedSkills: '["kept"]' }));
+    const unavailable: SkillExistsReader = {
+      async skillExistsBySlug() {
+        return { ok: false as const, error: 'down' };
+      },
+    };
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'attach', slug: 'kept', rest: '' },
+      sessionStore: store,
+      sessionKey: KEY,
+      userSkills: unavailable,
+      listUserSkills: failingLister('throw'),
+    });
+    // Re-attach of a kept slug must match happy-path already-attached → ok:true.
+    expect(readEventActions(res)).toEqual([{ action: 'attach', slug: 'kept', ok: true }]);
+    expect(res.events[0]).toEqual({ action: 'attach', slug: 'kept', ok: true });
+    expect(res.preamble).toBe('kept');
+    expect(res.attachedSlugs).toEqual(['kept']);
+    expect(res.attachedSkills).toBe('["kept"]');
+  });
+
   it('store listUserSkills fail-open: GC does not call getSkillBySlug (exists-only, one call per slug)', async () => {
     const sticky = Array.from(
       { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS - 1 },

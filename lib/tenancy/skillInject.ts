@@ -555,6 +555,11 @@ export async function resolveSkillPreamble(
           ok: false,
           reason: `sticky limit reached (${HARNESS_SESSION_MAX_ATTACHED_SKILLS})`,
         });
+      } else if (already) {
+        // Already in the post-GC set (present or exists-unavailable keep).
+        // Match happy-path re-attach: ok:true so the host does not paint
+        // "Skill not attached" while preamble still lists the slug.
+        events.push({ action: 'attach', slug: pendingAttach.slug, ok: true });
       } else {
         const res = await checkExists(pendingAttach.slug);
         if (!res.present) {
@@ -565,10 +570,8 @@ export async function resolveSkillPreamble(
             reason: res.unavailable ? 'unavailable' : 'unknown skill',
           });
         } else {
-          if (!already) {
-            finalSlugs.push(pendingAttach.slug);
-            blocks.push(pendingAttach.slug);
-          }
+          finalSlugs.push(pendingAttach.slug);
+          blocks.push(pendingAttach.slug);
           events.push({ action: 'attach', slug: pendingAttach.slug, ok: true });
         }
       }
