@@ -511,6 +511,12 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     const runStart = host.indexOf('const runPrompt = useCallback');
     const run = host.slice(runStart, host.indexOf('useEffect(() => {', runStart));
     expect(run).toContain('pendingStopFoldRef.current = null');
+    // Pass 6: wipe THIS session's abort snapshot only. A destination
+    // runPrompt (switch + Send / kickColdAttach) must not drop A's slot or
+    // persist-detached falls back to Stop-fire cancelSnapshot.
+    expect(run).toContain(
+      'lastStopPersistRef.current?.sessionId === sessionRef.current.id',
+    );
     expect(run).toContain('lastStopPersistRef.current = null');
   });
 
@@ -518,6 +524,10 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     expect(host).toContain('pendingStopFoldRef.current');
     expect(host).toContain('applyStopFoldToSession(snapshot, pendingFold.runId, pendingFold.fold)');
     expect(host).toContain('lastStopPersistRef.current');
+    // Pass 6: persistTurn refreshes the abort snapshot even when pendingFold
+    // was nulled by a destination runPrompt (sessionId+runId match).
+    expect(host).toContain('lastStopPersistRef.current.sessionId === foldedSnapshot.id');
+    expect(host).toContain('lastStopPersistRef.current.runId === persistRunId');
   });
 });
 
@@ -526,9 +536,12 @@ describe('shouldSetHostTurnNote (adversarial #853 same-tab detach)', () => {
     expect(shouldSetHostTurnNote('running')).toBe(false);
   });
 
-  it('completed / cancelling / unset still surface the note', () => {
+  it('cancelling (G22 Stop success) does not surface host error chrome (adversarial-review #927 pass 6)', () => {
+    expect(shouldSetHostTurnNote('cancelling')).toBe(false);
+  });
+
+  it('completed / unset still surface the note', () => {
     expect(shouldSetHostTurnNote('completed')).toBe(true);
-    expect(shouldSetHostTurnNote('cancelling')).toBe(true);
     expect(shouldSetHostTurnNote(undefined)).toBe(true);
   });
 });

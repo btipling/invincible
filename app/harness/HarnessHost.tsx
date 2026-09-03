@@ -599,9 +599,14 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       if (!bridge || inflightRef.current) return;
       // Adversarial-review #927: a leftover Stop fold from the previous
       // turn must not ride persistTurn of this prompt (pre-headers snapshot
-      // may still carry the old id, or have cleared it).
+      // may still carry the old id, or have cleared it). Null only THIS
+      // session's abort snapshot — a destination runPrompt (switch + Send /
+      // kickColdAttach) must not drop the abandoned session's slot
+      // (pass 6: persist-detached would fall back to Stop-fire cancelSnapshot).
       pendingStopFoldRef.current = null;
-      lastStopPersistRef.current = null;
+      if (lastStopPersistRef.current?.sessionId === sessionRef.current.id) {
+        lastStopPersistRef.current = null;
+      }
 
       // Plan #887: next operator submit (not attach, not auto-continue) clears
       // the one-shot flag so a later recoverable can fire again.
@@ -676,10 +681,21 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           pendingFold != null
             ? applyStopFoldToSession(snapshot, pendingFold.runId, pendingFold.fold)
             : snapshot;
-        if (pendingFold != null) {
+        const persistRunId = pendingFold?.runId ?? foldedSnapshot.turnRunId;
+        if (
+          persistRunId !== undefined &&
+          (pendingFold != null ||
+            (lastStopPersistRef.current != null &&
+              lastStopPersistRef.current.sessionId === foldedSnapshot.id &&
+              lastStopPersistRef.current.runId === persistRunId))
+        ) {
+          // pendingFold set: record the abort snapshot. pendingFold null:
+          // refresh the existing slot so a destination runPrompt that wiped
+          // pendingStopFoldRef cannot freeze a pre-abort onSessionPatch
+          // (adversarial-review #927 pass 6).
           lastStopPersistRef.current = {
             sessionId: foldedSnapshot.id,
-            runId: pendingFold.runId,
+            runId: persistRunId,
             snapshot: foldedSnapshot,
           };
         }

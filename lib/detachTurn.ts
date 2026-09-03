@@ -195,12 +195,14 @@ export function shouldApplyMintBind(input: {
  * same-epoch + `{ ok: false }` + `turnStatus: 'running'` — canvas Ready, run
  * still live. A host error string would lie that the turn failed.
  *
- * `running` is the persist contract for detach (D18 fold). Other fail
- * outcomes write `completed` (or leave a leftover terminal status) and
- * still surface the note.
+ * `running` is the persist contract for detach (D18 fold). G22 Stop's
+ * success state is `'cancelling'` (host-held liveness) — the canvas already
+ * has `Turn ended · you stopped`; ember `host: Request cancelled.` would be
+ * dual chrome (adversarial-review #927 pass 6). Other fail outcomes write
+ * `completed` (or leave a leftover terminal status) and still surface the note.
  */
 export function shouldSetHostTurnNote(turnStatus?: TurnStatus): boolean {
-  return turnStatus !== 'running';
+  return turnStatus !== 'running' && turnStatus !== 'cancelling';
 }
 
 /**
