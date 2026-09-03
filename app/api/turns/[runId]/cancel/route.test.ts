@@ -22,8 +22,10 @@ import { AUTH_REQUIRED_ERROR } from '../../../../../lib/tenancy/errors';
  *      with strictly-newer updatedAt (LWW: Math.max(now, stored+1))
  *   7. cancel throw → 503 fail-closed and NO overlay write
  *   8. store unavailable → 503 (resolve not-ok / resolve throws / read throws)
- *   9. 429 min-interval soft guard: second accepted cancel inside the window
- *      → 429 + Retry-After; a terminal 409 / 404 / 503 never burns the window
+ *   9. 429 min-interval soft guard: second accepted cancel of the SAME run
+ *      inside the window → 429 + Retry-After; a terminal 409 / 404 / 503 never
+ *      burns the window; an accepted cancel of wr_a does NOT 429 wr_b on the
+ *      same session (pass 8: window is sessionId:runId)
  *  10. accepted cancel with overlay {ok:false} → still 200 + warning (PATCH
  *      failure is non-fatal — the run's own terminal persist owns the truth)
  *  11. tenant resolve failure → 503
@@ -504,6 +506,23 @@ describe('POST /api/turns/:runId/cancel', () => {
     // Still only one cancel() — the 429 never reached the run.
     expect(runCancelSpy).toHaveBeenCalledTimes(1);
     expect(overlayWorkerMetaMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('row 9d — accepted cancel of wr_a does NOT 429 wr_b on the same session (adversarial-review #927 pass 8)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockTenancyOk('s1', 'wf_a');
+    ({ POST } = await import('./route'));
+
+    const res1 = await postCancel('wf_a', 's1');
+    expect(res1.status).toBe(200);
+    expect(runCancelSpy).toHaveBeenCalledTimes(1);
+
+    // Next turn on the same session — Stop must not 429 from wr_a's window.
+    envelopeTurnRunId = 'wf_b';
+    const res2 = await postCancel('wf_b', 's1');
+    expect(res2.status).toBe(200);
+    expect(runCancelSpy).toHaveBeenCalledTimes(2);
   });
 
   it('row 9b — a terminal 409 does NOT burn the window (follow-up live cancel accepted)', async () => {

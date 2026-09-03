@@ -34,11 +34,13 @@
  * a stale `'cancelling'` with a terminal/absent run never blocks the next
  * prompt.
  *
- * Per-session min-interval soft guard (`TURN_CANCEL_MIN_INTERVAL_MS`, NEW cap,
- * plan #816 Caps table): same shape as C15's start guard — per-session,
- * per-process, zero-I/O, and the window advances ONLY on an **accepted**
- * cancel so a terminal 409 / ownership 404 / 503 never burns it. Bounds
- * `getRun`+PATCH write amplification from a hostile repeat-Stop client.
+ * Per-run min-interval soft guard (`TURN_CANCEL_MIN_INTERVAL_MS`, NEW cap,
+ * plan #816 Caps table): same Map+boundedSet shape as C15's start guard —
+ * per-process, zero-I/O, keyed by `sessionId:runId` so an accepted cancel of
+ * wr_1 cannot 429 Stop on wr_2 (adversarial-review #927 pass 8). The window
+ * advances ONLY on an **accepted** cancel so a terminal 409 / ownership 404 /
+ * 503 never burns it. Bounds `getRun`+PATCH write amplification from a hostile
+ * repeat-Stop client on the **same** run.
  *
  * No body. The route never reads or writes the transcript, checkpoint, or
  * queue (Wasm FIFO + F21 mirror untouched).
@@ -65,10 +67,12 @@ export const maxDuration = 1800;
 const services = createProdServices();
 
 /**
- * G22 per-process soft abuse guard — per-session (`sessionId`), NOT global.
- * Same shape as the C15 start guard on `app/api/turns/route.ts` (Map +
- * boundedSet). The window advances ONLY on an accepted cancel — a terminal
- * 409 / ownership 404 / store-or-cancel 503 never burns it.
+ * G22 per-process soft abuse guard — per-run (`sessionId:runId`), NOT global.
+ * Same Map+boundedSet shape as the C15 start guard on `app/api/turns/route.ts`.
+ * Key includes `runId` so an accepted cancel of wr_1 cannot 429 Stop on wr_2
+ * (adversarial-review #927 pass 8). Same-run repeat-Stop still 429s. The window
+ * advances ONLY on an accepted cancel — a terminal 409 / ownership 404 /
+ * store-or-cancel 503 never burns it.
  */
 const lastCancelAtMs = new Map<string, number>();
 const TURN_CANCEL_CACHE_MAX = 256;
@@ -137,11 +141,14 @@ export async function POST(
   }
   const sessionId = rawSessionId; // type-narrowed by isRedisSafeOpaqueId
 
-  // G22 429 min-interval guard — per-session soft abuse gate, zero I/O,
+  // G22 429 min-interval guard — per-run soft abuse gate, zero I/O,
   // BEFORE any gate that may await (tenant resolve, envelope read, getRun).
-  // Advances only on an accepted cancel below.
+  // Keyed by sessionId:runId so an accepted cancel of wr_1 cannot 429 Stop
+  // on wr_2 (adversarial-review #927 pass 8). Advances only on an accepted
+  // cancel below.
   const now = Date.now();
-  const last = lastCancelAtMs.get(sessionId);
+  const cancelWindowKey = `${sessionId}:${cleanRunId}`;
+  const last = lastCancelAtMs.get(cancelWindowKey);
   if (last != null && now - last < TURN_CANCEL_MIN_INTERVAL_MS) {
     return Response.json(
       {
@@ -234,9 +241,9 @@ export async function POST(
     );
   }
 
-  // Accepted cancel — advance the per-session soft-guard window (only an
+  // Accepted cancel — advance the per-run soft-guard window (only an
   // accepted cancel burns it), then persist the host-held liveness marker.
-  boundedSet(lastCancelAtMs, sessionId, Date.now());
+  boundedSet(lastCancelAtMs, cancelWindowKey, Date.now());
 
   // G22 host-held `'cancelling'` marker: worker-owned `turnStatus` PATCH via
   // the B8 overlay seam. `turnRunId` rides unchanged (copy-forward). The
