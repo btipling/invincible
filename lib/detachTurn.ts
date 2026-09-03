@@ -404,5 +404,52 @@ export function decideCancelAckApply(input: {
   return { fold: input.fold, dropPostedId, commit: 'persist' };
 }
 
+/**
+ * Host note when a G22 cancel POST failed (keep-running) **and** this tab
+ * re-attaches so Wasm Busy / ■ Stop return (adversarial-review #927 pass 7).
+ * Must never say the run "will end on its own" — that is the 1h-wall lie.
+ */
+export const CANCEL_RETRY_NOTE =
+  'Stop signal did not reach the server — the run is still live; re-attaching so you can Stop again.';
+
+/**
+ * Host note when a G22 cancel POST failed but this tab cannot re-attach
+ * (pending-only / a follow-up `runPrompt` is already inflight). Honest: the
+ * run is live. Does not claim Stop retry is armed.
+ */
+export const CANCEL_FAILED_NOTE =
+  'Stop signal did not reach the server — the run is still live.';
+
+/**
+ * True when the keep-running ack should cold-attach this tab so Wasm Busy
+ * (and ■ Stop / Esc) return. Stop is Busy-only (`composer_chrome.zig`);
+ * `releaseBusyViewport` already ran on the Stop poll. Posted-id is dropped
+ * on keep-running so a later Stop can re-POST — but only if Busy is restored
+ * (adversarial-review #927 pass 7).
+ *
+ * | Condition | Kick? |
+ * |-----------|-------|
+ * | `persist` + keep-running + same session + idle | yes |
+ * | `pending-only` (`runPrompt` inflight) | no — the next prompt owns the tab |
+ * | `persist-detached` (switch/unmount) | no — switch-back cold-attaches |
+ * | `drop` (Clear / newer id) | no |
+ */
+export function shouldKickCancelRetryAttach(input: {
+  fold: StopFoldAction;
+  commit: CancelAckCommit;
+  unmounted: boolean;
+  liveSessionId: string;
+  cancelSessionId: string;
+  inflight: boolean;
+}): boolean {
+  return (
+    input.fold.kind === 'keep-running' &&
+    input.commit === 'persist' &&
+    !input.unmounted &&
+    !input.inflight &&
+    input.liveSessionId === input.cancelSessionId
+  );
+}
+
 
 

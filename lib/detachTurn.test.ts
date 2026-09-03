@@ -24,6 +24,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   abortReasonFor,
   applyStopFoldToSession,
+  CANCEL_FAILED_NOTE,
+  CANCEL_RETRY_NOTE,
   decideCancelAckApply,
   decideDetach,
   decideDetachPersist,
@@ -36,6 +38,7 @@ import {
   releaseBusyViewport,
   shouldAbortReader,
   shouldApplyMintBind,
+  shouldKickCancelRetryAttach,
   shouldSetHostTurnNote,
   shouldSkipCancelPost,
   type DetachTurnInput,
@@ -482,9 +485,15 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     // a terminal/gone ack drops the posted-id (orphan-unstick); a failed ack
     // keeps running + paints a soft note (never a fake cancel). Failed ack
     // MUST drop the posted-id even when inflight (adversarial-review #927)
-    // so Stop can retry.
+    // so Stop can retry. Pass 7: Stop is Busy-only, so same-session idle
+    // keep-running must kickColdAttach — never the 1h-wall self-end copy.
     expect(poll).toContain("apply.fold.kind === 'keep-running'");
+    expect(poll).toContain('shouldKickCancelRetryAttach(');
+    expect(poll).toContain('kickColdAttach');
+    expect(poll).toContain('CANCEL_RETRY_NOTE');
+    expect(poll).toContain('CANCEL_FAILED_NOTE');
     expect(poll).toContain('setHostNote(');
+    expect(poll).not.toContain('will end on its own');
     expect(poll).toContain('persist(applyStopFoldToSession(');
     expect(poll).toContain('cancelPostedRunIdsRef.current.delete');
     // Adversarial-review #927 pass 4: posted-id delete + pendingFold must
@@ -811,6 +820,70 @@ describe('G22 Stop/Esc server-cancel fold planner (plan #816)', () => {
         dropPostedId: false,
         commit: 'persist-detached',
       });
+    });
+  });
+
+  describe('shouldKickCancelRetryAttach (adversarial-review #927 pass 7)', () => {
+    const keep = { kind: 'keep-running' as const };
+    const accepted = { kind: 'cancelling' as const };
+    const kickBase = {
+      fold: keep,
+      commit: 'persist' as const,
+      unmounted: false,
+      liveSessionId: 's1',
+      cancelSessionId: 's1',
+      inflight: false,
+    };
+
+    it('same-session idle keep-running persist → kick (restore Busy / Stop)', () => {
+      expect(shouldKickCancelRetryAttach(kickBase)).toBe(true);
+    });
+
+    it('pending-only (inflight) → no kick', () => {
+      expect(
+        shouldKickCancelRetryAttach({
+          ...kickBase,
+          commit: 'pending-only',
+          inflight: true,
+        }),
+      ).toBe(false);
+    });
+
+    it('persist-detached (switch / unmount) → no kick', () => {
+      expect(
+        shouldKickCancelRetryAttach({
+          ...kickBase,
+          commit: 'persist-detached',
+          liveSessionId: 's2',
+        }),
+      ).toBe(false);
+      expect(
+        shouldKickCancelRetryAttach({
+          ...kickBase,
+          commit: 'persist-detached',
+          unmounted: true,
+        }),
+      ).toBe(false);
+    });
+
+    it('drop (Clear / newer id) → no kick', () => {
+      expect(
+        shouldKickCancelRetryAttach({ ...kickBase, commit: 'drop' }),
+      ).toBe(false);
+    });
+
+    it('accepted cancelling persist → no kick', () => {
+      expect(
+        shouldKickCancelRetryAttach({ ...kickBase, fold: accepted }),
+      ).toBe(false);
+    });
+
+    it('retry note never tells the operator the run will end on its own', () => {
+      expect(CANCEL_RETRY_NOTE).toContain('re-attaching so you can Stop again');
+      expect(CANCEL_RETRY_NOTE).not.toContain('will end on its own');
+      expect(CANCEL_FAILED_NOTE).toContain('the run is still live');
+      expect(CANCEL_FAILED_NOTE).not.toContain('will end on its own');
+      expect(CANCEL_FAILED_NOTE).not.toContain('re-attaching');
     });
   });
 });

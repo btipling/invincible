@@ -13,7 +13,7 @@ import {
 } from '../../lib/harnessChat';
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
-import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind, shouldSetHostTurnNote, isDetachAbort, releaseBusyViewport, decideStopFoldPre, decideStopFoldPost, shouldSkipCancelPost, applyStopFoldToSession, decideCancelAckApply, type StopFoldAction } from '../../lib/detachTurn';
+import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind, shouldSetHostTurnNote, isDetachAbort, releaseBusyViewport, decideStopFoldPre, decideStopFoldPost, shouldSkipCancelPost, applyStopFoldToSession, decideCancelAckApply, shouldKickCancelRetryAttach, CANCEL_RETRY_NOTE, CANCEL_FAILED_NOTE, type StopFoldAction } from '../../lib/detachTurn';
 import { cancelTurn } from '../../lib/turnApi';
 import { decideHotResume, decideSendAttach, shouldPaintAttachFollowUpNote, shouldPaintAttachFollowUpDetachNote, shouldRepostAttachFollowUp, shouldSkipAttachHotResume, shouldKickHotResume, ATTACH_FOLLOW_UP_NOTE, ATTACH_FOLLOW_UP_DETACH_NOTE, isAttachFollowUpHostNote, coldAttachFromSnapshot, type HeapApplied } from '../../lib/turnAttach';
 import {
@@ -1329,17 +1329,29 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                       }
                     }
                     if (
+                      shouldKickCancelRetryAttach({
+                        fold: apply.fold,
+                        commit: apply.commit,
+                        unmounted: cancelled,
+                        liveSessionId: sessionRef.current.id,
+                        cancelSessionId,
+                        inflight: inflightRef.current,
+                      })
+                    ) {
+                      // Stop is Busy-only. releaseBusyViewport already ran;
+                      // re-attach restores Busy so a later Stop can re-POST
+                      // (adversarial-review #927 pass 7).
+                      setHostNote(CANCEL_RETRY_NOTE);
+                      queueMicrotask(kickColdAttach);
+                    } else if (
                       apply.fold.kind === 'keep-running' &&
                       !cancelled &&
                       sessionRef.current.id === cancelSessionId
                     ) {
-                      // Soft note only — never a fake cancel; the run continues
-                      // to its own terminal (same honesty as detach). Stop can
-                      // retry because we dropped the posted-id and folded
-                      // `running` (or pendingFold for persistTurn).
-                      setHostNote(
-                        'Stop signal did not reach the server — the run is still live; it will end on its own.',
-                      );
+                      // Same session but pending-only (a follow-up runPrompt
+                      // is inflight) — honest note, no re-attach, never the
+                      // 1h-wall "ends by itself" copy.
+                      setHostNote(CANCEL_FAILED_NOTE);
                     }
                     // 'cancelling' — accepted ack; persist already landed it
                     // (or the route overlay PATCH did, when persist is skipped).
