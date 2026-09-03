@@ -128,6 +128,41 @@ These markers are **not** folded as tools into the next prompt. Error turn-end l
 
 There is **no in-repo output-token cap**. `finishReason: length` is the **provider** default max completion (not a product `maxOutputTokens`). The turn completes with the partial text (`done`); it is not a canvas Error.
 
+## Durable events, re-resolve, and the checkpoint Blob
+
+The durable `/api/turns` run holds its live state on the session **envelope** so
+a viewport can attach to / re-resolve a run that survives tab close. The four
+reserved-`meta` carriers are defined in
+[session-model.md](session-model.md) (`turnRunId`, `turnStatus`,
+`turnStreamCursor`, `checkpointPointer`); this section is the wire side.
+
+- **Durable events = `getWritable()` deltas, not the event log.** Token
+  `reasoning_delta` / `text_delta` / `tool_start` / `tool_result` ride the
+  Workflows durable stream (one held writer per model/tool burst). The
+  orchestrator's `step_completed` history stays **delta-only** — the full
+  transcript is never put in the event log (O(n²) entity storage / the 2k-event
+  slow-replay line). The transcript and the checkpoint live in **Blob**; the
+  event log is Vercel's replay history, not the transcript store.
+- **Re-resolve the tool world; re-construct the persist seam.**
+  `modelGenerateStep` and `toolExecuteStep` re-resolve the tool world
+  (`assembleDurableToolWorld`) from the serialized `scope` on every
+  invocation — BYOK/grants, the sandbox bind, MCP servers, and `http_get`
+  are re-resolved **inside the step**, never captured as a closure arg.
+  `persistStep` re-constructs the Blob+envelope persist seam from the same
+  `scope` (`createPersistStepSeam`); it does not assemble the tool world.
+  Nothing the orchestrator holds is a live resource; replay re-derives it.
+  This is why a turn survives a Function recycle: the step boundary is the
+  unit of re-resolution.
+- **Checkpoint-as-Blob.** The message checkpoint (the bounded `{role, content}[]`
+  replay projection the loop truncates with `truncateMessageCheckpoint`) is
+  written as its **own Blob object** — row/byte-capped at
+  `TURN_MSG_CHECKPOINT_MAX_ROWS` = 4096 / `TURN_MSG_CHECKPOINT_MAX_BYTES` = 8 MiB
+  — and only its object **id** rides in envelope `meta.checkpointPointer` (a
+  sibling reserved key to `transcriptPointer`). The checkpoint body is **never**
+  the 1 MiB `meta` body. On replay the loop re-reads the checkpoint from Blob by
+  that pointer; a missing/unreadable checkpoint object is a fresh start for that
+  run, not a corrupt `meta`.
+
 The durable model step (`modelGenerateStep`) passes the **same** `resolveSystem()` string as `POST /api/agent` — base standing orders (including “Be concise”), plus optional persona / attached-skill blocks resolved in-step from the assembled tool registry. Persona inject reads and locks `meta.personaSnapshot` on the envelope (`readEnvelope` / `upsertEnvelope`, `updatedAt` unchanged), not the legacy whole-blob `get`/`put`. A missing system prompt is not an output cap; it is what used to let a provider default `max_tokens` look like a mysterious mid-sentence stop. Slash-command `/skill-name` attach still lives on `/api/agent`; the durable step re-resolves sticky and always-on skills only (`command: none`).
 
 ## Turn-end logs (Workflows)
