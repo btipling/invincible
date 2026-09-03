@@ -52,6 +52,7 @@ import {
   TURN_WALL_CLOCK_WRAPUP,
 } from '../agent/modelFinish';
 import { TURN_WALL_CLOCK_MAX_MS } from '../sessionCloudCaps';
+import { buildModelMessages } from '../agent/modelMessages';
 import { logTurnLoop } from './turnLog';
 
 /**
@@ -278,6 +279,16 @@ export type PersistRunBind = {
 /** Loop input: the user turn (orchestrator-local starting message). */
 export interface TurnLoopInput {
   userMessage: string;
+  /**
+   * Seeded prior orchestrator rows (plan #936, source #549) — the persisted
+   * model-facing projection from prior turns, read from the session-bound Blob
+   * object at `POST /api/turns`. When present, the loop's initial `messages`
+   * becomes `[...priorMessages, {role:'user', content: userMessage}]` instead
+   * of the singleton, so the model sees real `tool-call`/`tool-result` pairs
+   * for prior tool work. Plain serializable values only. Absent = legacy/first
+   * turn (singleton).
+   */
+  priorMessages?: ReadonlyArray<unknown>;
 }
 
 /** Terminal result + the delta log for replay reconstruction (roundtrip). */
@@ -521,12 +532,17 @@ export function derivePersistFold(
     if (bind.cwd !== undefined) cwd = bind.cwd;
     if (bind.activeSandboxId !== undefined) activeSandboxId = bind.activeSandboxId;
   }
+  // Model-facing projection (plan #936, source #549): a sibling derivation over
+  // the SAME reconstructed rows — user / assistant(+tool-calls) / truncated
+  // tool-result rows the NEXT turn seeds from. Bounded by buildModelMessages.
+  const modelMessages = buildModelMessages(messages).rows;
   if (
     checkpoint.length === 0 &&
     usage === undefined &&
     cwd === undefined &&
     activeSandboxId === undefined &&
-    resolvedProvider === undefined
+    resolvedProvider === undefined &&
+    modelMessages.length === 0
   ) {
     return undefined;
   }
@@ -536,6 +552,7 @@ export function derivePersistFold(
     ...(usage !== undefined ? { usage } : {}),
     ...(resolvedProvider !== undefined ? { resolvedProvider } : {}),
     ...(checkpoint.length > 0 ? { checkpoint } : {}),
+    ...(modelMessages.length > 0 ? { modelMessages } : {}),
   };
 }
 
@@ -558,7 +575,13 @@ export async function runTurnLoop(
   const cap = Math.max(0, Math.floor(deps.maxSteps ?? MAX_WORKFLOW_STEPS));
   const writable = onceWritable(deps.writable);
   const deltas: unknown[] = [];
-  const messages: unknown[] = [{ role: 'user', content: input.userMessage }];
+  // Seed from the persisted model-messages projection when present (plan #936):
+  // `[...priorMessages, {role:'user'}]` so the model sees prior typed
+  // assistant/tool rows; otherwise the legacy singleton.
+  const messages: unknown[] = [
+    ...(input.priorMessages ?? []),
+    { role: 'user', content: input.userMessage },
+  ];
 
   const fail = async (
     status: TurnLoopResult['status'],

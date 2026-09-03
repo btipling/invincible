@@ -2,6 +2,7 @@
  * Agent-only request body parse. Chat stays on parseChatBody (no cwd).
  */
 import { parseChatBody } from '../chatServer';
+import { PROMPT_BODY_MAX_CHARS } from '../chatApi';
 import { isRedisSafeOpaqueId, sanitizeReasoningEffort } from '../sessionCloudCaps';
 import { parseInitialCwd } from './workPath';
 
@@ -27,6 +28,16 @@ export type ParsedAgentBody =
        * unset (server default). Present invalid → 400.
        */
       reasoning?: string;
+      /**
+       * Optional legacy history fold (plan #936, source #549). The host sends
+       * today's `formatPromptWithHistory` output here (NOT as `prompt`) on the
+       * durable `/api/turns` path only while the session has no readable
+       * `modelMessagesPointer` yet; the server uses it as the roll-forward
+       * `userMessage` iff the envelope has no readable pointer, else ignores
+       * it. Bounded by the same `PROMPT_BODY_MAX_CHARS` budget as `prompt`
+       * (no cap change). Absent on the legacy `/api/agent` path.
+       */
+      promptHistory?: string;
     }
   | { ok: false; error: string; status: number };
 
@@ -53,6 +64,7 @@ export function parseAgentBody(
           personaId?: unknown;
           sessionId?: unknown;
           reasoning?: unknown;
+          promptHistory?: unknown;
         })
       : {};
 
@@ -72,12 +84,17 @@ export function parseAgentBody(
   if (!reasoning.ok) {
     return reasoning;
   }
+  const promptHistory = parsePromptHistory(obj.promptHistory);
+  if (!promptHistory.ok) {
+    return promptHistory;
+  }
 
   const extra = {
     ...(sandboxId.value !== undefined ? { sandboxId: sandboxId.value } : {}),
     ...(personaId.value !== undefined ? { personaId: personaId.value } : {}),
     ...(sessionId.value !== undefined ? { sessionId: sessionId.value } : {}),
     ...(reasoning.value !== undefined ? { reasoning: reasoning.value } : {}),
+    ...(promptHistory.value !== undefined ? { promptHistory: promptHistory.value } : {}),
   };
 
   // Omit / null → '.' always. Distinguish from present invalid (400) or empty (→ ".").
@@ -169,6 +186,35 @@ function parsePersonaId(
     error: 'personaId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,512}$).',
     status: 400,
   };
+}
+
+/**
+ * Parse the optional `promptHistory` legacy fold (plan #936). Omit/null/empty →
+ * unset (undefined); a present non-string or over-cap value → 400 (fail
+ * closed). Bounded by the same `PROMPT_BODY_MAX_CHARS` budget as `prompt` —
+ * the fold is exactly today's folded `prompt` value moved to an optional
+ * field, so it carries the same wire budget (no cap change).
+ */
+function parsePromptHistory(
+  raw: unknown,
+): { ok: true; value: string | undefined } | { ok: false; error: string; status: 400 } {
+  if (raw === undefined || raw === null) {
+    return { ok: true, value: undefined };
+  }
+  if (typeof raw !== 'string') {
+    return { ok: false, error: 'promptHistory must be a string.', status: 400 };
+  }
+  if (raw.length === 0) {
+    return { ok: true, value: undefined };
+  }
+  if (raw.length > PROMPT_BODY_MAX_CHARS) {
+    return {
+      ok: false,
+      error: `promptHistory body is too large (max ${PROMPT_BODY_MAX_CHARS.toLocaleString()} characters).`,
+      status: 400,
+    };
+  }
+  return { ok: true, value: raw };
 }
 
 /**

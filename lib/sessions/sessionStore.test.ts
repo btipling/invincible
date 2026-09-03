@@ -170,6 +170,7 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
       'personaSnapshot',
       'transcriptPointer',
       'checkpointPointer',
+      'modelMessagesPointer',
       'attachedSkills',
       'selectedModel',
       'reasoningEffort',
@@ -1000,6 +1001,97 @@ describe('envelope carrier (phase 0 #515)', () => {
     if (mixed.ok) {
       expect(mixed.value.meta.transcriptPointer).toBe('tx_1');
       expect('checkpointPointer' in mixed.value.meta).toBe(false);
+    }
+  });
+
+  it('plan #936 (source #549) — accepts a valid Redis-safe meta.modelMessagesPointer and DROPS a poisoned one to unset (never 400)', () => {
+    // The model-messages pointer is the sibling of `checkpointPointer` (same
+    // Redis-safe opaque rule) but a DISTINCT reserved key — the model-facing
+    // message array is its own Blob surface, never folded into the display
+    // checkpoint. The BODY never rides in meta; only the object id does.
+    const ok = validateSessionRecord(
+      makeRecord({ meta: { modelMessagesPointer: 'mm_abc-123DEF' } as HarnessSessionRecord['meta'] }),
+    );
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.value.meta.modelMessagesPointer).toBe('mm_abc-123DEF');
+    expect(validateMeta({ modelMessagesPointer: 'mm_abc123' }).ok).toBe(true);
+
+    // Poisoned / null / non-opaque (glob, `:`, space, `.`, `/`, over-length,
+    // non-string) are DROPPED to unset (the key is omitted) — the record still
+    // validates, never 400s (same drop-to-unset decision as the other pointers).
+    for (const bad of [
+      'mm a:b',
+      '*',
+      'a?b',
+      'has space',
+      'a.b',
+      'mm/abc',
+      'x'.repeat(513),
+      42 as unknown,
+      undefined as unknown,
+      null as unknown,
+    ]) {
+      const res = validateSessionRecord(
+        makeRecord({ meta: { modelMessagesPointer: bad } as HarnessSessionRecord['meta'] }),
+      );
+      expect(res.ok).toBe(true); // drop-to-unset, not a 400
+      if (res.ok) {
+        expect('modelMessagesPointer' in res.value.meta).toBe(false);
+        expect(res.value.meta.modelMessagesPointer).toBeUndefined();
+      }
+    }
+
+    // The reserved-key contract is intact: unknown keys are STILL rejected.
+    expect(
+      validateSessionRecord(makeRecord({ meta: { notReserved: 1 } as HarnessSessionRecord['meta'] })).ok,
+    ).toBe(false);
+  });
+
+  it('plan #936 — validateMeta round-trips modelMessagesPointer and omits poison; distinct from checkpointPointer + transcriptPointer', () => {
+    const ok = validateMeta({ modelMessagesPointer: 'mm_abc123-def' });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.value.modelMessagesPointer).toBe('mm_abc123-def');
+
+    // Poisoned / oversized / non-opaque → `meta` is ok but the key is omitted.
+    const poison = validateMeta({ modelMessagesPointer: 'x'.repeat(513) });
+    expect(poison.ok).toBe(true);
+    if (poison.ok) expect('modelMessagesPointer' in poison.value).toBe(false);
+    const nonOpaque = validateMeta({ modelMessagesPointer: 'a:b' });
+    expect(nonOpaque.ok).toBe(true);
+    if (nonOpaque.ok) expect('modelMessagesPointer' in nonOpaque.value).toBe(false);
+
+    // Envelope path shares the same drop-to-unset, never a 400.
+    const env = validateSessionEnvelope({ ...makeRecord(), meta: { modelMessagesPointer: 'a b' } });
+    expect(env.ok).toBe(true);
+    if (env.ok) expect('modelMessagesPointer' in env.value.meta).toBe(false);
+
+    // Sibling keys coexist independently — the model-messages pointer is
+    // distinct from the checkpoint + transcript pointers, and a poisoned
+    // model-messages pointer never disturbs a valid sibling.
+    const all = validateSessionRecord(
+      makeRecord({
+        meta: {
+          transcriptPointer: 'tx_1',
+          checkpointPointer: 'cp_1',
+          modelMessagesPointer: 'mm_1',
+        } as HarnessSessionRecord['meta'],
+      }),
+    );
+    expect(all.ok).toBe(true);
+    if (all.ok) {
+      expect(all.value.meta.transcriptPointer).toBe('tx_1');
+      expect(all.value.meta.checkpointPointer).toBe('cp_1');
+      expect(all.value.meta.modelMessagesPointer).toBe('mm_1');
+    }
+    const mixed = validateSessionRecord(
+      makeRecord({
+        meta: { checkpointPointer: 'cp_1', modelMessagesPointer: 'a:b' } as HarnessSessionRecord['meta'],
+      }),
+    );
+    expect(mixed.ok).toBe(true);
+    if (mixed.ok) {
+      expect(mixed.value.meta.checkpointPointer).toBe('cp_1');
+      expect('modelMessagesPointer' in mixed.value.meta).toBe(false);
     }
   });
 

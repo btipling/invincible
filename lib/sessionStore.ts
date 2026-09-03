@@ -110,6 +110,16 @@ export type SessionSnapshot = {
    */
   turnStreamCursor?: number;
   /**
+   * Plan #936 (source #549) — the model-messages pointer carrier, mirrored on
+   * the local session as the reserved `meta.modelMessagesPointer`. Omitted = no
+   * pointer observed yet. Sanitized with `isRedisSafeOpaqueId` on read
+   * (drop-to-unset on poison). The host NEVER uses this to fetch the Blob
+   * (Wasm/DOM never talk to Blob directly — feature-divide); it exists only so
+   * the host knows to stop sending the `promptHistory` roll-forward fold once
+   * a pointer exists server-side.
+   */
+  modelMessagesPointer?: string;
+  /**
    * backend-agents F21 (plan #815) — the persisted submit-queue MIRROR: an
    * ordered list of host-known prompts not yet durably started (composer
    * submits made while a turn is live). Oldest first. Rides the existing
@@ -250,6 +260,7 @@ export class LocalStorageSessionStore implements SessionStore {
         turnRunId?: unknown;
         turnStatus?: unknown;
         turnStreamCursor?: unknown;
+        modelMessagesPointer?: unknown;
         queue?: unknown;
       };
       if (!data || typeof data !== 'object' || !Array.isArray(data.messages)) return null;
@@ -276,6 +287,7 @@ export class LocalStorageSessionStore implements SessionStore {
         turnRunId: rawTurnRunId,
         turnStatus: rawTurnStatus,
         turnStreamCursor: rawTurnStreamCursor,
+        modelMessagesPointer: rawModelMessagesPointer,
         queue: rawQueue,
         ...rest
       } = data;
@@ -300,6 +312,15 @@ export class LocalStorageSessionStore implements SessionStore {
       const turnRunId = sanitizeTurnRunId(rawTurnRunId);
       const turnStatus = sanitizeTurnStatus(rawTurnStatus);
       const turnStreamCursor = sanitizeTurnStreamCursor(rawTurnStreamCursor);
+      // Plan #936: the model-messages pointer mirrors the reserved meta key and
+      // is re-sanitized on local load (drop-to-unset on poison) so a stale or
+      // hand-edited localStorage value never sticks. Host never fetches the Blob.
+      const modelMessagesPointer =
+        typeof rawModelMessagesPointer === 'string' &&
+        rawModelMessagesPointer &&
+        isRedisSafeOpaqueId(rawModelMessagesPointer)
+          ? rawModelMessagesPointer
+          : undefined;
       // backend-agents F21 (plan #815): the persisted queue mirror re-sanitizes
       // on local load (drop blanks/over-cap items, cap depth) so a stale or
       // hand-edited localStorage value never sticks. An EMPTY sanitized list
@@ -325,6 +346,8 @@ export class LocalStorageSessionStore implements SessionStore {
       else delete out.turnStatus;
       if (turnStreamCursor !== undefined) out.turnStreamCursor = turnStreamCursor;
       else delete out.turnStreamCursor;
+      if (modelMessagesPointer !== undefined) out.modelMessagesPointer = modelMessagesPointer;
+      else delete out.modelMessagesPointer;
       if (queue !== undefined && queue.length > 0) out.queue = queue;
       else delete out.queue;
       return out;

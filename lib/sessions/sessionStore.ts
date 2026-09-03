@@ -74,6 +74,7 @@ export const RESERVED_META_KEYS = [
   'personaSnapshot',
   'transcriptPointer',
   'checkpointPointer',
+  'modelMessagesPointer',
   'attachedSkills',
   'selectedModel',
   'reasoningEffort',
@@ -471,6 +472,17 @@ export function validateMeta(value: unknown): SessionStoreResult<HarnessSessionM
       // Non-critical — a poisoned/non-opaque value DROPS to unset (omitted), never 400s
       // the record (same drop-to-unset decision as the A1–A3 turn carriers).
       if (isRedisSafeOpaqueId(v)) meta.checkpointPointer = v;
+      continue;
+    }
+    if (key === 'modelMessagesPointer') {
+      // Plan #936 (source #549): the reserved model-messages pointer, a
+      // **sibling** of `checkpointPointer` (same Redis-safe opaque rule, distinct
+      // key — the model-facing message array is its own Blob surface, never folded
+      // into the display checkpoint). The BODY never rides in `meta`; only the
+      // object id does. Non-critical — a poisoned/non-opaque value DROPS to unset
+      // (omitted), never 400s the record (same drop-to-unset decision as the other
+      // pointer/carrier keys).
+      if (isRedisSafeOpaqueId(v)) meta.modelMessagesPointer = v;
       continue;
     }
     if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean') {

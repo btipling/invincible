@@ -37,6 +37,7 @@
  */
 import {
   HARNESS_SESSION_MAX_BODY_BYTES,
+  MODEL_MSG_CHECKPOINT_MAX_BYTES,
   TURN_MSG_CHECKPOINT_MAX_BYTES,
   TRANSCRIPT_CHUNK_WALK_MAX,
 } from '../sessionCloudCaps';
@@ -469,6 +470,39 @@ export function createTurnPersistSeam(
         }
       }
 
+      // Model-messages projection (plan #936, source #549): write the bounded
+      // orchestrator-shape array as its OWN Blob object; only the object id
+      // rides in meta (`modelMessagesPointer`). Same B6 checkpoint pattern —
+      // the projection is already bounded by `buildModelMessages` upstream, so
+      // we serialize + `writeSegment` under the NEW byte cap.
+      let modelMessagesPointer: string | undefined;
+      if (input.fold?.modelMessages !== undefined) {
+        const mmObjectId = newBlobObjectId(scope);
+        if (!isObjectIdBoundTo(mmObjectId, scope)) {
+          return await failWrite({
+            ok: false,
+            code: 'model_messages_write_failed',
+            error: 'minted model-messages object id is not bound to the session scope.',
+          });
+        }
+        try {
+          await blobStore.writeSegment({
+            objectId: mmObjectId,
+            content: JSON.stringify(input.fold.modelMessages),
+            contentType: 'application/json',
+            maxBytes: MODEL_MSG_CHECKPOINT_MAX_BYTES,
+          });
+          modelMessagesPointer = mmObjectId;
+          patch.modelMessagesPointer = mmObjectId;
+        } catch (err) {
+          return await failWrite({
+            ok: false,
+            code: 'model_messages_write_failed',
+            error: `model-messages blob write failed: ${toMessage(err)}`,
+          });
+        }
+      }
+
       // Transcript (B7): write this-run chunk + advance transcriptPointer
       // only on a successful PUT (fail-closed, LWW). A failure here returns a
       // value; the pointer is never advanced on a partial write. NOTE (honest
@@ -513,6 +547,7 @@ export function createTurnPersistSeam(
         turnRunId: input.turnRunId,
         objectId: seg.objectId,
         ...(checkpointPointer !== undefined ? { checkpointPointer } : {}),
+        ...(modelMessagesPointer !== undefined ? { modelMessagesPointer } : {}),
       };
     },
   };

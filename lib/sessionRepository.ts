@@ -392,6 +392,21 @@ export function overlayEnvelopeMeta(
   if (turnStreamCursor !== undefined) out.turnStreamCursor = turnStreamCursor;
   else delete out.turnStreamCursor;
 
+  // Plan #936 (source #549): overlay the model-messages pointer carrier. Same
+  // reserved-meta replace contract: a valid Redis-safe value wins; absent or
+  // poison clears. The host uses it ONLY to decide whether to keep sending the
+  // `promptHistory` roll-forward fold — never to fetch the Blob (feature-divide).
+  const modelMessagesPointer = envMeta.modelMessagesPointer;
+  if (
+    typeof modelMessagesPointer === 'string' &&
+    modelMessagesPointer &&
+    isRedisSafeOpaqueId(modelMessagesPointer)
+  ) {
+    out.modelMessagesPointer = modelMessagesPointer;
+  } else {
+    delete out.modelMessagesPointer;
+  }
+
   // NOTE: the F21 submit-queue mirror (`snapshot.queue`) rides the TRANSCRIPT
   // blob body (parseCloudSessionSnapshot), NOT the envelope meta — it is
   // transcript-bulk state, not a scalar carrier. overlayEnvelopeMeta must not

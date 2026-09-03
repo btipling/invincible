@@ -132,6 +132,14 @@ export type SendAgentFn = (
      * has no session store; the cloud path also binds personaId at mint).
      */
     personaId?: string;
+    /**
+     * Plan #936 (source #549): the legacy `formatPromptWithHistory` fold, sent
+     * on the durable `/api/turns` path only while the session has no locally-
+     * observed `modelMessagesPointer` yet. The server uses it as the
+     * roll-forward `userMessage` iff the envelope has no readable pointer,
+     * else ignores it. Never sent on the legacy `/api/agent` path.
+     */
+    promptHistory?: string;
   },
 ) => Promise<AgentResult>;
 
@@ -155,6 +163,12 @@ export type SendAgentStreamFn = (
     sessionId?: string;
     /** Persona id (Redis-safe) bound for this session (first-turn resolve). */
     personaId?: string;
+    /**
+     * Plan #936 (source #549): the legacy `formatPromptWithHistory` fold, sent
+     * on the durable `/api/turns` path only while the session has no locally-
+     * observed `modelMessagesPointer` yet. Never sent on `/api/agent`.
+     */
+    promptHistory?: string;
     onEvent?: (event: AgentStreamEvent) => void | Promise<void>;
     /**
      * Plan #812 / adversarial #844 — called as soon as `x-workflow-run-id` is

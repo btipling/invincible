@@ -63,6 +63,7 @@ function turnRequestBody(
     sandboxId?: string;
     sessionId?: string;
     personaId?: string;
+    promptHistory?: string;
   },
 ): {
   prompt: string;
@@ -72,6 +73,7 @@ function turnRequestBody(
   sandboxId?: string;
   sessionId?: string;
   personaId?: string;
+  promptHistory?: string;
 } {
   const body: {
     prompt: string;
@@ -81,6 +83,7 @@ function turnRequestBody(
     sandboxId?: string;
     sessionId?: string;
     personaId?: string;
+    promptHistory?: string;
   } = { prompt: normalizePrompt(prompt) };
   const mid = init?.modelId?.trim();
   if (mid) body.modelId = mid;
@@ -94,6 +97,11 @@ function turnRequestBody(
   if (sessionId) body.sessionId = sessionId;
   const personaId = init?.personaId?.trim();
   if (personaId) body.personaId = personaId;
+  // Plan #936: the legacy fold rides as an optional sidecar (NOT `prompt`);
+  // the server uses it only on a roll-forward turn (no readable pointer).
+  if (typeof init?.promptHistory === 'string' && init.promptHistory.length > 0) {
+    body.promptHistory = init.promptHistory;
+  }
   return body;
 }
 

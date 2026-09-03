@@ -854,6 +854,106 @@ describe('runHarnessTurn', () => {
   });
 });
 
+describe('plan #936 (source #549) — host prompt send (row 9)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Stub fetch to capture the /api/turns POST body; returns a minimal done SSE. */
+  function stubTurnFetch(captured: { body?: Record<string, unknown> }) {
+    const fetchMock = vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
+      // Only the durable-turn POST carries a JSON body we care about; the git
+      // status probe (GET, no body) must not clobber the capture.
+      if (String(url).includes('/api/turns') && init?.body) {
+        captured.body = JSON.parse(init.body) as Record<string, unknown>;
+        const body = new ReadableStream<Uint8Array>({
+          start(c) {
+            const enc = new TextEncoder();
+            c.enqueue(enc.encode('data: {"type":"done","text":"ok","toolTrace":[]}\n\n'));
+            c.close();
+          },
+        });
+        return new Response(body, {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'x-workflow-run-id': 'wr_936',
+          },
+        });
+      }
+      // Git status probe / any other GET → benign empty value.
+      return new Response(JSON.stringify({ value: '' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  it('durable path (no injected sendAgent) sends the RAW prompt + promptHistory sidecar when no local modelMessagesPointer', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    // Session with prior history but NO locally-observed pointer → host sends
+    // the raw prompt AND the formatPromptWithHistory fold as promptHistory.
+    let session = createEmptySession('s1');
+    session = appendMessage(session, 'user', 'first');
+    session = appendMessage(session, 'assistant', 'done');
+    const captured: { body?: Record<string, unknown> } = {};
+    stubTurnFetch(captured);
+
+    const { result } = await runHarnessTurn(bridge, session, 'second', {});
+    expect(result.ok).toBe(true);
+    // RAW prompt (never the 3.5M-char fold) rides `prompt`…
+    expect(captured.body?.prompt).toBe('second');
+    expect(String(captured.body?.prompt)).not.toContain('User: first');
+    // …and the legacy fold rides the promptHistory sidecar for the roll-forward.
+    expect(typeof captured.body?.promptHistory).toBe('string');
+    expect(String(captured.body?.promptHistory)).toContain('User: first');
+    expect(String(captured.body?.promptHistory)).toContain('Assistant: done');
+    expect(String(captured.body?.promptHistory)).toContain('User: second');
+  });
+
+  it('durable path with a locally-observed modelMessagesPointer sends the RAW prompt and NO promptHistory', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    let session = createEmptySession('s1');
+    session = appendMessage(session, 'user', 'first');
+    session = appendMessage(session, 'assistant', 'done');
+    // The host has observed the pointer (from an envelope pull/adopt) → it stops
+    // sending the fold; the server seeds from the projection.
+    session = { ...session, modelMessagesPointer: 't_mm_s1_abc' };
+    const captured: { body?: Record<string, unknown> } = {};
+    stubTurnFetch(captured);
+
+    const { result } = await runHarnessTurn(bridge, session, 'second', {});
+    expect(result.ok).toBe(true);
+    expect(captured.body?.prompt).toBe('second');
+    expect(captured.body?.promptHistory).toBeUndefined();
+  });
+
+  it('legacy injected path (sendAgent) keeps the single folded prompt unchanged (no promptHistory)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    let session = createEmptySession('s1');
+    session = appendMessage(session, 'user', 'first');
+    session = appendMessage(session, 'assistant', 'done');
+    const sendAgent = vi.fn(async (prompt: string, init?: { promptHistory?: string }): Promise<AgentResult> => {
+      // Injected (legacy/test) path folds history into the single prompt…
+      expect(prompt).toContain('User: first');
+      expect(prompt).toContain('Assistant: done');
+      expect(prompt).toContain('User: second');
+      // …and never receives the promptHistory sidecar (that is durable-path only).
+      expect(init?.promptHistory).toBeUndefined();
+      return { ok: true, text: 'ok2' };
+    });
+
+    const { result } = await runHarnessTurn(bridge, session, 'second', { sendAgent });
+    expect(result.ok).toBe(true);
+    expect(sendAgent).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('plan #759 — turn errors retry the current turn, never drain the queue', () => {
   /** Run a retry-looping turn under deterministic fake timers (the real
    *  250ms–4s bounded backoff would breach the 5 s vitest default per-test

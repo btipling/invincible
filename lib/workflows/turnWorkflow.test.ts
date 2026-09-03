@@ -41,11 +41,20 @@ vi.mock('workflow', () => ({
   }),
 }));
 
-vi.mock('../agent/generateOneRound', () => ({
-  generateOneRound: async () => ({
+// Mutable generateOneRound impl — the default mirrors the original adapter
+// behavior; the plan #936 two-turn integration test overrides it per-turn.
+// The declared return type is intentionally broad (the real generateOneRound
+// returns a union of model-round shapes) so per-test overrides with or without
+// `usage` / `toolCalls` all stay assignable.
+const generateImpl = vi.hoisted(() => ({
+  fn: async (_deps: unknown, _input: unknown): Promise<unknown> => ({
     ok: true as const,
     delta: { text: 'adapter-done', toolCalls: [], usage: { source: 'provider', total: 2 } },
   }),
+}));
+
+vi.mock('../agent/generateOneRound', () => ({
+  generateOneRound: (deps: unknown, input: unknown) => generateImpl.fn(deps, input),
   // toolsWithoutExecutors: strip execute closures for serialization across the
   // step boundary. In tests the registry is empty, so this returns empty.
   toolsWithoutExecutors: (t: Record<string, unknown>) => t,
@@ -90,6 +99,8 @@ vi.mock('./assembleDurableToolWorld', () => ({
 
 import { turnWorkflow } from './turnWorkflow';
 import { setPersistSeamResolver } from './persistStep';
+import { setToolWorldResolver } from './toolExecuteStep';
+import { createRunFileFreshness } from '../agent/fileFreshness';
 import { createTurnPersistSeam } from '../agent/turnPersistSeam';
 import { MemoryBlobTranscriptStore } from '../sessions/blobStores';
 import { MemorySessionStore } from '../sessions/memorySessionStore';
@@ -129,6 +140,114 @@ describe('turnWorkflow entry (backend-agents B13)', () => {
     // id derived in-workflow (must equal the route-side run.runId, never the
     // session id 's1').
     expect(env?.meta?.turnRunId).toBe('wr_0000_meta');
+  });
+
+  it('plan #936 row 10 — two turns end-to-end: turn 1 runs a tool → projection persisted; turn 2 seeds the model step with structured tool-call/tool-result pairs', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const scope: ObjectScope = { tenantId: 't', userId: 'u', sessionId: 's936' };
+    setPersistSeamResolver(() => createTurnPersistSeam({ blobStore, envelopeStore, scope }));
+    // Wire an executable read_file so turn 1's tool batch actually runs.
+    setToolWorldResolver(() => ({
+      registry: {
+        read_file: {
+          execute: async () => 'turn-1 file body',
+        },
+      },
+      secrets: [],
+      signal: new AbortController().signal,
+      freshness: createRunFileFreshness(),
+    }));
+
+    // --- Turn 1: model calls read_file (round 1), then returns done (round 2). ---
+    let turn1Round = 0;
+    generateImpl.fn = async () => {
+      turn1Round += 1;
+      if (turn1Round === 1) {
+        return {
+          ok: true as const,
+          delta: {
+            text: 'reading',
+            toolCalls: [{ toolName: 'read_file', toolCallId: 'c1', args: { path: 'x' } }],
+          },
+        };
+      }
+      return { ok: true as const, delta: { text: 'turn-1 done', toolCalls: [] } };
+    };
+    const r1 = await turnWorkflow({
+      userMessage: 'read the file',
+      modelId: 'mock-model',
+      scope,
+    });
+    if (r1.status !== 'completed') {
+      throw new Error(`turn 1 failed: ${JSON.stringify({ status: r1.status, error: (r1 as { error?: string }).error })}`);
+    }
+    expect(r1.status).toBe('completed');
+
+    // The terminal persist wrote the model-messages projection as its own Blob
+    // object; only the pointer rides meta.modelMessagesPointer.
+    const env1 = await envelopeStore.readEnvelope(scope);
+    const mmPointer = env1?.meta?.modelMessagesPointer;
+    expect(typeof mmPointer).toBe('string');
+    const projection = JSON.parse((await blobStore.read(mmPointer as string)) ?? 'null') as Array<
+      Record<string, unknown>
+    >;
+    expect(Array.isArray(projection)).toBe(true);
+    // Projection carries turn-1's user / assistant(+tool-calls) / tool rows with
+    // toolCallId linkage — NOT a flattened prose fold.
+    expect(projection.map((r) => r.role)).toEqual(['user', 'assistant', 'tool', 'assistant']);
+    const projTool = projection.find((r) => r.role === 'tool') as
+      | { toolCallId?: string; result?: string }
+      | undefined;
+    expect(projTool?.toolCallId).toBe('c1');
+    expect(projTool?.result).toBe('turn-1 file body');
+
+    // --- Turn 2: seed from the persisted projection; the model step receives
+    // […turn-1 rows, {role:'user', content: rawPrompt}] converted to ModelMessage[]. ---
+    let turn2Messages: Array<Record<string, unknown>> | undefined;
+    let turn2Call = 0;
+    generateImpl.fn = async (_deps: unknown, input: unknown) => {
+      turn2Call += 1;
+      if (turn2Call === 1) {
+        turn2Messages = (input as { messages: Array<Record<string, unknown>> }).messages;
+      }
+      return { ok: true as const, delta: { text: 'turn-2 answer', toolCalls: [] } };
+    };
+    const r2 = await turnWorkflow({
+      userMessage: 'use what you found',
+      modelId: 'mock-model',
+      scope,
+      priorMessages: projection,
+    });
+    expect(r2.status).toBe('completed');
+    expect(turn2Messages).toBeDefined();
+    const m = turn2Messages!;
+    // The seeded history arrives as typed ModelMessage rows: turn-1 user, an
+    // assistant with a tool-call part, a tool with a tool-result part (linked by
+    // toolCallId), turn-1's closing assistant, then the new raw user prompt.
+    const roles = m.map((r) => r.role);
+    expect(roles[0]).toBe('user');
+    expect(roles.at(-1)).toBe('user');
+    // The LAST user row is the RAW turn-2 prompt (never a flattened fold).
+    const lastUser = m.at(-1) as { role: string; content?: unknown };
+    expect(lastUser.content).toBe('use what you found');
+    // A tool-call part + a tool-result part share the toolCallId c1.
+    const asstWithCall = m.find(
+      (r) =>
+        r.role === 'assistant' &&
+        Array.isArray(r.content) &&
+        (r.content as Array<{ type?: string }>).some((p) => p.type === 'tool-call'),
+    ) as { content: Array<{ type: string; toolCallId?: string }> } | undefined;
+    expect(asstWithCall).toBeDefined();
+    const callPart = asstWithCall!.content.find((p) => p.type === 'tool-call');
+    expect(callPart?.toolCallId).toBe('c1');
+    const toolMsg = m.find((r) => r.role === 'tool') as
+      | { content: Array<{ type: string; toolCallId?: string; output?: { value?: string } }> }
+      | undefined;
+    expect(toolMsg).toBeDefined();
+    const resultPart = toolMsg!.content.find((p) => p.type === 'tool-result');
+    expect(resultPart?.toolCallId).toBe('c1');
+    expect(resultPart?.output?.value).toBe('turn-1 file body');
   });
 
   it('turnWorkflow.ts source does not call getWriter (plan #842 — I/O is step-only)', () => {

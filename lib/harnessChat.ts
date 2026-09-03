@@ -1107,10 +1107,27 @@ export async function runHarnessTurn(
       ? opts.streamAgent
       : opts?.sendAgentStream != null || opts?.sendAgent == null;
 
-  const apiPrompt =
+  // Plan #936 (source #549): on the durable `/api/turns` path (production —
+  // no injected legacy `sendAgent`/`sendAgentStream`), the server seeds the
+  // orchestrator from the persisted model-messages projection, so the host
+  // sends the RAW prompt (never the 3.5M-char fold). While the session has no
+  // locally-observed `modelMessagesPointer` yet, the host ALSO sends the
+  // `formatPromptWithHistory` fold as a `promptHistory` sidecar — the server
+  // uses it as the roll-forward `userMessage` iff the envelope has no readable
+  // pointer, else ignores it. Legacy/test paths (injected sendAgent*/local)
+  // keep today's single folded `prompt` unchanged.
+  const isDurableTurnPath = opts?.sendAgent == null && opts?.sendAgentStream == null;
+  const historyFold =
     useHistory && session.messages.length > 0
       ? formatPromptWithHistory(session.messages, prompt)
-      : prompt;
+      : undefined;
+  const apiPrompt = isDurableTurnPath ? prompt : (historyFold ?? prompt);
+  const promptHistory =
+    isDurableTurnPath &&
+    historyFold !== undefined &&
+    session.modelMessagesPointer === undefined
+      ? historyFold
+      : undefined;
 
   let userPushedOnBridge = false;
 
@@ -1462,6 +1479,7 @@ export async function runHarnessTurn(
                 ...(sessionId ? { sessionId } : {}),
                 ...(boundPersonaId ? { personaId: boundPersonaId } : {}),
                 ...(sessionSandboxId ? { sandboxId: sessionSandboxId } : {}),
+                ...(promptHistory !== undefined ? { promptHistory } : {}),
                 onEvent: onStreamEvent,
                 onTurnStarted: async ({ turnRunId }) => {
                   sawDurableStart = true;
@@ -1484,6 +1502,7 @@ export async function runHarnessTurn(
                 ...(sessionId ? { sessionId } : {}),
                 ...(boundPersonaId ? { personaId: boundPersonaId } : {}),
                 ...(sessionSandboxId ? { sandboxId: sessionSandboxId } : {}),
+                ...(promptHistory !== undefined ? { promptHistory } : {}),
               });
           if (!r.ok) {
             const kind = classifyTurnFailure(r.error, r.status, opts?.signal).kind;

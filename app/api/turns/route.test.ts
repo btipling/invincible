@@ -50,10 +50,15 @@ describe('POST /api/turns', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let readEnvelopeMock: any;
 
+  /** Mock for the Blob store `read` — plants the model-messages projection. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let blobReadMock: any;
+
   function resetServiceState() {
     delete servicesState.harnessSessionsRedis;
     delete servicesState.resolveInferenceForRequest;
     delete servicesState.resolveSandbox;
+    delete servicesState.createBlobTranscriptStore;
     sandboxCloseSpy = vi.fn(async () => {});
     overlayWorkerMetaMock = vi.fn(async () => ({ ok: true as const, meta: {} }));
     readEnvelopeMock = vi.fn(async () => ({
@@ -63,6 +68,8 @@ describe('POST /api/turns', () => {
         activeSandboxId: 'sb_bind',
       },
     }));
+    // Default: no projection object (read misses) → legacy roll-forward.
+    blobReadMock = vi.fn(async () => null);
   }
 
   function mockDi() {
@@ -109,6 +116,9 @@ describe('POST /api/turns', () => {
     servicesState.userSandboxInstance = {
       loadInstance: vi.fn(async () => ({ ok: true as const, value: null })),
     };
+    // createBlobTranscriptStore: returns the mocked Blob store (read plants the
+    // model-messages projection for the plan #936 seed rows).
+    servicesState.createBlobTranscriptStore = () => ({ read: blobReadMock });
     vi.doMock('../../../lib/di', () => ({
       createProdServices: () => servicesState,
       createScriptConnection: vi.fn(),
@@ -134,6 +144,7 @@ describe('POST /api/turns', () => {
           cwd: '.',
           ...(typeof body?.sessionId === 'string' ? { sessionId: body.sessionId } : {}),
           ...(typeof body?.reasoning === 'string' ? { reasoning: body.reasoning } : {}),
+          ...(typeof body?.promptHistory === 'string' ? { promptHistory: body.promptHistory } : {}),
         };
       },
     );
@@ -159,6 +170,13 @@ describe('POST /api/turns', () => {
     }));
     vi.doMock('../../../lib/sessions/sessionStore', () => ({
       isEnvelopeStore: () => true,
+    }));
+    // Mock isObjectIdBoundTo: a pointer is bound iff it carries this session's
+    // scope prefix (mirrors the real scope-binding rule). Foreign ids (other
+    // session) → false → the seed fail-closes to the legacy fold.
+    vi.doMock('../../../lib/sessions/blobStore', () => ({
+      isObjectIdBoundTo: (objectId: string, scope: { tenantId: string; userId: string; sessionId: string }) =>
+        typeof objectId === 'string' && objectId.includes(scope.sessionId),
     }));
     // Mock overlayWorkerMeta — defaults to success via resetServiceState.
     vi.doMock('../../../lib/agent/workerMetaOverlay', () => ({
@@ -236,6 +254,7 @@ describe('POST /api/turns', () => {
     vi.doUnmock('../../../lib/chatServer');
     vi.doUnmock('../../../lib/tenancy/harnessSessionsRedis');
     vi.doUnmock('../../../lib/sessions/sessionStore');
+    vi.doUnmock('../../../lib/sessions/blobStore');
     vi.doUnmock('workflow/api');
     vi.doUnmock('../../../lib/gateway/modelCatalog');
     resetServiceState();
@@ -1136,5 +1155,125 @@ describe('POST /api/turns', () => {
 
     // scope is plain serializable values only.
     expect(parsed.scope).toEqual({ tenantId: 't1', userId: 'u1', sessionId: 's1' });
+  });
+
+  // --- Plan #936 (source #549) seed rows (testing row 7) ---
+
+  it('plan #936 row 7a — bound+readable modelMessagesPointer → start() args carry priorMessages + RAW userMessage (promptHistory ignored)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    const projection = [
+      { role: 'user', content: 'turn-1 user' },
+      {
+        role: 'assistant',
+        delta: { text: 'reading', toolCalls: [{ toolName: 'read_file', toolCallId: 'c1' }] },
+      },
+      { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'file body' },
+    ];
+    // Pointer carries the session id (bound per the isObjectIdBoundTo mock).
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(JSON.stringify(projection));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'use what you found', sessionId: 's1', promptHistory: 'FOLDED' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    // Seeded: priorMessages forwarded; userMessage is the RAW prompt (never the fold).
+    expect(startArgs.priorMessages).toEqual(projection);
+    expect(startArgs.userMessage).toBe('use what you found');
+    expect(startArgs.userMessage).not.toBe('FOLDED');
+    expect(blobReadMock).toHaveBeenCalledWith('t_mm_s1_abc');
+  });
+
+  it('plan #936 row 7b — foreign/unbound modelMessagesPointer → legacy fold (promptHistory), no priorMessages, no 5xx', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    // Pointer does NOT carry this session's id → isObjectIdBoundTo false.
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        modelMessagesPointer: 't_mm_OTHERSESSION_abc',
+      },
+    });
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'hi', sessionId: 's1', promptHistory: 'FOLDED_HISTORY' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    // Legacy roll-forward: userMessage is the promptHistory fold; no seed.
+    expect(startArgs.priorMessages).toBeUndefined();
+    expect(startArgs.userMessage).toBe('FOLDED_HISTORY');
+    // The confused-deputy guard short-circuits BEFORE any Blob read.
+    expect(blobReadMock).not.toHaveBeenCalled();
+  });
+
+  it('plan #936 row 7c — bound pointer but missing/unreadable object → legacy fold, no 5xx', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    // Read misses (null) → treated as no pointer.
+    blobReadMock.mockResolvedValue(null);
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'hi', sessionId: 's1', promptHistory: 'FOLDED_HISTORY' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.priorMessages).toBeUndefined();
+    expect(startArgs.userMessage).toBe('FOLDED_HISTORY');
+  });
+
+  it('plan #936 row 7d — bound pointer but malformed JSON → legacy fold, no 5xx', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue('not-json{');
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'hi', sessionId: 's1', promptHistory: 'FOLDED_HISTORY' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.priorMessages).toBeUndefined();
+    expect(startArgs.userMessage).toBe('FOLDED_HISTORY');
+  });
+
+  it('plan #936 row 7e — no pointer + no promptHistory → userMessage falls back to the raw prompt (legacy first-turn)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    // Default envelope has no modelMessagesPointer.
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'hi', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.priorMessages).toBeUndefined();
+    expect(startArgs.userMessage).toBe('hi');
   });
 });
