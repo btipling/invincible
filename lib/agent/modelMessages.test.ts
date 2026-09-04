@@ -4,6 +4,7 @@
  * survive), pairing (atomic calls/results, `skipped:` closers), and the
  * orphan-drop review lock (a tool row whose call never converts is dropped).
  */
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   buildModelMessages,
@@ -225,5 +226,42 @@ describe('buildModelMessages (plan #936)', () => {
     const { rows } = buildModelMessages([giant]);
     // The single row is dropped when even it cannot fit the byte cap (fail-closed).
     expect(rows.length).toBeLessThanOrEqual(1);
+  });
+
+  it('source-lock: no Node Buffer identifier in executable code (Workflows canvas)', () => {
+    const src = readFileSync(new URL('./modelMessages.ts', import.meta.url), 'utf8');
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    expect(code).not.toMatch(/\bBuffer\b/);
+    expect(code).toMatch(/TextEncoder/);
+  });
+
+  it('byte-cap path works when global Buffer is absent (Workflows VM)', () => {
+    const g = globalThis as { Buffer?: unknown };
+    const saved = g.Buffer;
+    expect(typeof saved).toBe('function');
+    Reflect.deleteProperty(g, 'Buffer');
+    expect(typeof g.Buffer).toBe('undefined');
+    try {
+      const { rows } = buildModelMessages([
+        { role: 'user', content: 'hello' },
+        {
+          role: 'assistant',
+          delta: { text: '', toolCalls: [{ toolName: 'read_file', toolCallId: 'c1' }] },
+        },
+        { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'bytes' },
+      ]);
+      expect(rows).toEqual([
+        user('hello'),
+        assistant('', [{ toolName: 'read_file', toolCallId: 'c1' }]),
+        toolOk('read_file', 'c1', 'bytes'),
+      ]);
+      expect(() =>
+        buildModelMessages([{ role: 'user', content: 'x'.repeat(64 * 1024) }], {
+          maxBytes: 1024,
+        }),
+      ).not.toThrow();
+    } finally {
+      g.Buffer = saved;
+    }
   });
 });

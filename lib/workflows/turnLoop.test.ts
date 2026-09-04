@@ -871,6 +871,47 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(tool.result).toBe('file body');
   });
 
+  it('derivePersistFold does not throw when global Buffer is absent (Workflows canvas)', () => {
+    const g = globalThis as { Buffer?: unknown };
+    const saved = g.Buffer;
+    Reflect.deleteProperty(g, 'Buffer');
+    try {
+      expect(() =>
+        derivePersistFold(
+          [
+            { role: 'user', content: 'read the tree' },
+            {
+              role: 'assistant',
+              delta: {
+                text: 'reading',
+                toolCalls: [{ toolName: 'read_file', toolCallId: 'c1' }],
+              },
+            },
+            { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'file body' },
+          ],
+          undefined,
+        ),
+      ).not.toThrow();
+      const fold = derivePersistFold(
+        [
+          { role: 'user', content: 'read the tree' },
+          {
+            role: 'assistant',
+            delta: {
+              text: 'reading',
+              toolCalls: [{ toolName: 'read_file', toolCallId: 'c1' }],
+            },
+          },
+          { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'file body' },
+        ],
+        undefined,
+      );
+      expect((fold?.modelMessages as unknown[] | undefined)?.length).toBe(3);
+    } finally {
+      g.Buffer = saved;
+    }
+  });
+
   it('plan #936 row 8b — runTurnLoop seeds messages from priorMessages; terminal persist re-derives a projection that includes prior rows (append-only growth)', async () => {
     const { deps, closed } = wiredDeps();
     const persistSpy = vi.fn(deps.persistStep);
