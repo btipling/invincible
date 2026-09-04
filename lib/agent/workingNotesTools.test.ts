@@ -4,7 +4,7 @@
  * injected (stub) so no live Redis / Blob. Covers:
  *   1. get — empty / stored / unavailable
  *   2. update — persist, bounded reject (never truncate), clear verb,
- *      honest store-down, LWW retry
+ *      honest store-down, LWW retry (first conflict then success)
  *   3. clear — stored → unset; unavailable honest
  *   4. identity — the route-resolved userId/sessionId only (model args ignored
  *      by construction: no id input schema)
@@ -21,6 +21,7 @@ import type {
 import { WORKING_NOTES_MAX_BYTES } from '../sessionCloudCaps';
 import {
   createWorkingNotesTools,
+  isWorkingNotesToolName,
   type WorkingNotesOverlayWriter,
 } from './workingNotesTools';
 import { overlayWorkerMeta } from './workerMetaOverlay';
@@ -180,8 +181,8 @@ describe('working_notes_update', () => {
       { notes: 'never persisted' },
       undefined as never,
     )) as string;
-    expect(out).toContain('persistence unavailable');
-    expect(out).not.toContain('working notes updated (');
+    expect(out).toContain('not persisted');
+    expect(out).not.toContain('working notes updated');
   });
 
   it('is honest when the overlay writer reports failure (no false success)', async () => {
@@ -196,7 +197,29 @@ describe('working_notes_update', () => {
       { notes: 'never persisted' },
       undefined as never,
     )) as string;
-    expect(out).toContain('persistence unavailable');
+    expect(out).toContain('not persisted');
+  });
+
+  it('retries once on LWW conflict then persists (bounded retry)', async () => {
+    const store = new MemorySessionStore();
+    await seedEnvelope(store, { workingNotes: 'old' }, 1000);
+    let calls = 0;
+    const flaky: WorkingNotesOverlayWriter = vi.fn(async (input) => {
+      calls += 1;
+      if (calls === 1) {
+        return { ok: false, code: 'lww_conflict', error: 'conflict' };
+      }
+      return overlayWorkerMeta(input);
+    });
+    const { working_notes_update } = makeTools(store, { overlay: flaky });
+    const out = (await working_notes_update.execute!(
+      { notes: 'retried finding' },
+      undefined as never,
+    )) as string;
+    expect(out).toContain('working notes updated');
+    expect(calls).toBe(2);
+    const env = await store.readEnvelope(key);
+    expect(env?.meta.workingNotes).toBe('retried finding');
   });
 
   it('non-string notes input is an explicit error (never thrown)', async () => {
@@ -226,7 +249,18 @@ describe('working_notes_clear', () => {
     const store = new MemorySessionStore();
     const { working_notes_clear } = makeTools(store, { failStore: true });
     const out = (await working_notes_clear.execute!({} as never, undefined as never)) as string;
-    expect(out).toContain('persistence unavailable');
+    expect(out).toContain('not cleared');
+  });
+});
+
+describe('isWorkingNotesToolName', () => {
+  it('gates the reserved prefix for the route soft-path 403 guard', () => {
+    expect(isWorkingNotesToolName('working_notes_get')).toBe(true);
+    expect(isWorkingNotesToolName('working_notes_update')).toBe(true);
+    expect(isWorkingNotesToolName('working_notes_clear')).toBe(true);
+    expect(isWorkingNotesToolName('meta_sandbox_list')).toBe(false);
+    expect(isWorkingNotesToolName('find_skill')).toBe(false);
+    expect(isWorkingNotesToolName('')).toBe(false);
   });
 });
 

@@ -939,33 +939,33 @@ describe('overlayEnvelopeMeta', () => {
     expect(poisonedEnv.turnStreamCursor).toBeUndefined();
   });
 
-  it('plan #938 — the working-notes mirror round-trips fold → parse → overlay; poison never sticks', () => {
+  it('plan #938 / adversarial #940 — cloudMetaFor never emits workingNotes (host omit copy-forwards); overlay restores', () => {
     const snap: SessionSnapshot = {
       id: 's',
       updatedAt: 1,
       messages: [{ id: 'm', role: 'user', text: 't', at: 1 }],
       workingNotes: 'persisted finding (agent-authored)',
     };
-    // Fold → the reserved meta the PUT carries (host mirror IS emitted — unlike
-    // modelMessagesPointer, this value round-trips through GET honestly).
+    // Host flatten must not emit the worker-authored block — a stale/absent
+    // snapshot at Date.now() would LWW-stomp the tool write (#940 Major).
     const meta = cloudMetaFor(snap);
-    expect(meta).toEqual({ workingNotes: 'persisted finding (agent-authored)' });
+    expect(meta).toBeUndefined();
+    expect(cloudMetaFor({ id: 's', updatedAt: 1, messages: [], cwd: '.' })?.workingNotes)
+      .toBeUndefined();
 
-    // Restore (parse from the record body) then overlay the envelope meta —
-    // the same two-step the envelope read does.
-    const parsed = parseCloudSessionSnapshot({ ...snap, meta });
+    // GET overlay still restores (local sidecar only — not a PUT payload).
+    const parsed = parseCloudSessionSnapshot({
+      ...snap,
+      meta: { workingNotes: 'persisted finding (agent-authored)' },
+    });
     expect(parsed?.workingNotes).toBe('persisted finding (agent-authored)');
-    const round = overlayEnvelopeMeta(parsed!, meta);
+    const round = overlayEnvelopeMeta(parsed!, { workingNotes: 'persisted finding (agent-authored)' });
     expect(round.workingNotes).toBe('persisted finding (agent-authored)');
 
-    // A poisoned envelope meta can never stick the mirror through the round trip.
     const poisonedEnv = overlayEnvelopeMeta(round, {
       workingNotes: 'x'.repeat(WORKING_NOTES_MAX_BYTES + 1),
     });
     expect(poisonedEnv.workingNotes).toBeUndefined();
-
-    // Unset mirror → meta omitted entirely (absent = clear intact).
-    expect(cloudMetaFor({ id: 's', updatedAt: 1, messages: [] })).toBeUndefined();
   });
 
   it('plan #938 — parseCloudSessionSnapshot restores meta.workingNotes; poison drops to unset (never sticky)', () => {

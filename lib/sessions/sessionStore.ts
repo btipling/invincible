@@ -66,13 +66,15 @@ import type { SessionMessage } from '../sessionStore';
  * field is unset (that omit is a clear). Do not add a new reserved key that
  * treats omit as "keep previous."
  *
- * Exception (adversarial-review #937): `modelMessagesPointer` is worker-authored
- * and the host snapshot's copy is stale the moment the next persist writes a
- * new Blob. Host `cloudMetaFor` never emits this key. Envelope PUT copy-forwards
- * it when incoming omits it (`copyForwardModelMessagesPointer` inside
+ * Exception (adversarial-review #937 / #940): `modelMessagesPointer` and
+ * `workingNotes` are worker-authored and the host snapshot's copy is stale
+ * the moment the worker writes. Host `cloudMetaFor` never emits these keys.
+ * Envelope PUT copy-forwards the stored value when incoming omits the key
+ * (`copyForwardModelMessagesPointer` / `copyForwardWorkingNotes` inside
  * `upsertEnvelope`, against the LWW `existing.meta`) so a host flatten PUT
- * cannot delete — or roll back — the next-turn seed. Clear is DELETE, not a
- * PUT-omit.
+ * cannot delete — or roll back — the worker's latest. Worker **clear** of
+ * `workingNotes` is an explicit empty-string PATCH (present marker), not a
+ * PUT-omit; `modelMessagesPointer` Clear is DELETE.
  */
 export const RESERVED_META_KEYS = [
   'activeSandboxId',
@@ -109,6 +111,7 @@ export type HarnessSessionMeta = {
  * copies the stored pointer forward when incoming omits it. An explicit
  * incoming value wins (worker overlay). Clear is DELETE, not a PUT-omit.
  * Applied inside `upsertEnvelope` against the LWW `existing` (same read).
+ * `workingNotes` is the sibling exception (`copyForwardWorkingNotes`).
  */
 export function copyForwardModelMessagesPointer(
   incoming: HarnessSessionMeta | undefined,
@@ -120,6 +123,32 @@ export function copyForwardModelMessagesPointer(
   if (typeof prev === 'string' && prev && isRedisSafeOpaqueId(prev)) {
     out.modelMessagesPointer = prev;
   }
+  return out;
+}
+
+/**
+ * Worker-authored `workingNotes` (plan #938 / adversarial-review #940 Major).
+ * Same class as `modelMessagesPointer`: the host snapshot is not updated when
+ * `working_notes_*` PATCHes the envelope (no SSE carrier), so a host flatten
+ * PUT at `Date.now()` would LWW-stomp the tool write if omit meant clear.
+ * Host `cloudMetaFor` never emits this key. Envelope PUT copy-forwards the
+ * stored block when incoming omits it. An explicit incoming value wins
+ * (worker overlay). Worker **clear** sends a present empty string so this
+ * helper does not restore; sanitize then drops `''` to unset.
+ */
+export function copyForwardWorkingNotes(
+  incoming: HarnessSessionMeta | undefined,
+  stored: HarnessSessionMeta | undefined,
+): HarnessSessionMeta {
+  const out: HarnessSessionMeta = { ...(incoming ?? {}) };
+  if (Object.prototype.hasOwnProperty.call(out, 'workingNotes')) {
+    const cleaned = sanitizeWorkingNotes(out.workingNotes);
+    if (cleaned !== undefined) out.workingNotes = cleaned;
+    else delete out.workingNotes;
+    return out;
+  }
+  const prev = sanitizeWorkingNotes(stored?.workingNotes);
+  if (prev !== undefined) out.workingNotes = prev;
   return out;
 }
 

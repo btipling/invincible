@@ -13,6 +13,7 @@ import {
   sessionKeyString,
   sessionPrefix,
   copyForwardModelMessagesPointer,
+  copyForwardWorkingNotes,
 } from './sessionStore';
 import {
   HARNESS_SESSION_MAX_ATTACHED_SKILLS,
@@ -1196,6 +1197,59 @@ describe('envelope carrier (phase 0 #515)', () => {
       { modelMessagesPointer: 't_mm_P2' },
     );
     expect(hostOmit.modelMessagesPointer).toBe('t_mm_P2');
+  });
+
+  it('adversarial #940 — copyForwardWorkingNotes keeps stored notes when incoming omits; explicit empty clears', () => {
+    const stored = { workingNotes: 'keep me', personaId: 'p_1' };
+    const omitted = copyForwardWorkingNotes({ turnStatus: 'completed' }, stored);
+    expect(omitted.workingNotes).toBe('keep me');
+    expect(omitted.turnStatus).toBe('completed');
+    const explicit = copyForwardWorkingNotes({ workingNotes: 'new finding' }, stored);
+    expect(explicit.workingNotes).toBe('new finding');
+    const cleared = copyForwardWorkingNotes({ workingNotes: '' }, stored);
+    expect('workingNotes' in cleared).toBe(false);
+    const poison = copyForwardWorkingNotes(
+      { workingNotes: 'x'.repeat(WORKING_NOTES_MAX_BYTES + 1) },
+      stored,
+    );
+    expect('workingNotes' in poison).toBe(false);
+    const emptyStored = copyForwardWorkingNotes({ turnStatus: 'completed' }, {});
+    expect('workingNotes' in emptyStored).toBe(false);
+  });
+
+  it('adversarial #940 — upsertEnvelope copy-forwards workingNotes from LWW existing when incoming omits; explicit empty clears', async () => {
+    const s = new MemorySessionStore();
+    const k = { tenantId: 'tenant-1', userId: 'user-1', sessionId: 's1' };
+    await s.upsertEnvelope(k, {
+      id: 's1',
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      updatedAt: 10,
+      meta: { workingNotes: 'tool wrote this', turnStatus: 'running' },
+    });
+    const hostOmit = await s.upsertEnvelope(k, {
+      id: 's1',
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      updatedAt: 20,
+      meta: { turnStatus: 'completed' },
+    });
+    expect(hostOmit.status).toBe('stored');
+    if (hostOmit.status === 'stored') {
+      expect(hostOmit.envelope.meta.workingNotes).toBe('tool wrote this');
+      expect(hostOmit.envelope.meta.turnStatus).toBe('completed');
+    }
+    const cleared = await s.upsertEnvelope(k, {
+      id: 's1',
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      updatedAt: 30,
+      meta: { workingNotes: '' },
+    });
+    expect(cleared.status).toBe('stored');
+    if (cleared.status === 'stored') {
+      expect('workingNotes' in cleared.envelope.meta).toBe(false);
+    }
   });
 
   it('adversarial #937 — upsertEnvelope copy-forwards modelMessagesPointer from LWW existing when incoming omits', async () => {

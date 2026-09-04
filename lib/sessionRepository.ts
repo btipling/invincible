@@ -692,12 +692,11 @@ export type CloudPutBody = {
      */
     modelMessagesPointer?: string;
     /**
-     * Plan #938: the session-owned agent working-notes block. Folded from
-     * `snapshot.workingNotes` via `sanitizeWorkingNotes` (drop-to-unset on
-     * poison). Absent = clear (RESERVED_META_KEYS replace contract) — the
-     * host mirror is the agent's own tool-authored value, never a stale
-     * worker pointer, so emitting it keeps refresh / device-switch restore
-     * honest on both carriers.
+     * Plan #938 / adversarial #940: worker-authored notes block. Host
+     * `cloudMetaFor` NEVER emits this key (GET overlay is local restore —
+     * a stale/absent snapshot would LWW-stomp the tool write). Envelope PUT
+     * copy-forwards the stored block when the key is omitted. Worker clear
+     * is a present empty string, not a PUT-omit.
      */
     workingNotes?: string;
   };
@@ -779,15 +778,12 @@ export function cloudMetaFor(
   if (turnStreamCursor !== undefined) meta.turnStreamCursor = turnStreamCursor;
   const usage = encodeUsageMetaString(snapshot.usage);
   if (usage !== undefined) meta.usage = usage;
-  // Plan #938: fold the working-notes mirror on every PUT. Sanitized via the
-  // shared client-safe predicate (drop-to-unset on poison); absent = clear
-  // (RESERVED_META_KEYS replace contract). Unlike modelMessagesPointer this is
-  // a HOST mirror of an agent-authored value (the tools write the envelope via
-  // the worker overlay, and this same value round-trips through GET), so a
-  // full-desired-set emit is safe — it cannot LWW-stomp a fresher worker write
-  // with stale data beyond the ordinary host LWW semantics every carrier has.
-  const workingNotes = sanitizeWorkingNotes(snapshot.workingNotes);
-  if (workingNotes !== undefined) meta.workingNotes = workingNotes;
+  // Plan #938 / adversarial-review #940 Major: NEVER emit workingNotes.
+  // Worker-authored (`working_notes_*` overlay). Host snapshot is not
+  // updated on tool-execute (no SSE carrier) so a flatten PUT at Date.now()
+  // would LWW-stomp the worker write — same class as modelMessagesPointer
+  // (#937). GET overlay is local restore only. Host PUT omit lets
+  // upsertEnvelope copy-forward the stored block.
   // Plan #936 / adversarial #937 Major: NEVER emit modelMessagesPointer.
   // Worker-authored; GET overlay is local (sidecar-stop). Host PUT omit
   // lets upsertEnvelope copy-forward the stored worker id. Emitting the
@@ -802,8 +798,7 @@ export function cloudMetaFor(
     meta.turnRunId === undefined &&
     meta.turnStatus === undefined &&
     meta.turnStreamCursor === undefined &&
-    meta.usage === undefined &&
-    meta.workingNotes === undefined
+    meta.usage === undefined
     ? undefined
     : meta;
 }

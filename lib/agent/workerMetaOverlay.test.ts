@@ -113,16 +113,17 @@ describe('patchWorkerMeta (pure copy-forward)', () => {
       patchWorkerMeta({}, { workingNotes: 'found: auth seam in lib/tenancy/session.ts' })
         .workingNotes,
     ).toBe('found: auth seam in lib/tenancy/session.ts');
-    // Empty string is the clear verb.
+    // Empty string is the clear verb (present `''` so upsert copy-forward
+    // does not restore — adversarial #940).
     expect(
       patchWorkerMeta({ workingNotes: 'old' }, { workingNotes: '' }).workingNotes,
-    ).toBeUndefined();
-    // Over-cap poison drops only the notes key; siblings + host preserved.
+    ).toBe('');
+    // Over-cap poison is the same present-clear marker; siblings + host preserved.
     const out = patchWorkerMeta(
       { personaId: 'p_1', turnStatus: 'running' },
       { workingNotes: 'x'.repeat(WORKING_NOTES_MAX_BYTES + 1) },
     );
-    expect(out.workingNotes).toBeUndefined();
+    expect(out.workingNotes).toBe('');
     expect(out.personaId).toBe('p_1');
     expect(out.turnStatus).toBe('running');
   });

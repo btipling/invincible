@@ -691,6 +691,9 @@ describe('POST /api/agent', () => {
     });
     expect(runAgent).not.toHaveBeenCalled();
     expect(mcp.buildUserMcpTools).toHaveBeenCalled();
+    // Plan #938 / adversarial #940: working_notes_* are always-on like meta_*
+    // and must not substitute for FS/MCP/http on this 403. If the filter
+    // dropped, this test would go 200 (notes-only turn hiding the workspace).
   });
 
   it('softContinue from resolve skips FS tools and still runs agent when MCP tools exist', async () => {

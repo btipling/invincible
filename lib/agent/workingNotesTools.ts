@@ -278,8 +278,9 @@ export function createWorkingNotesTools(opts: CreateWorkingNotesToolsOptions) {
       try {
         const resolved = await resolveEnvelopeStore(opts);
         if (!resolved.ok) {
-          // Honest fail-soft: the in-turn value exists but nothing persisted.
-          return `working notes updated in-turn; persistence unavailable (${resolved.error})`;
+          // Honest fail-soft: nothing persisted and there is no in-turn cache
+          // (the fold is envelope-at-model-round). Never claim an update.
+          return `working notes not persisted (${resolved.error})`;
         }
         const { store, key, envelope } = resolved;
         const persisted = await persistNotesPatch(
@@ -290,7 +291,7 @@ export function createWorkingNotesTools(opts: CreateWorkingNotesToolsOptions) {
           cleaned === undefined ? { workingNotes: '' } : { workingNotes: cleaned },
         );
         if (!persisted) {
-          return 'working notes updated in-turn; persistence unavailable (envelope changed concurrently and could not be re-stored — no false success)';
+          return 'working notes not persisted (envelope changed concurrently and could not be re-stored)';
         }
         const bytes = new TextEncoder().encode(cleaned ?? '').length;
         return cleaned === undefined
@@ -314,7 +315,7 @@ export function createWorkingNotesTools(opts: CreateWorkingNotesToolsOptions) {
       try {
         const resolved = await resolveEnvelopeStore(opts);
         if (!resolved.ok) {
-          return `working notes cleared in-turn; persistence unavailable (${resolved.error})`;
+          return `working notes not cleared (${resolved.error})`;
         }
         const { store, key, envelope } = resolved;
         const persisted = await persistNotesPatch(
@@ -325,7 +326,7 @@ export function createWorkingNotesTools(opts: CreateWorkingNotesToolsOptions) {
           { workingNotes: '' },
         );
         if (!persisted) {
-          return 'working notes cleared in-turn; persistence unavailable (envelope changed concurrently — no false success)';
+          return 'working notes not cleared (envelope changed concurrently — no false success)';
         }
         return 'working notes cleared — this is a new mind for this session';
       } catch (err) {
