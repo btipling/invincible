@@ -215,6 +215,29 @@ export async function PUT(req: Request, ctx: Ctx): Promise<Response> {
     );
   }
 
+  // Plan #936 / adversarial-review #937: same confused-deputy gate as
+  // transcriptPointer. Seed still bind-checks, but a planted unbound id
+  // must not land on the envelope.
+  const mmPointer = validated.value.meta?.modelMessagesPointer;
+  if (
+    typeof mmPointer === 'string' &&
+    mmPointer &&
+    !isObjectIdBoundTo(mmPointer, {
+      tenantId: scope.tenantId,
+      userId: gate.userId,
+      sessionId: id,
+    })
+  ) {
+    return Response.json(
+      {
+        error:
+          'meta.modelMessagesPointer must reference an object minted for this session.',
+        code: 'INVALID_META',
+      },
+      { status: 400 },
+    );
+  }
+
   const input: SessionEnvelopeInput = {
     id: validated.value.id,
     userId: validated.value.userId,

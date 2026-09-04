@@ -482,6 +482,39 @@ export const TURN_MSG_CHECKPOINT_MAX_ROWS = 4096;
 export const TURN_MSG_CHECKPOINT_MAX_BYTES = 8 * 1024 * 1024;
 
 /**
+ * Per-result excerpt cap for the model-facing message projection (plan #936,
+ * source #549). Each persisted `{role:'tool', result}` row is truncated to
+ * this many **chars** (UTF-8-safe prefix + explicit marker) so a turn's tool
+ * bytes on the wire are bounded — never the 2M-char `TOOL_RESULT_MAX_CHARS`
+ * execute-time blob. Peer-locked order (~2k chars at compact time; "paths +
+ * status + short excerpt", never `TOOL_RUN_PREVIEW_MAX_CHARS`=100k). `exec`
+ * results are already compact summaries with disk-log `log:` pointers, so 2k
+ * keeps them near-verbatim; fat `read_file`/`search` results get a head
+ * excerpt + marker. **NEW generous cap**; no existing cap value changed →
+ * **no human gate**. Enforced in `lib/agent/modelMessages.ts`.
+ */
+export const MODEL_MSG_TOOL_RESULT_MAX_CHARS = 2_000;
+
+/**
+ * Row cap for the model-facing message projection (plan #936). Mirrors
+ * `TURN_MSG_CHECKPOINT_MAX_ROWS` (same replay-footprint concern); generous.
+ * **NEW generous cap**; no existing cap value changed → **no human gate**.
+ * Enforced in `lib/agent/modelMessages.ts`.
+ */
+export const MODEL_MSG_CHECKPOINT_MAX_ROWS = 4096;
+
+/**
+ * Byte cap for the model-facing message projection (plan #936). Mirrors
+ * `TURN_MSG_CHECKPOINT_MAX_BYTES`; the projection is its **own Blob object** —
+ * never the 1 MiB envelope `meta` — so this may exceed the whole-meta budget.
+ * Worst-case seeded history payload stays ~8 MiB ≪ provider body ceilings;
+ * per-result truncation keeps real sessions far below. **NEW generous cap**;
+ * no existing cap value changed → **no human gate**. Enforced in
+ * `lib/agent/modelMessages.ts` + the persist seam's `writeSegment maxBytes`.
+ */
+export const MODEL_MSG_CHECKPOINT_MAX_BYTES = 8 * 1024 * 1024;
+
+/**
  * Max UTF-8 byte length of a model id carried as the session carrier
  * `meta.selectedModel` (plan #616 / source #610). Single TS source shared by the
  * host trim/parse (`lib/sessionRepository.ts`, `lib/sessionStore.ts`) and server

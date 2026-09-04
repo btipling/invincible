@@ -162,6 +162,31 @@ reserved-`meta` carriers are defined in
   the 1 MiB `meta` body. On replay the loop re-reads the checkpoint from Blob by
   that pointer; a missing/unreadable checkpoint object is a fresh start for that
   run, not a corrupt `meta`.
+- **Model-messages projection (durable-turn history).** The durable turn's
+  cross-turn LLM context is **not** the display checkpoint and **not** the
+  transcript paint rows — it is a separate structured projection
+  (`lib/agent/modelMessages.ts`) of the loop's persisted deltas: typed
+  `user` / `assistant`(+`tool-call`) / `tool-result` message rows, with each
+  `tool-result` body a **truncated excerpt** (capped at
+  `MODEL_MSG_TOOL_RESULT_MAX_CHARS` = 2000) and **reasoning dropped** (thinking
+  stays ephemeral). The projection is written as its **own Blob object** —
+  row/byte-capped at `MODEL_MSG_CHECKPOINT_MAX_ROWS` = 4096 /
+  `MODEL_MSG_CHECKPOINT_MAX_BYTES` = 8 MiB — and only its object **id** rides in
+  envelope `meta.modelMessagesPointer`. Host `cloudMetaFor` never emits that
+  pointer (GET overlay is local sidecar-stop only). Envelope PUT copy-forwards
+  the stored worker id when a host flatten omits it (adversarial-review #937)
+  so the next-turn seed survives LWW and cannot be rolled back to a stale GET
+  id. `POST /api/turns` reads that pointer pre-start (confused-deputy
+  `isObjectIdBoundTo`, fail-closed) and seeds the next turn's orchestrator from
+  it (`priorMessages`); when no bound pointer exists the host's `promptHistory`
+  sidecar is the one-shot legacy roll-forward (`formatPromptWithHistory` fold),
+  never a permanent fold. A **bound** pointer that cannot be read (miss / not
+  JSON / not an array) still uses `promptHistory` when the host sent it; if the
+  sidecar is absent (GET overlay already sidecar-stopped) the route **503s**
+  rather than starting a history-less turn (adversarial-review #937). Orphan tool-results (no matching `tool-call`) are
+  dropped with a marker so strict providers accept the seeded array; cap-trim
+  drops oldest rows then re-pairs. The 262 144 B/msg paint caps above are the
+  **display** path; the LLM payload is this separate, smaller projection.
 
 The durable model step (`modelGenerateStep`) passes the **same** `resolveSystem()` string as `POST /api/agent` — base standing orders (including “Be concise”), plus optional persona / attached-skill blocks resolved in-step from the assembled tool registry. Persona inject reads and locks `meta.personaSnapshot` on the envelope (`readEnvelope` / `upsertEnvelope`, `updatedAt` unchanged), not the legacy whole-blob `get`/`put`. A missing system prompt is not an output cap; it is what used to let a provider default `max_tokens` look like a mysterious mid-sentence stop. Slash-command `/skill-name` attach still lives on `/api/agent`; the durable step re-resolves sticky and always-on skills only (`command: none`).
 

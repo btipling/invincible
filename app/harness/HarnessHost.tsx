@@ -63,6 +63,7 @@ import {
 } from '../../lib/sessionStore';
 import {
   createHttpSessionRepository,
+  keepObservedModelMessagesPointer,
   mergeAdoptedUsage,
   type IdSessionRepository,
   type SessionSummary,
@@ -460,24 +461,26 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   /** Local persist that keeps freeze-0 while this session's error-adopt GET missed. */
   const persistLocalHeld = useCallback(
     (next: SessionSnapshot) => {
+      const merged = keepObservedModelMessagesPointer(next, sessionRef.current);
       const blocked = heldSessionPutBlocked(
         holdCloudPutRef.current,
         holdSessionIdRef.current,
-        next.id,
+        merged.id,
       );
-      writeLocalSession(keepFrozenClock(blocked, next));
+      writeLocalSession(keepFrozenClock(blocked, merged));
     },
     [writeLocalSession],
   );
 
   const persistMetaHeld = useCallback(
     (next: SessionSnapshot) => {
+      const merged = keepObservedModelMessagesPointer(next, sessionRef.current);
       const blocked = heldSessionPutBlocked(
         holdCloudPutRef.current,
         holdSessionIdRef.current,
-        next.id,
+        merged.id,
       );
-      writeLocalSessionMeta(keepFrozenClock(blocked, next));
+      writeLocalSessionMeta(keepFrozenClock(blocked, merged));
     },
     [writeLocalSessionMeta],
   );
@@ -654,15 +657,20 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
 
   const persist = useCallback(
     (next: SessionSnapshot, opts?: { paintQuota?: boolean; cloud?: boolean }) => {
+      // Plan #936 / adversarial-review #937 Minor: persistTurn's in-flight
+      // snapshot started without the worker pointer. Same-id omit keeps the
+      // onEnvelopeAck / GET-overlaid id so a later persist cannot re-open the
+      // promptHistory sidecar. Clear does not go through this helper.
+      const merged = keepObservedModelMessagesPointer(next, sessionRef.current);
       const blocked = heldSessionPutBlocked(
         holdCloudPutRef.current,
         holdSessionIdRef.current,
-        next.id,
+        merged.id,
       );
-      writeLocalSession(keepFrozenClock(blocked, next), opts);
+      writeLocalSession(keepFrozenClock(blocked, merged), opts);
       // Hybrid cloud push — never blocks the turn; coalesced per session in repo.
       // Held session: no PUT and no Date.now() stamp (freeze-0 LWW).
-      if (opts?.cloud !== false && !blocked) repoRef.current?.put(next.id, next);
+      if (opts?.cloud !== false && !blocked) repoRef.current?.put(merged.id, merged);
     },
     [writeLocalSession],
   );
@@ -1220,6 +1228,19 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             adoptCloudSession(snap);
             queueMicrotask(kickColdAttach);
           },
+          // Plan #936 / adversarial-review #937 Minor: fold the PUT 200
+          // copy-forwarded worker pointer onto local (sidecar-stop). Meta-only
+          // — never snap the ring, never PUT (cloudMetaFor still omits the key).
+          onEnvelopeAck: (id, modelMessagesPointer) => {
+            if (cancelled) return;
+            const cur = sessionRef.current;
+            if (cur.id !== id) return;
+            if (cur.modelMessagesPointer === modelMessagesPointer) return;
+            writeLocalSessionMeta(
+              { ...cur, modelMessagesPointer },
+              { paintQuota: false },
+            );
+          },
         });
         repoRef.current = repo;
 
@@ -1719,6 +1740,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     foldPendingModelChange,
     foldPendingReasoningChange,
     kickColdAttach,
+    writeLocalSessionMeta,
   ]);
 
   /**

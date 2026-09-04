@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseAgentBody } from './agentBody';
+import { PROMPT_BODY_MAX_CHARS } from '../chatApi';
 
 describe('parseAgentBody', () => {
   it('accepts prompt without cwd (defaults . when no env)', () => {
@@ -274,5 +275,22 @@ describe('parseAgentBody', () => {
         expect(r.error).toMatch(/reasoning/i);
       }
     }
+  });
+
+  it('adversarial #937 — prompt + promptHistory combined over PROMPT_BODY_MAX_CHARS → 400', () => {
+    const prompt = 'p'.repeat(100);
+    const history = 'h'.repeat(PROMPT_BODY_MAX_CHARS - 50);
+    const r = parseAgentBody({ prompt, promptHistory: history, sessionId: 's1' }, {});
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.status).toBe(400);
+      expect(r.error).toMatch(/prompt \+ promptHistory/i);
+    }
+    const ok = parseAgentBody(
+      { prompt: 'hi', promptHistory: 'User: a\nAssistant: b\nUser: hi', sessionId: 's1' },
+      {},
+    );
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.promptHistory).toContain('User: a');
   });
 });

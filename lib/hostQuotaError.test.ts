@@ -208,6 +208,18 @@ describe('HarnessHost wiring lock — quota save (#870)', () => {
     expect(src).toContain("persistTurn(reconciled, reconciled.turnStatus !== 'running')");
   });
 
+  it('adversarial #937 Minor — persist/persistLocalHeld/persistMetaHeld copy-forward observed modelMessagesPointer; Clear does not', () => {
+    expect(src).toContain(
+      'const merged = keepObservedModelMessagesPointer(next, sessionRef.current);',
+    );
+    expect(src).toContain('writeLocalSession(keepFrozenClock(blocked, merged), opts)');
+    expect(src).toContain('repoRef.current?.put(merged.id, merged)');
+    expect(src).toContain('writeLocalSession(keepFrozenClock(blocked, merged));');
+    expect(src).toContain('writeLocalSessionMeta(keepFrozenClock(blocked, merged));');
+    // Clear must still write the empty snapshot without the helper (same id).
+    expect(src).toContain('writeLocalSession(empty, { paintQuota: false })');
+  });
+
   it('adopt and Clear rebuild the ring before painting quota', () => {
     expect(src).toContain(
       'writeLocalSession(keepFrozenClock(blocked, s), { paintQuota: false })',

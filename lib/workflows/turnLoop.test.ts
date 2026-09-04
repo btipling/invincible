@@ -839,6 +839,101 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     ).toBeUndefined();
   });
 
+  it('plan #936 row 8 — derivePersistFold derives a modelMessages sibling (user/assistant/tool rows; persist/error skipped; reasoning dropped)', () => {
+    const fold = derivePersistFold(
+      [
+        { role: 'user', content: 'read the tree' },
+        {
+          role: 'assistant',
+          delta: {
+            text: 'reading',
+            toolCalls: [{ toolName: 'read_file', toolCallId: 'c1', args: { path: 'x' } }],
+            reasoning: 'secret CoT — never persisted',
+          },
+        },
+        { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'file body' },
+        { role: 'persist', content: 'loop-internal' },
+        { role: 'error', content: 'wrap-up error' },
+      ],
+      undefined,
+    );
+    const mm = fold?.modelMessages as Array<Record<string, unknown>>;
+    expect(Array.isArray(mm)).toBe(true);
+    // user + assistant(+tool-calls) + tool rows kept; persist/error skipped.
+    expect(mm.map((r) => r.role)).toEqual(['user', 'assistant', 'tool']);
+    // reasoning is NEVER carried into the projection.
+    const asst = mm[1] as { delta?: { reasoning?: unknown; toolCalls?: unknown[] } };
+    expect(asst.delta?.reasoning).toBeUndefined();
+    expect(asst.delta?.toolCalls).toHaveLength(1);
+    // The tool row keeps its toolCallId linkage + result.
+    const tool = mm[2] as { toolCallId?: string; result?: string };
+    expect(tool.toolCallId).toBe('c1');
+    expect(tool.result).toBe('file body');
+  });
+
+  it('plan #936 row 8b — runTurnLoop seeds messages from priorMessages; terminal persist re-derives a projection that includes prior rows (append-only growth)', async () => {
+    const { deps, closed } = wiredDeps();
+    const persistSpy = vi.fn(deps.persistStep);
+    const priorMessages = [
+      { role: 'user', content: 'turn-1 user' },
+      {
+        role: 'assistant',
+        delta: { text: 'reading', toolCalls: [{ toolName: 'read_file', toolCallId: 'c1' }] },
+      },
+      { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'file body' },
+    ];
+    // Model returns no tools this turn → one completed persist.
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'turn-2 answer', toolCalls: [] },
+    }));
+    const result = await runTurnLoop(
+      { ...deps, persistStep: persistSpy, modelStep, toolStep: vi.fn() },
+      { userMessage: 'turn-2 follow-up', priorMessages },
+    );
+    expect(result.status).toBe('completed');
+    // Seeded messages = [...priorMessages, {role:'user'}, ...this-turn rows].
+    const msgs = result.messages as Array<{ role?: string; content?: string }>;
+    expect(msgs[0]).toEqual(priorMessages[0]);
+    expect(msgs[1]).toEqual(priorMessages[1]);
+    expect(msgs[2]).toEqual(priorMessages[2]);
+    // The new user row follows the seeded prior rows.
+    expect(msgs[3]).toEqual({ role: 'user', content: 'turn-2 follow-up' });
+    // The terminal persist's projection includes the prior rows AND this turn's
+    // rows (append-only growth), so the NEXT turn seeds the full trace.
+    const terminalArg = persistSpy.mock.calls[persistSpy.mock.calls.length - 1]?.[0] as {
+      fold?: PersistStepFold;
+    };
+    const mm = terminalArg.fold?.modelMessages as Array<Record<string, unknown>>;
+    expect(Array.isArray(mm)).toBe(true);
+    // Prior user/assistant/tool rows + this turn's user + assistant.
+    expect(mm.length).toBeGreaterThanOrEqual(5);
+    expect(mm[0]).toEqual(priorMessages[0]);
+    expect(mm[2]).toEqual(priorMessages[2]);
+    // This turn's raw user prompt + assistant answer are appended.
+    const users = mm.filter((r) => r.role === 'user');
+    expect(users.some((r) => r.content === 'turn-2 follow-up')).toBe(true);
+    const assistants = mm.filter((r) => r.role === 'assistant');
+    expect(
+      assistants.some((r) => (r as { delta?: { text?: string } }).delta?.text === 'turn-2 answer'),
+    ).toBe(true);
+    expect(closed()).toBe(1);
+  });
+
+  it('plan #936 row 8c — no priorMessages → messages is the legacy singleton (no seed)', async () => {
+    const { deps } = wiredDeps();
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'hi', toolCalls: [] },
+    }));
+    const result = await runTurnLoop(
+      { ...deps, modelStep, toolStep: vi.fn() },
+      { userMessage: 'hello' },
+    );
+    const msgs = result.messages as Array<{ role?: string; content?: string }>;
+    expect(msgs[0]).toEqual({ role: 'user', content: 'hello' });
+  });
+
   it('wrap-up {ok:false} still terminal-persists and SSE-errors (inference death is not a cap) [adversarial #879 Minor]', async () => {
     const { deps, w, closed } = wiredDeps({ maxSteps: 2 });
     const persistSpy = vi.fn(deps.persistStep);

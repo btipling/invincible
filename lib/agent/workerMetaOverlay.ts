@@ -14,7 +14,8 @@
  *
  * Worker-owned keys (the only keys this PATCH may override):
  * `logicalCwd` / `activeSandboxId` / `usage` / `attachedSkills` / `turnRunId` /
- * `turnStatus` / `turnStreamCursor` / `checkpointPointer` / `resolvedProvider`. All host keys
+ * `turnStatus` / `turnStreamCursor` / `checkpointPointer` / `modelMessagesPointer` /
+ * `resolvedProvider`. All host keys
  * (`personaId`, `personaSnapshot`, `title`, `selectedModel`, `legacySnapshotId`,
  * `transcriptPointer`, `reasoningEffort`) are preserved byte-for-byte — a worker PATCH can never
  * clobber a host value.
@@ -67,6 +68,7 @@ export const WORKER_META_KEYS = [
   'turnStatus',
   'turnStreamCursor',
   'checkpointPointer',
+  'modelMessagesPointer',
   'resolvedProvider',
 ] as const;
 export type WorkerMetaKey = (typeof WORKER_META_KEYS)[number];
@@ -123,6 +125,12 @@ function sanitizeWorkerKeyValue(key: WorkerMetaKey, value: unknown): string | nu
     case 'checkpointPointer':
       // Redis-safe opaque sibling of `transcriptPointer`; the checkpoint BODY
       // never rides in `meta` — only the object id.
+      return typeof value === 'string' && value !== '' && isRedisSafeOpaqueId(value)
+        ? value
+        : undefined;
+    case 'modelMessagesPointer':
+      // Redis-safe opaque sibling of `checkpointPointer` (plan #936); the
+      // model-messages BODY never rides in `meta` — only the object id.
       return typeof value === 'string' && value !== '' && isRedisSafeOpaqueId(value)
         ? value
         : undefined;

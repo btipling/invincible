@@ -136,7 +136,7 @@ export type IdSessionRepository = {
     id: string,
     env: { updatedAt: number; pointer?: string; meta?: Record<string, unknown> },
   ): Promise<
-    | { action: 'ok' }
+    | { action: 'ok'; modelMessagesPointer?: string }
     | { action: 'adopt'; envelope: unknown }
     | { action: 'disabled' }
     | { action: 'error'; status: number; message: string }
@@ -148,6 +148,12 @@ export type HttpSessionRepositoryOptions = {
   path?: string;
   /** Called when a server body should replace local (put adopt). */
   onAdopt?: (snapshot: SessionSnapshot) => void;
+  /**
+   * Envelope PUT 200 copy-forwarded worker `modelMessagesPointer` (plan #936 /
+   * adversarial-review #937 Minor). Local sidecar-stop only — the host must
+   * NOT emit this key from `cloudMetaFor` / a follow-up PUT.
+   */
+  onEnvelopeAck?: (id: string, modelMessagesPointer: string) => void;
   /**
    * Live local snapshot (for the active session) for adopt decisions after the
    * network returns. Without this, a 409/put-adopt can clobber turns that landed
@@ -392,6 +398,20 @@ export function overlayEnvelopeMeta(
   if (turnStreamCursor !== undefined) out.turnStreamCursor = turnStreamCursor;
   else delete out.turnStreamCursor;
 
+  // Plan #936 (source #549): overlay the model-messages pointer carrier.
+  // Local only — sidecar-stop after GET. Must NOT round-trip via cloudMetaFor
+  // (adversarial-review #937 Major: a stale snapshot id LWW-stomps the worker).
+  const modelMessagesPointer = envMeta.modelMessagesPointer;
+  if (
+    typeof modelMessagesPointer === 'string' &&
+    modelMessagesPointer &&
+    isRedisSafeOpaqueId(modelMessagesPointer)
+  ) {
+    out.modelMessagesPointer = modelMessagesPointer;
+  } else {
+    delete out.modelMessagesPointer;
+  }
+
   // NOTE: the F21 submit-queue mirror (`snapshot.queue`) rides the TRANSCRIPT
   // blob body (parseCloudSessionSnapshot), NOT the envelope meta — it is
   // transcript-bulk state, not a scalar carrier. overlayEnvelopeMeta must not
@@ -487,6 +507,48 @@ export function bootCloudSnapshot(input: {
     action: 'ok',
     snapshot: overlayEnvelopeMeta(parsed, input.envelopeMeta),
   };
+}
+
+/**
+ * Parse `meta.modelMessagesPointer` from an envelope PUT 200 body (store
+ * copy-forwarded worker id). Redis-safe opaque only; poison/absent → unset.
+ * Host uses this for local sidecar-stop — never round-trips via cloudMetaFor.
+ */
+export function modelMessagesPointerFromEnvelopeBody(
+  body: unknown,
+): string | undefined {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return undefined;
+  }
+  const meta = (body as { meta?: unknown }).meta;
+  if (meta === null || typeof meta !== 'object' || Array.isArray(meta)) {
+    return undefined;
+  }
+  const raw = (meta as { modelMessagesPointer?: unknown }).modelMessagesPointer;
+  if (typeof raw === 'string' && raw && isRedisSafeOpaqueId(raw)) return raw;
+  return undefined;
+}
+
+/**
+ * Local analogue of store `copyForwardModelMessagesPointer` (adversarial-review
+ * #937 Minor on `1a2e27c`). `persist()` / model-pick writes often omit the
+ * worker pointer because `runHarnessTurn`'s snapshot started without it.
+ * Same-id incoming omit keeps the already-observed id so a later persistTurn
+ * cannot clobber `onEnvelopeAck`. Explicit incoming wins (GET overlay, ack).
+ * Different id / poison stored → no copy (Clear reuses the session id via
+ * `writeLocalSession(empty)` which must NOT go through this helper).
+ */
+export function keepObservedModelMessagesPointer(
+  incoming: SessionSnapshot,
+  stored: SessionSnapshot | undefined,
+): SessionSnapshot {
+  if (incoming.modelMessagesPointer !== undefined) return incoming;
+  if (!stored || stored.id !== incoming.id) return incoming;
+  const prev = stored.modelMessagesPointer;
+  if (typeof prev === 'string' && prev && isRedisSafeOpaqueId(prev)) {
+    return { ...incoming, modelMessagesPointer: prev };
+  }
+  return incoming;
 }
 
 /**
@@ -606,6 +668,13 @@ export type CloudPutBody = {
      * UsageSummary. Absent = clear (hide the context slot).
      */
     usage?: string;
+    /**
+     * Plan #936 / adversarial #937: worker seed pointer. Host `cloudMetaFor`
+     * NEVER emits this key (GET overlay is local sidecar-stop only — a stale
+     * snapshot id would LWW-stomp the worker's latest). Envelope PUT
+     * copy-forwards the stored worker value when the key is omitted.
+     */
+    modelMessagesPointer?: string;
   };
 };
 
@@ -620,6 +689,10 @@ export type CloudPutBody = {
  * Reserved-meta write contract (`RESERVED_META_KEYS`): this object is the
  * **full desired set**. A key left off is a **clear**, not a hole. Returns
  * `undefined` when every carrier is unset (empty desired set).
+ * Exception: `modelMessagesPointer` is worker-authored. This helper **never
+ * emits it** (adversarial-review #937 Major): a GET-overlaid snapshot id is
+ * stale the moment the next worker persist writes a new Blob. Envelope PUT
+ * copy-forwards the stored worker pointer when the host omits the key.
  */
 export function cloudMetaFor(
   snapshot: SessionSnapshot,
@@ -681,6 +754,10 @@ export function cloudMetaFor(
   if (turnStreamCursor !== undefined) meta.turnStreamCursor = turnStreamCursor;
   const usage = encodeUsageMetaString(snapshot.usage);
   if (usage !== undefined) meta.usage = usage;
+  // Plan #936 / adversarial #937 Major: NEVER emit modelMessagesPointer.
+  // Worker-authored; GET overlay is local (sidecar-stop). Host PUT omit
+  // lets upsertEnvelope copy-forward the stored worker id. Emitting the
+  // snapshot's (stale) id LWW-stomps P_n with P_{n-1}.
   return meta.logicalCwd === undefined &&
     meta.activeSandboxId === undefined &&
     meta.personaId === undefined &&
@@ -1143,6 +1220,10 @@ export function createHttpSessionRepository(
     if (pushed.action !== 'ok' && pushed.action !== 'adopt') {
       return { action: 'error', status: pushed.status, message: pushed.message };
     }
+    if (pushed.action === 'ok' && pushed.modelMessagesPointer) {
+      // Local sidecar-stop only (adversarial-review #937 Minor). Do not PUT.
+      opts.onEnvelopeAck?.(id, pushed.modelMessagesPointer);
+    }
     return { action: 'ok', snapshot };
   }
 
@@ -1301,8 +1382,17 @@ export function createHttpSessionRepository(
           message: `Envelope push failed (${res.status}).`,
         };
       }
-      await res.json();
-      return { action: 'ok' as const };
+      let stored: unknown = null;
+      try {
+        stored = await res.json();
+      } catch {
+        stored = null;
+      }
+      const modelMessagesPointer = modelMessagesPointerFromEnvelopeBody(stored);
+      return {
+        action: 'ok' as const,
+        ...(modelMessagesPointer !== undefined ? { modelMessagesPointer } : {}),
+      };
     } catch {
       return { action: 'error' as const, status: 0, message: 'Network error pushing envelope.' };
     }

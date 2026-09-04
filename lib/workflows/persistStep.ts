@@ -49,6 +49,12 @@ export interface PersistStepFold {
   resolvedProvider?: string;
   /** Bounded `{role,content}` checkpoint projection (discarded in-memory seams). */
   checkpoint?: Array<{ role: string; content: string }>;
+  /**
+   * Bounded model-facing message projection (plan #936, source #549) — the
+   * orchestrator-shape array the real seam writes as its OWN Blob object
+   * (`meta.modelMessagesPointer`). Plain serializable values only.
+   */
+  modelMessages?: unknown[];
 }
 
 /** The B7/B8 persist seam surface this step shells (store-ish, serializable-safe). */
@@ -65,7 +71,7 @@ export interface PersistStepSeam {
     turnRunId: string;
     deltas: ReadonlyArray<unknown>;
     content: string;
-    /** Run final-state fold (cwd/usage/sandbox/checkpoint) — optional. */
+    /** Run final-state fold (cwd/usage/sandbox/checkpoint/modelMessages) — optional. */
     fold?: PersistStepFold;
     /**
      * Default true. Mid-turn writes pass false so B8 overlays `running`
@@ -77,6 +83,7 @@ export interface PersistStepSeam {
         ok: true;
         objectId?: string;
         checkpointPointer?: string;
+        modelMessagesPointer?: string;
         status: 'completed' | 'running';
       }
     | { ok: false; code: string; error: string }
@@ -113,6 +120,7 @@ export type PersistStepResult =
       turnRunId: string;
       objectId?: string;
       checkpointPointer?: string;
+      modelMessagesPointer?: string;
     }
   | { ok: false; code: string; error: string };
 
@@ -222,6 +230,9 @@ export async function persistStep(
     ...(result.objectId !== undefined ? { objectId: result.objectId } : {}),
     ...(result.checkpointPointer !== undefined
       ? { checkpointPointer: result.checkpointPointer }
+      : {}),
+    ...(result.modelMessagesPointer !== undefined
+      ? { modelMessagesPointer: result.modelMessagesPointer }
       : {}),
   };
 }

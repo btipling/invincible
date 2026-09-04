@@ -217,6 +217,61 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     expect(Object.keys(env?.meta ?? {})).not.toContain('checkpointFile');
   });
 
+  it('plan #936 row 5 — model-messages projection written as its OWN Blob object; meta.modelMessagesPointer set; body never in meta', async () => {
+    const { seam, blobStore, envelopeStore } = await makeSeam();
+    const modelMessages = [
+      { role: 'user', content: 'read the tree' },
+      {
+        role: 'assistant',
+        delta: { text: 'reading', toolCalls: [{ toolName: 'read_file', toolCallId: 'c1' }] },
+      },
+      { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'file body excerpt' },
+    ];
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [{ d: 1 }],
+      content: '{"delta":"x"}',
+      fold: { ...fold, modelMessages },
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.modelMessagesPointer).toBeDefined();
+    // Distinct object from the checkpoint + transcript pointers.
+    expect(res.modelMessagesPointer).not.toBe(res.checkpointPointer);
+    expect(res.modelMessagesPointer).not.toBe(res.objectId);
+    const env = await envelopeStore.readEnvelope(key);
+    // envelope holds the model-messages pointer AND the checkpoint/transcript pointers.
+    expect(env?.meta?.modelMessagesPointer).toBe(res.modelMessagesPointer);
+    expect(env?.meta?.checkpointPointer).toBe(res.checkpointPointer);
+    expect(env?.meta?.transcriptPointer).toBe(res.objectId);
+    // The projection BODY is its own Blob object — never a meta key, never meta bloat.
+    const mmBody = res.modelMessagesPointer
+      ? await blobStore.read(res.modelMessagesPointer)
+      : null;
+    expect(JSON.parse(mmBody ?? 'null')).toEqual(modelMessages);
+    expect(Object.keys(env?.meta ?? {})).not.toContain('modelMessages');
+    expect(Object.keys(env?.meta ?? {})).not.toContain('modelMessagesBody');
+    // Bound + Redis-safe.
+    expect(res.modelMessagesPointer).toMatch(/^t_[A-Za-z0-9_-]{1,512}$/);
+  });
+
+  it('plan #936 row 5b — model-messages blob write fails → {ok:false, code:model_messages_write_failed}; terminal overlay still completed', async () => {
+    const { seam, envelopeStore } = await makeSeam({ blobStore: new ThrowingBlobStore() });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: '{"delta":"x"}',
+      fold: { modelMessages: [{ role: 'user', content: 'hi' }] },
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('model_messages_write_failed');
+    const env = await envelopeStore.readEnvelope(key);
+    expect(env?.meta?.transcriptPointer).toBeUndefined();
+    expect(env?.meta?.modelMessagesPointer).toBeUndefined();
+    expect(env?.meta?.turnStatus).toBe('completed');
+  });
+
   it('matrix 5 — cwd/usage/activeSandboxId folded from the final-state fold; host keys preserved byte-for-byte (B8 copy-forward)', async () => {
     const { seam, envelopeStore } = await makeSeam({
       seed: {

@@ -60,12 +60,14 @@ import {
   wantsAgentStream,
 } from '../../../lib/agent/agentStream';
 import { overlayWorkerMeta } from '../../../lib/agent/workerMetaOverlay';
+import { buildModelMessages } from '../../../lib/agent/modelMessages';
 import { TURN_START_MIN_INTERVAL_MS, sanitizeTurnRunId } from '../../../lib/sessionCloudCaps';
 import { mapByokResolveFailure } from '../../../lib/chatServer';
 import { createProdServices } from '../../../lib/di';
 import { requireSessionUser } from '../../../lib/tenancy/session';
 import { resolveSessionStore } from '../../../lib/tenancy/harnessSessionsRedis';
 import { isEnvelopeStore } from '../../../lib/sessions/sessionStore';
+import { isObjectIdBoundTo } from '../../../lib/sessions/blobStore';
 import { sessionKeyFor } from '../../../lib/tenancy/harnessSessionsRedis';
 import { type ResolveAgentSandboxResult } from '../../../lib/tenancy/resolveSandbox';
 import { turnWorkflow } from '../../../lib/workflows/turnWorkflow';
@@ -275,6 +277,11 @@ export async function POST(req: Request): Promise<Response> {
     // be <= the stored clock (host PUT same-ms or browser clock ahead of server)
     // → B8 rejects with lww_conflict → running marker never lands.
     let storedUpdatedAt = 0;
+    // Plan #936 (source #549): the seeded model-messages projection read from
+    // the session-bound Blob object pointed to by `meta.modelMessagesPointer`.
+    // Fail-closed: an unreadable / unbound / missing / malformed projection is
+    // treated as "no pointer" (legacy roll-forward turn), never a 5xx.
+    let priorMessages: unknown[] | undefined;
     try {
       const storeRes = await resolveSessionStore();
       if (storeRes.ok && isEnvelopeStore(storeRes.value)) {
@@ -321,6 +328,46 @@ export async function POST(req: Request): Promise<Response> {
           }
           if (typeof envelope.meta?.activeSandboxId === 'string' && envelope.meta.activeSandboxId) {
             persistRunBind = { ...persistRunBind, activeSandboxId: envelope.meta.activeSandboxId };
+          }
+
+          // Plan #936: seed the orchestrator from the persisted model-messages
+          // projection. Read the bound Blob object while the envelope is in
+          // hand (same pre-start read). confused-deputy guard: the pointer must
+          // re-bind to THIS session scope. Any failure → no seed (legacy fold
+          // IFF the host still sent `promptHistory`). Adversarial-review #937
+          // Major: GET overlay sidecar-stops without reading this sibling Blob,
+          // so a bound miss + no sidecar must not start a history-less turn.
+          const mmPointer = envelope.meta?.modelMessagesPointer;
+          if (
+            typeof mmPointer === 'string' &&
+            mmPointer &&
+            isObjectIdBoundTo(mmPointer, scope)
+          ) {
+            try {
+              const blobStore = services.createBlobTranscriptStore();
+              const raw = await blobStore.read(mmPointer);
+              if (raw !== null) {
+                const parsedProjection: unknown = JSON.parse(raw);
+                if (Array.isArray(parsedProjection)) {
+                  // Rebuild (re-pair + caps) so a planted/stale blob cannot
+                  // seed an unpaired tool-result at a strict provider
+                  // (adversarial-review #937).
+                  priorMessages = buildModelMessages(parsedProjection).rows;
+                }
+              }
+            } catch {
+              // Fail-closed: unreadable/missing/malformed projection → no seed.
+              priorMessages = undefined;
+            }
+            if (priorMessages === undefined && parsed.promptHistory === undefined) {
+              return Response.json(
+                {
+                  error:
+                    'Unable to read the model-messages seed for this session (fail closed).',
+                },
+                { status: 503 },
+              );
+            }
           }
         }
       }
@@ -399,13 +446,24 @@ export async function POST(req: Request): Promise<Response> {
       request: parsed.reasoning,
       options,
     });
+    // Plan #936: when a readable model-messages projection seeded
+    // `priorMessages`, the model gets structured history and `userMessage` is
+    // the RAW prompt. When there is no readable pointer (legacy session), the
+    // roll-forward turn uses the host's `promptHistory` fold (today's folded
+    // `prompt` value moved to an optional field) falling back to the raw
+    // prompt when the host didn't send one.
+    const userMessage =
+      priorMessages !== undefined
+        ? parsed.prompt
+        : (parsed.promptHistory ?? parsed.prompt);
     const run = await start(turnWorkflow, [
       {
-        userMessage: parsed.prompt,
+        userMessage,
         modelId: byok.modelId,
         scope,
         ...(persistRunBind ? { persistRunBind } : {}),
         ...(reasoning !== undefined ? { reasoning } : {}),
+        ...(priorMessages !== undefined ? { priorMessages } : {}),
       },
     ]);
 

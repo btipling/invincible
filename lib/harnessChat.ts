@@ -7,6 +7,7 @@ import {
   normalizePrompt,
   sendChat,
   validatePrompt,
+  PROMPT_BODY_MAX_CHARS,
   type ChatResult,
 } from './chatApi';
 import {
@@ -1107,10 +1108,45 @@ export async function runHarnessTurn(
       ? opts.streamAgent
       : opts?.sendAgentStream != null || opts?.sendAgent == null;
 
-  const apiPrompt =
-    useHistory && session.messages.length > 0
-      ? formatPromptWithHistory(session.messages, prompt)
-      : prompt;
+  // Plan #936 (source #549): on the durable `/api/turns` path (production —
+  // no injected legacy `sendAgent`/`sendAgentStream`), the server seeds the
+  // orchestrator from the persisted model-messages projection, so the host
+  // sends the RAW prompt (never the 3.5M-char fold). While the session has no
+  // locally-observed `modelMessagesPointer` yet, the host ALSO sends the
+  // `formatPromptWithHistory` fold as a `promptHistory` sidecar — the server
+  // uses it as the roll-forward `userMessage` iff the envelope has no readable
+  // pointer, else ignores it. Legacy/test paths (injected sendAgent*/local)
+  // keep today's single folded `prompt` unchanged.
+  const isDurableTurnPath = opts?.sendAgent == null && opts?.sendAgentStream == null;
+  // Skip the 3.5M fold when the durable path already observed a pointer
+  // (adversarial-review #937 Minor): sidecar-stop means we would throw it away.
+  const needsHistoryFold =
+    useHistory &&
+    session.messages.length > 0 &&
+    (!isDurableTurnPath || session.modelMessagesPointer === undefined);
+  const historyFold = needsHistoryFold
+    ? formatPromptWithHistory(session.messages, prompt)
+    : undefined;
+  const apiPrompt = isDurableTurnPath ? prompt : (historyFold ?? prompt);
+  let promptHistory =
+    isDurableTurnPath &&
+    historyFold !== undefined &&
+    session.modelMessagesPointer === undefined
+      ? historyFold
+      : undefined;
+  // Combined Function-body budget (adversarial-review #937): prompt + sidecar
+  // must stay under PROMPT_BODY_MAX_CHARS. The fold already includes the
+  // current user line, so a maxed fold + fat prompt would 413. Trim the
+  // sidecar tail (same policy as formatPromptWithHistory).
+  if (promptHistory !== undefined) {
+    const budget = PROMPT_BODY_MAX_CHARS - prompt.length;
+    if (budget <= 0) promptHistory = undefined;
+    else if (promptHistory.length > budget) {
+      promptHistory = promptHistory.slice(promptHistory.length - budget);
+      const nl = promptHistory.indexOf('\n');
+      if (nl > 0 && nl < 240) promptHistory = promptHistory.slice(nl + 1);
+    }
+  }
 
   let userPushedOnBridge = false;
 
@@ -1462,6 +1498,7 @@ export async function runHarnessTurn(
                 ...(sessionId ? { sessionId } : {}),
                 ...(boundPersonaId ? { personaId: boundPersonaId } : {}),
                 ...(sessionSandboxId ? { sandboxId: sessionSandboxId } : {}),
+                ...(promptHistory !== undefined ? { promptHistory } : {}),
                 onEvent: onStreamEvent,
                 onTurnStarted: async ({ turnRunId }) => {
                   sawDurableStart = true;
@@ -1484,6 +1521,7 @@ export async function runHarnessTurn(
                 ...(sessionId ? { sessionId } : {}),
                 ...(boundPersonaId ? { personaId: boundPersonaId } : {}),
                 ...(sessionSandboxId ? { sandboxId: sessionSandboxId } : {}),
+                ...(promptHistory !== undefined ? { promptHistory } : {}),
               });
           if (!r.ok) {
             const kind = classifyTurnFailure(r.error, r.status, opts?.signal).kind;

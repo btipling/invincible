@@ -19,6 +19,8 @@ import {
   shouldAdoptServer,
   trimForCloudPut,
   cloudMetaFor,
+  modelMessagesPointerFromEnvelopeBody,
+  keepObservedModelMessagesPointer,
   truncateUtf8,
   utf8ByteLength,
   type SessionSummary,
@@ -716,6 +718,43 @@ describe('cloudMetaFor usage fold', () => {
 
     expect(cloudMetaFor({ id: 's', updatedAt: 1, messages: [] })).toBeUndefined();
   });
+
+  it('adversarial #937 Major — never emits modelMessagesPointer (worker-only; GET overlay must not round-trip)', () => {
+    const meta = cloudMetaFor({
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      modelMessagesPointer: 't_mm_s1_abc',
+    });
+    expect(meta).toBeUndefined();
+    expect(
+      trimForCloudPut({
+        id: 's',
+        updatedAt: 1,
+        messages: [],
+        modelMessagesPointer: 't_mm_s1_abc',
+      }).meta?.modelMessagesPointer,
+    ).toBeUndefined();
+
+    const withOther = cloudMetaFor({
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      modelMessagesPointer: 't_mm_s1_abc',
+      turnStatus: 'completed',
+    });
+    expect(withOther).toEqual({ turnStatus: 'completed' });
+    expect('modelMessagesPointer' in (withOther ?? {})).toBe(false);
+
+    const poisonedPtr = cloudMetaFor({
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      modelMessagesPointer: 'a:b',
+    });
+    expect(poisonedPtr).toBeUndefined();
+    expect(cloudMetaFor({ id: 's', updatedAt: 1, messages: [] })).toBeUndefined();
+  });
 });
 
 describe('overlayEnvelopeMeta', () => {
@@ -804,6 +843,67 @@ describe('overlayEnvelopeMeta', () => {
     expect(sibling.turnRunId).toBe('run_old');
     expect(sibling.turnStatus).toBe('cancelling');
     expect(sibling.turnStreamCursor).toBe(5);
+  });
+
+
+  it('plan #936 / adversarial #937 — overlays modelMessagesPointer; absent/poison clears', () => {
+    const transcript: SessionSnapshot = {
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      modelMessagesPointer: 't_mm_old',
+    };
+    const over = overlayEnvelopeMeta(transcript, { modelMessagesPointer: 't_mm_new' });
+    expect(over.modelMessagesPointer).toBe('t_mm_new');
+    const cleared = overlayEnvelopeMeta(transcript, { transcriptPointer: 'tx_1' });
+    expect(cleared.modelMessagesPointer).toBeUndefined();
+    const poison = overlayEnvelopeMeta(transcript, { modelMessagesPointer: 'a:b' });
+    expect(poison.modelMessagesPointer).toBeUndefined();
+  });
+
+  it('adversarial #937 Minor — modelMessagesPointerFromEnvelopeBody reads PUT 200 copy-forward; poison/absent unset', () => {
+    expect(
+      modelMessagesPointerFromEnvelopeBody({
+        id: 's',
+        meta: { modelMessagesPointer: 't_mm_P2', turnStatus: 'completed' },
+      }),
+    ).toBe('t_mm_P2');
+    expect(modelMessagesPointerFromEnvelopeBody({ id: 's', meta: {} })).toBeUndefined();
+    expect(
+      modelMessagesPointerFromEnvelopeBody({ meta: { modelMessagesPointer: 'a:b' } }),
+    ).toBeUndefined();
+    expect(modelMessagesPointerFromEnvelopeBody(null)).toBeUndefined();
+    expect(modelMessagesPointerFromEnvelopeBody([])).toBeUndefined();
+  });
+
+  it('adversarial #937 Minor — keepObservedModelMessagesPointer copy-forwards same-id omit; explicit/other-id/poison do not', () => {
+    const stored: SessionSnapshot = {
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      modelMessagesPointer: 't_mm_P2',
+    };
+    const omitted: SessionSnapshot = { id: 's', updatedAt: 2, messages: [] };
+    expect(keepObservedModelMessagesPointer(omitted, stored).modelMessagesPointer).toBe(
+      't_mm_P2',
+    );
+    expect(
+      keepObservedModelMessagesPointer(
+        { ...omitted, modelMessagesPointer: 't_mm_P3' },
+        stored,
+      ).modelMessagesPointer,
+    ).toBe('t_mm_P3');
+    expect(
+      keepObservedModelMessagesPointer({ id: 'other', updatedAt: 2, messages: [] }, stored)
+        .modelMessagesPointer,
+    ).toBeUndefined();
+    expect(
+      keepObservedModelMessagesPointer(omitted, {
+        ...stored,
+        modelMessagesPointer: 'a:b',
+      }).modelMessagesPointer,
+    ).toBeUndefined();
+    expect(keepObservedModelMessagesPointer(omitted, undefined).modelMessagesPointer).toBeUndefined();
   });
 
   it('backend-agents A4 — fold → parse → overlay round-trips all three carriers; poison never sticks', () => {
@@ -1423,6 +1523,64 @@ describe('createHttpSessionRepository — envelope carrier (phase 0 #515)', () =
     expect(blobBody.prev).toBeUndefined();
     expect(envBody).toMatchObject({ id: idA, updatedAt: 30 });
     expect((envBody.meta as { transcriptPointer: string }).transcriptPointer).toBe('tx_obj1');
+  });
+
+  it('adversarial #937 Minor — envelope PUT 200 copy-forwarded pointer fires onEnvelopeAck (local sidecar-stop)', async () => {
+    const acks: Array<{ id: string; ptr: string }> = [];
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      if (method === 'POST' && u.endsWith('/transcript')) {
+        return Response.json(
+          { uploadUrl: 'https://blob.example/up', objectId: 'tx_obj1' },
+          { status: 200 },
+        );
+      }
+      if (method === 'PUT' && u === 'https://blob.example/up') {
+        return new Response(null, { status: 204 });
+      }
+      if (method === 'PUT' && u.endsWith('/envelope')) {
+        return Response.json(
+          {
+            id: idA,
+            updatedAt: 30,
+            meta: { transcriptPointer: 'tx_obj1', modelMessagesPointer: 't_mm_P2' },
+          },
+          { status: 200 },
+        );
+      }
+      return new Response(null, { status: 204 });
+    });
+    const repo = createHttpSessionRepository({
+      fetchImpl,
+      carrier: 'envelope',
+      onEnvelopeAck: (id, ptr) => acks.push({ id, ptr }),
+    });
+    repo.put(
+      idA,
+      snap({
+        id: idA,
+        updatedAt: 30,
+        messages: [{ id: 'm', role: 'user', text: 'hi', at: 1 }],
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(acks).toEqual([{ id: idA, ptr: 't_mm_P2' }]);
+    });
+  });
+
+  it('adversarial #937 Minor — envelope PUT 200 without pointer does not fire onEnvelopeAck', async () => {
+    const acks: Array<{ id: string; ptr: string }> = [];
+    const { fetchImpl, putBody } = envelopeFetch();
+    const repo = createHttpSessionRepository({
+      fetchImpl,
+      carrier: 'envelope',
+      onEnvelopeAck: (id, ptr) => acks.push({ id, ptr }),
+    });
+    repo.put(idA, snap({ id: idA, updatedAt: 1, messages: [] }));
+    await vi.waitFor(() => expect(putBody.length).toBeGreaterThanOrEqual(2));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(acks).toEqual([]);
   });
 
   it('fail-closed: non-2xx client→Blob upload does NOT advance the envelope pointer (reader Minor L1)', async () => {

@@ -23,7 +23,7 @@ optional login chrome).
 | `POST /api/chat` | **Vercel backend** | Single-shot inference; `AI_GATEWAY_API_KEY` never in Wasm |
 | `POST /api/turns` | **Vercel backend** | Production harness turn (Workflows + SSE). Host `runHarnessTurn` default. Same tool surface as `/api/agent` |
 | `POST /api/agent` | **Vercel backend** | Legacy tests/JSON inject; same event types; not the production host path |
-| Fold multi-turn history into prompt | **DOM** | `lib/harnessChat.ts` (user/assistant only; system tool lines display-only) |
+| Seed multi-turn history into the durable turn | **Vercel backend** | Production turns seed the orchestrator **server-side** from the persisted model-messages projection (`meta.modelMessagesPointer` → a session-bound Blob object; `app/api/turns/route.ts` pre-start read, confused-deputy `isObjectIdBoundTo`). The next turn's model sees structured `tool-call`/`tool-result` pairs, not prose. The host `formatPromptWithHistory` fold (`lib/harnessChat.ts`, user/assistant only) is now the **legacy/roll-forward path only** — sent as a `promptHistory` sidecar just while the session has no observed pointer (envelope GET overlay, envelope PUT 200 copy-forward, or host persist copy-forward of the already-observed id), never the durable `prompt`. LLM payload ≠ paint payload: `tool_run` stays display-primary |
 | `SessionStore` load/save/clear | **DOM** | memory / localStorage (first paint) |
 | Cloud session list/mint/pull/push/DELETE (`/api/sessions*`) | **DOM** host + **Vercel backend** | Redis multi-session (+ **phase 0 #515 envelope + Blob transcript**), server-minted ids; hybrid async; never blocks first paint; no dual chat. **Wasm never talks to Redis or Blob** — the DOM host drives the client→Blob upload + envelope upsert |
 | Session ring window + Load earlier poll | **DOM** host + **Wasm** control | Host slices ≤**2048** (`HARNESS_RING_MAX`); **Load earlier** steps by **`HISTORY_PAGE` = 512**; Wasm pending (protocol v6); no React transcript |
@@ -82,8 +82,8 @@ User picks a model in the Wasm status bar — model selection truth stays in-can
 User types in Wasm composer
   → inv_* pending submit (poll)
   → Host runHarnessTurn / SessionStore
-  → formatPromptWithHistory (user/assistant only)
-  → POST /api/turns { prompt, modelId?, cwd?, sandboxId?, sessionId?, personaId? } with Accept: text/event-stream (production default host, plan #811/D17 — durable-turn transport; the response carries the Workflow run id in the `x-workflow-run-id` header)
+  → raw prompt (production turns seed history server-side from the model-messages projection; the host `formatPromptWithHistory` fold rides only as a `promptHistory` sidecar while the session has no readable pointer — the legacy roll-forward)
+  → POST /api/turns { prompt, modelId?, cwd?, sandboxId?, sessionId?, personaId?, promptHistory? } with Accept: text/event-stream (production default host, plan #811/D17 — durable-turn transport; the response carries the Workflow run id in the `x-workflow-run-id` header)
        server requires the session user: request-scoped BYOK for the authorized modelId
        tools → sandbox (DB grants + Settings Workspace attach)
               + optional builtin http_get (attach-only durable HTTPS instance)

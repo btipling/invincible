@@ -170,6 +170,45 @@ describe('/api/sessions/:id/envelope', () => {
     expect(((await planted.json()) as { code: string }).code).toBe('INVALID_META');
   });
 
+  it('adversarial #937 — PUT rejects a modelMessagesPointer NOT minted for this session', async () => {
+    const { PUT } = await mockAuthed();
+    const foreignPtr = newBlobObjectId({
+      tenantId: 'tenant-b',
+      userId: 'user-b',
+      sessionId: 'zzz',
+    });
+    const planted = await PUT(
+      putRequest('abc', {
+        id: 'abc',
+        updatedAt: 5,
+        meta: { modelMessagesPointer: foreignPtr },
+      }),
+      ctx('abc'),
+    );
+    expect(planted.status).toBe(400);
+    expect(((await planted.json()) as { code: string }).code).toBe('INVALID_META');
+  });
+
+  it('adversarial #937 — PUT accepts a modelMessagesPointer minted for this session', async () => {
+    const { PUT } = await mockAuthed();
+    const boundPtr = newBlobObjectId({
+      tenantId: TENANT,
+      userId: USER,
+      sessionId: 'abc',
+    });
+    const res = await PUT(
+      putRequest('abc', {
+        id: 'abc',
+        updatedAt: 5,
+        meta: { modelMessagesPointer: boundPtr },
+      }),
+      ctx('abc'),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { meta: { modelMessagesPointer?: string } };
+    expect(body.meta.modelMessagesPointer).toBe(boundPtr);
+  });
+
   it('PUT LWW conflict → 409 + server envelope; equal → accepted', async () => {
     const store = new MemorySessionStore();
     setSessionStoreForTests(store);
@@ -194,6 +233,37 @@ describe('/api/sessions/:id/envelope', () => {
 
     const equal = await PUT(putRequest('abc', { id: 'abc', updatedAt: 200, meta: {} }), ctx('abc'));
     expect(equal.status).toBe(200);
+  });
+
+  it('adversarial #937 — host PUT that omits modelMessagesPointer copy-forwards the stored worker pointer', async () => {
+    const store = new MemorySessionStore();
+    setSessionStoreForTests(store);
+    const boundPtr = newBlobObjectId({ tenantId: TENANT, userId: USER, sessionId: 'abc' });
+    await store.upsertEnvelope(
+      { tenantId: TENANT, userId: USER, sessionId: 'abc' },
+      {
+        id: 'abc',
+        userId: USER,
+        tenantId: TENANT,
+        updatedAt: 50,
+        meta: { transcriptPointer: boundPtr, modelMessagesPointer: 't_mm_worker' },
+      },
+    );
+    const { PUT } = await mockAuthed();
+    const put = await PUT(
+      putRequest('abc', {
+        id: 'abc',
+        updatedAt: 60,
+        meta: { transcriptPointer: boundPtr, turnStatus: 'completed' },
+      }),
+      ctx('abc'),
+    );
+    expect(put.status).toBe(200);
+    const stored = (await put.json()) as {
+      meta: { modelMessagesPointer?: string; turnStatus?: string };
+    };
+    expect(stored.meta.modelMessagesPointer).toBe('t_mm_worker');
+    expect(stored.meta.turnStatus).toBe('completed');
   });
 
   it('GET missing session → 404; envelope never leaks a transcript', async () => {

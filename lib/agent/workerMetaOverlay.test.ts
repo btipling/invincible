@@ -97,6 +97,15 @@ describe('patchWorkerMeta (pure copy-forward)', () => {
     expect(out.personaId).toBe('p_1');
   });
 
+  it('plan #936 — Redis-safe modelMessagesPointer accepted; poison dropped; host preserved', () => {
+    expect(patchWorkerMeta({}, { modelMessagesPointer: 't_mm_s1_abc' }).modelMessagesPointer).toBe(
+      't_mm_s1_abc',
+    );
+    const out = patchWorkerMeta({ personaId: 'p_1' }, { modelMessagesPointer: 'bad pointer' });
+    expect(out.modelMessagesPointer).toBeUndefined();
+    expect(out.personaId).toBe('p_1');
+  });
+
   it('matrix 11 — completed turnStatus preserved (first-class terminal)', () => {
     expect(patchWorkerMeta({}, { turnStatus: 'completed' }).turnStatus).toBe('completed');
   });

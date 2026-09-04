@@ -81,6 +81,14 @@ export interface TurnWorkflowArgs {
    * the HTTP boundary resolves Gateway/env/default — this step does not fetch.
    */
   reasoning?: string;
+  /**
+   * Seeded prior orchestrator rows (plan #936, source #549) — the persisted
+   * model-messages projection read from the session-bound Blob object at
+   * `POST /api/turns`. Forwarded to `runTurnLoop` so the initial `messages`
+   * becomes `[...priorMessages, {role:'user'}]`. Plain serializable values
+   * only. Absent = legacy/first turn.
+   */
+  priorMessages?: ReadonlyArray<unknown>;
 }
 
 /**
@@ -163,7 +171,12 @@ export async function turnWorkflow(
         deadlineAt,
         ...(args.persistRunBind !== undefined ? { persistRunBind: args.persistRunBind } : {}),
       },
-      { userMessage: args.userMessage },
+      {
+        userMessage: args.userMessage,
+        ...(args.priorMessages !== undefined
+          ? { priorMessages: args.priorMessages }
+          : {}),
+      },
     );
   } finally {
     await closeTurnSse();
