@@ -18,7 +18,6 @@ import {
   type SessionEnvelopeInput,
   isEnvelopeStore,
   validateSessionEnvelope,
-  copyForwardModelMessagesPointer,
 } from '../../../../../lib/sessions/sessionStore';
 import { isObjectIdBoundTo } from '../../../../../lib/sessions/blobStore';
 import { isRedisSafeOpaqueId } from '../../../../../lib/sessionCloudCaps';
@@ -216,21 +215,38 @@ export async function PUT(req: Request, ctx: Ctx): Promise<Response> {
     );
   }
 
-  const key: SessionRecordKey = sessionKeyFor(scope.tenantId, gate.userId, id);
-  let storedMeta: (typeof validated.value.meta) | undefined;
-  try {
-    const stored = await store.readEnvelope(key);
-    storedMeta = stored?.meta;
-  } catch {
-    storedMeta = undefined;
+  // Plan #936 / adversarial-review #937: same confused-deputy gate as
+  // transcriptPointer. Seed still bind-checks, but a planted unbound id
+  // must not land on the envelope.
+  const mmPointer = validated.value.meta?.modelMessagesPointer;
+  if (
+    typeof mmPointer === 'string' &&
+    mmPointer &&
+    !isObjectIdBoundTo(mmPointer, {
+      tenantId: scope.tenantId,
+      userId: gate.userId,
+      sessionId: id,
+    })
+  ) {
+    return Response.json(
+      {
+        error:
+          'meta.modelMessagesPointer must reference an object minted for this session.',
+        code: 'INVALID_META',
+      },
+      { status: 400 },
+    );
   }
+
   const input: SessionEnvelopeInput = {
     id: validated.value.id,
     userId: validated.value.userId,
     tenantId: validated.value.tenantId,
     updatedAt: validated.value.updatedAt,
-    meta: copyForwardModelMessagesPointer(validated.value.meta, storedMeta),
+    meta: validated.value.meta,
   };
+
+  const key: SessionRecordKey = sessionKeyFor(scope.tenantId, gate.userId, id);
   const result = await guardStore(() => store.upsertEnvelope(key, input));
   if (!result.ok) return result.response;
   if (result.value.status === 'conflict') {

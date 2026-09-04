@@ -1110,6 +1110,41 @@ describe('envelope carrier (phase 0 #515)', () => {
     expect('modelMessagesPointer' in emptyStored).toBe(false);
   });
 
+  it('adversarial #937 — upsertEnvelope copy-forwards modelMessagesPointer from LWW existing when incoming omits', async () => {
+    const s = new MemorySessionStore();
+    const k = { tenantId: 'tenant-1', userId: 'user-1', sessionId: 's1' };
+    await s.upsertEnvelope(k, {
+      id: 's1',
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      updatedAt: 10,
+      meta: { modelMessagesPointer: 't_mm_keep', turnStatus: 'running' },
+    });
+    const up = await s.upsertEnvelope(k, {
+      id: 's1',
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      updatedAt: 20,
+      meta: { turnStatus: 'completed' },
+    });
+    expect(up.status).toBe('stored');
+    if (up.status === 'stored') {
+      expect(up.envelope.meta.modelMessagesPointer).toBe('t_mm_keep');
+      expect(up.envelope.meta.turnStatus).toBe('completed');
+    }
+    const explicit = await s.upsertEnvelope(k, {
+      id: 's1',
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      updatedAt: 30,
+      meta: { modelMessagesPointer: 't_mm_host' },
+    });
+    expect(explicit.status).toBe('stored');
+    if (explicit.status === 'stored') {
+      expect(explicit.envelope.meta.modelMessagesPointer).toBe('t_mm_host');
+    }
+  });
+
   it('meta.accepts attachedSkills as a JSON-encoded string of slugs (#514)', () => {
     expect(validateMeta({ attachedSkills: ["create-plan"] }).ok).toBe(false);
     expect(validateMeta({ attachedSkills: '["create-plan","v11"]' }).ok).toBe(true);

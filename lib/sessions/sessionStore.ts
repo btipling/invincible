@@ -67,9 +67,9 @@ import type { SessionMessage } from '../sessionStore';
  *
  * Exception (adversarial-review #937): `modelMessagesPointer` is worker-authored
  * and the host snapshot does not have it until a later GET. Envelope PUT
- * copy-forwards that one key when incoming omits it (`copyForwardModelMessagesPointer`)
- * so a host flatten PUT cannot delete the next-turn seed. Clear is DELETE, not
- * a PUT-omit. The store itself still replace-on-write.
+ * copy-forwards that one key when incoming omits it (`copyForwardModelMessagesPointer`
+ * inside `upsertEnvelope`, against the LWW `existing.meta`) so a host flatten PUT
+ * cannot delete the next-turn seed. Clear is DELETE, not a PUT-omit.
  */
 export const RESERVED_META_KEYS = [
   'activeSandboxId',
@@ -103,7 +103,8 @@ export type HarnessSessionMeta = {
  * A host flatten PUT after worker persist would otherwise delete the next-turn
  * seed (adversarial-review #937). Copy the stored pointer forward when incoming
  * meta omits the key. An explicit incoming value wins. Clear is DELETE, not a
- * PUT-omit.
+ * PUT-omit. Applied inside `upsertEnvelope` against the LWW `existing` (same
+ * read) so a route extra-read cannot fail-open to omit=clear.
  */
 export function copyForwardModelMessagesPointer(
   incoming: HarnessSessionMeta | undefined,

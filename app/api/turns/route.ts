@@ -60,6 +60,7 @@ import {
   wantsAgentStream,
 } from '../../../lib/agent/agentStream';
 import { overlayWorkerMeta } from '../../../lib/agent/workerMetaOverlay';
+import { buildModelMessages } from '../../../lib/agent/modelMessages';
 import { TURN_START_MIN_INTERVAL_MS, sanitizeTurnRunId } from '../../../lib/sessionCloudCaps';
 import { mapByokResolveFailure } from '../../../lib/chatServer';
 import { createProdServices } from '../../../lib/di';
@@ -345,7 +346,10 @@ export async function POST(req: Request): Promise<Response> {
               if (raw !== null) {
                 const parsedProjection: unknown = JSON.parse(raw);
                 if (Array.isArray(parsedProjection)) {
-                  priorMessages = parsedProjection;
+                  // Rebuild (re-pair + caps) so a planted/stale blob cannot
+                  // seed an unpaired tool-result at a strict provider
+                  // (adversarial-review #937).
+                  priorMessages = buildModelMessages(parsedProjection).rows;
                 }
               }
             } catch {

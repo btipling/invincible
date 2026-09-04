@@ -88,6 +88,16 @@ export function parseAgentBody(
   if (!promptHistory.ok) {
     return promptHistory;
   }
+  if (
+    promptHistory.value !== undefined &&
+    base.prompt.length + promptHistory.value.length > PROMPT_BODY_MAX_CHARS
+  ) {
+    return {
+      ok: false,
+      status: 400,
+      error: `prompt + promptHistory exceeds ${PROMPT_BODY_MAX_CHARS.toLocaleString()} characters (combined Function-body budget).`,
+    };
+  }
 
   const extra = {
     ...(sandboxId.value !== undefined ? { sandboxId: sandboxId.value } : {}),

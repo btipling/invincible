@@ -36,7 +36,7 @@ import {
   StatusSlot,
   type HarnessBridgeExports,
 } from './harnessBridge';
-import type { ChatResult } from './chatApi';
+import { PROMPT_BODY_MAX_CHARS, type ChatResult } from './chatApi';
 import type { AgentResult } from './agentApi';
 import type { AgentStreamEvent } from './agent/agentStream';
 import {
@@ -951,6 +951,27 @@ describe('plan #936 (source #549) — host prompt send (row 9)', () => {
     const { result } = await runHarnessTurn(bridge, session, 'second', { sendAgent });
     expect(result.ok).toBe(true);
     expect(sendAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it('adversarial #937 — prompt + promptHistory combined stay ≤ PROMPT_BODY_MAX_CHARS (sidecar tail-trimmed)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    let session = createEmptySession('s1');
+    session = appendMessage(session, 'user', 'first');
+    session = appendMessage(session, 'assistant', 'done');
+    // Fat prompt: fold already includes this line and is itself capped at 3.5M,
+    // so without the combined budget the sidecar + prompt would 413.
+    const prompt = 'p'.repeat(PROMPT_BODY_MAX_CHARS - 20);
+    const captured: { body?: Record<string, unknown> } = {};
+    stubTurnFetch(captured);
+
+    const { result } = await runHarnessTurn(bridge, session, prompt, {});
+    expect(result.ok).toBe(true);
+    expect(captured.body?.prompt).toBe(prompt);
+    const history = captured.body?.promptHistory;
+    expect(typeof history).toBe('string');
+    expect(String(history).length).toBeLessThanOrEqual(20);
+    expect(String(history).length + prompt.length).toBeLessThanOrEqual(PROMPT_BODY_MAX_CHARS);
   });
 });
 

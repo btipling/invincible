@@ -7,6 +7,7 @@ import {
   normalizePrompt,
   sendChat,
   validatePrompt,
+  PROMPT_BODY_MAX_CHARS,
   type ChatResult,
 } from './chatApi';
 import {
@@ -1122,12 +1123,25 @@ export async function runHarnessTurn(
       ? formatPromptWithHistory(session.messages, prompt)
       : undefined;
   const apiPrompt = isDurableTurnPath ? prompt : (historyFold ?? prompt);
-  const promptHistory =
+  let promptHistory =
     isDurableTurnPath &&
     historyFold !== undefined &&
     session.modelMessagesPointer === undefined
       ? historyFold
       : undefined;
+  // Combined Function-body budget (adversarial-review #937): prompt + sidecar
+  // must stay under PROMPT_BODY_MAX_CHARS. The fold already includes the
+  // current user line, so a maxed fold + fat prompt would 413. Trim the
+  // sidecar tail (same policy as formatPromptWithHistory).
+  if (promptHistory !== undefined) {
+    const budget = PROMPT_BODY_MAX_CHARS - prompt.length;
+    if (budget <= 0) promptHistory = undefined;
+    else if (promptHistory.length > budget) {
+      promptHistory = promptHistory.slice(promptHistory.length - budget);
+      const nl = promptHistory.indexOf('\n');
+      if (nl > 0 && nl < 240) promptHistory = promptHistory.slice(nl + 1);
+    }
+  }
 
   let userPushedOnBridge = false;
 

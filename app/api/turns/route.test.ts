@@ -1276,4 +1276,41 @@ describe('POST /api/turns', () => {
     expect(startArgs.priorMessages).toBeUndefined();
     expect(startArgs.userMessage).toBe('hi');
   });
+
+  it('adversarial #937 — bound pointer whose JSON is an unpaired tool array is re-paired before start()', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(
+      JSON.stringify([
+        { role: 'tool', toolName: 'search', toolCallId: 'ghost', result: 'orphan' },
+        {
+          role: 'assistant',
+          delta: { text: 'hi', toolCalls: [{ toolName: 'read_file', toolCallId: 'kept' }] },
+        },
+        { role: 'tool', toolName: 'read_file', toolCallId: 'kept', result: 'bytes' },
+      ]),
+    );
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'use it', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.priorMessages).toEqual([
+      {
+        role: 'assistant',
+        delta: { text: 'hi', toolCalls: [{ toolName: 'read_file', toolCallId: 'kept' }] },
+      },
+      { role: 'tool', toolName: 'read_file', toolCallId: 'kept', result: 'bytes' },
+    ]);
+    expect(startArgs.userMessage).toBe('use it');
+  });
 });
