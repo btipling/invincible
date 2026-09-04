@@ -152,6 +152,11 @@ describe('buildToolWorld', () => {
     expect(world.registry.meta_skill_list).toBeTruthy();
     expect(world.registry.meta_sandbox_list).toBeTruthy();
     expect(world.registry.meta_sandbox_switch).toBeTruthy();
+    // Plan #938: the working-notes family is always assembled too — before the
+    // FS merge, so both `/api/agent` and `assembleDurableToolWorld` inherit it.
+    expect(world.registry.working_notes_get).toBeTruthy();
+    expect(world.registry.working_notes_update).toBeTruthy();
+    expect(world.registry.working_notes_clear).toBeTruthy();
     expect(world.signal).toBeInstanceOf(AbortSignal);
   });
 

@@ -12,6 +12,7 @@ import type {
 } from '../sessions/sessionStore';
 import type { HarnessSessionMeta } from '../sessions/sessionStore';
 import { patchWorkerMeta, overlayWorkerMeta } from './workerMetaOverlay';
+import { WORKING_NOTES_MAX_BYTES } from '../sessionCloudCaps';
 
 const key: SessionRecordKey = {
   tenantId: 'tenant-1',
@@ -104,6 +105,27 @@ describe('patchWorkerMeta (pure copy-forward)', () => {
     const out = patchWorkerMeta({ personaId: 'p_1' }, { modelMessagesPointer: 'bad pointer' });
     expect(out.modelMessagesPointer).toBeUndefined();
     expect(out.personaId).toBe('p_1');
+  });
+
+  it('plan #938 — workingNotes PATCH accepted (freeform text); poison drops only this key; host preserved', () => {
+    // Freeform agent-authored text — length-only cap, no charset restriction.
+    expect(
+      patchWorkerMeta({}, { workingNotes: 'found: auth seam in lib/tenancy/session.ts' })
+        .workingNotes,
+    ).toBe('found: auth seam in lib/tenancy/session.ts');
+    // Empty string is the clear verb (present `''` so upsert copy-forward
+    // does not restore — adversarial #940).
+    expect(
+      patchWorkerMeta({ workingNotes: 'old' }, { workingNotes: '' }).workingNotes,
+    ).toBe('');
+    // Over-cap poison is the same present-clear marker; siblings + host preserved.
+    const out = patchWorkerMeta(
+      { personaId: 'p_1', turnStatus: 'running' },
+      { workingNotes: 'x'.repeat(WORKING_NOTES_MAX_BYTES + 1) },
+    );
+    expect(out.workingNotes).toBe('');
+    expect(out.personaId).toBe('p_1');
+    expect(out.turnStatus).toBe('running');
   });
 
   it('matrix 11 — completed turnStatus preserved (first-class terminal)', () => {
@@ -357,6 +379,45 @@ describe('overlayWorkerMeta (LWW copy-forward PATCH)', () => {
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.code).toBe('not_envelope_store');
+  });
+
+  it('plan #938 — workingNotes overlay: copy-forward persists the block; host keys survive', async () => {
+    const store = new MemorySessionStore();
+    await seed(store, { personaId: 'p_1', turnStatus: 'idle' }, 1000);
+    const write = await overlayWorkerMeta({
+      envelopeStore: store,
+      key,
+      patch: { workingNotes: 'finding: the notes block rides the envelope' },
+      updatedAt: 2000,
+    });
+    expect(write.ok).toBe(true);
+    if (!write.ok) return;
+    expect(write.meta.workingNotes).toBe('finding: the notes block rides the envelope');
+    expect(write.meta.personaId).toBe('p_1');
+    expect(write.meta.turnStatus).toBe('idle');
+
+    // A second PATCH on an unrelated worker key keeps the notes (copy-forward).
+    const second = await overlayWorkerMeta({
+      envelopeStore: store,
+      key,
+      patch: { turnStatus: 'completed' },
+      updatedAt: 3000,
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.meta.workingNotes).toBe('finding: the notes block rides the envelope');
+
+    // Explicit empty-string PATCH clears only the notes key.
+    const clear = await overlayWorkerMeta({
+      envelopeStore: store,
+      key,
+      patch: { workingNotes: '' },
+      updatedAt: 4000,
+    });
+    expect(clear.ok).toBe(true);
+    if (!clear.ok) return;
+    expect(clear.meta.workingNotes).toBeUndefined();
+    expect(clear.meta.personaId).toBe('p_1');
   });
 
   it('matrix 10 — two successive worker PATCHes: append semantics, no key loss', async () => {

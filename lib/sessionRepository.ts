@@ -25,6 +25,7 @@ import {
   sanitizeTurnRunId,
   sanitizeTurnStatus,
   sanitizeTurnStreamCursor,
+  sanitizeWorkingNotes,
   serializeAttachedSkills,
   type TurnStatus,
 } from './sessionCloudCaps';
@@ -313,6 +314,12 @@ export function parseCloudSessionSnapshot(
     if (meta.attachedSkills !== undefined) {
       snapshot.attachedSlugs = parseAttachedSkills(meta.attachedSkills);
     }
+    // Plan #938: restore the working-notes mirror from the reserved
+    // `meta.workingNotes` so refresh / device-switch / adopt rebuild the
+    // session's notes block. `sanitizeWorkingNotes` drops poison (non-string /
+    // over-32-KiB) to unset — never a sticky 400.
+    const notes = sanitizeWorkingNotes(meta.workingNotes);
+    if (notes !== undefined) snapshot.workingNotes = notes;
     const usage = decodeUsageMetaString(meta.usage);
     if (usage !== undefined) snapshot.usage = usage;
   }
@@ -411,6 +418,15 @@ export function overlayEnvelopeMeta(
   } else {
     delete out.modelMessagesPointer;
   }
+
+  // Plan #938: overlay the working-notes mirror from the envelope meta. Same
+  // reserved-meta replace contract: a valid value wins; **absent or poison
+  // clears** the field. This overlay is the refresh/device-switch restore path
+  // — without it a reload can drop an unsynced local note (the envelope is the
+  // source of truth; the mirror never PUTs a value the envelope lacks).
+  const workingNotes = sanitizeWorkingNotes(envMeta.workingNotes);
+  if (workingNotes !== undefined) out.workingNotes = workingNotes;
+  else delete out.workingNotes;
 
   // NOTE: the F21 submit-queue mirror (`snapshot.queue`) rides the TRANSCRIPT
   // blob body (parseCloudSessionSnapshot), NOT the envelope meta — it is
@@ -675,6 +691,14 @@ export type CloudPutBody = {
      * copy-forwards the stored worker value when the key is omitted.
      */
     modelMessagesPointer?: string;
+    /**
+     * Plan #938 / adversarial #940: worker-authored notes block. Host
+     * `cloudMetaFor` NEVER emits this key (GET overlay is local restore —
+     * a stale/absent snapshot would LWW-stomp the tool write). Envelope PUT
+     * copy-forwards the stored block when the key is omitted. Worker clear
+     * is a present empty string, not a PUT-omit.
+     */
+    workingNotes?: string;
   };
 };
 
@@ -754,6 +778,12 @@ export function cloudMetaFor(
   if (turnStreamCursor !== undefined) meta.turnStreamCursor = turnStreamCursor;
   const usage = encodeUsageMetaString(snapshot.usage);
   if (usage !== undefined) meta.usage = usage;
+  // Plan #938 / adversarial-review #940 Major: NEVER emit workingNotes.
+  // Worker-authored (`working_notes_*` overlay). Host snapshot is not
+  // updated on tool-execute (no SSE carrier) so a flatten PUT at Date.now()
+  // would LWW-stomp the worker write — same class as modelMessagesPointer
+  // (#937). GET overlay is local restore only. Host PUT omit lets
+  // upsertEnvelope copy-forward the stored block.
   // Plan #936 / adversarial #937 Major: NEVER emit modelMessagesPointer.
   // Worker-authored; GET overlay is local (sidecar-stop). Host PUT omit
   // lets upsertEnvelope copy-forward the stored worker id. Emitting the

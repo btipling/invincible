@@ -13,6 +13,7 @@ import {
   sessionKeyString,
   sessionPrefix,
   copyForwardModelMessagesPointer,
+  copyForwardWorkingNotes,
 } from './sessionStore';
 import {
   HARNESS_SESSION_MAX_ATTACHED_SKILLS,
@@ -23,6 +24,7 @@ import {
   PERSONA_SNAPSHOT_MAX_BYTES,
   REDIS_SAFE_OPAQUE_ID_MAX,
   REDIS_SAFE_OPAQUE_ID_RE,
+  WORKING_NOTES_MAX_BYTES,
 } from '../sessionCloudCaps';
 import { MemorySessionStore } from './memorySessionStore';
 import {
@@ -180,6 +182,7 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
       'turnRunId',
       'turnStatus',
       'turnStreamCursor',
+      'workingNotes',
     ]);
     for (const k of RESERVED_META_KEYS) {
       // `attachedSkills` is a JSON-encoded string; `usage` is a JSON UsageSummary
@@ -1096,6 +1099,85 @@ describe('envelope carrier (phase 0 #515)', () => {
     }
   });
 
+  it('plan #938 — accepts a valid meta.workingNotes block and DROPS a poisoned one to unset (never 400)', () => {
+    // The working-notes block is freeform agent-authored text — length-only
+    // cap (`WORKING_NOTES_MAX_BYTES` = 32 KiB), NO charset restriction.
+    const notes = 'Found: the auth seam lives in lib/tenancy/session.ts.\nNext: verify the LWW path.';
+    const ok = validateSessionRecord(
+      makeRecord({ meta: { workingNotes: notes } as HarnessSessionRecord['meta'] }),
+    );
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.value.meta.workingNotes).toBe(notes);
+
+    // Whitespace is trimmed by `sanitizeWorkingNotes`; the STORED value is the
+    // trimmed block.
+    const padded = validateSessionRecord(
+      makeRecord({ meta: { workingNotes: '  note  ' } as HarnessSessionRecord['meta'] }),
+    );
+    expect(padded.ok).toBe(true);
+    if (padded.ok) expect(padded.value.meta.workingNotes).toBe('note');
+
+    // At-cap (32 KiB) is preserved; over-cap is DROPPED to unset (never a
+    // truncation lie, never a 400).
+    const atCap = validateSessionRecord(
+      makeRecord({ meta: { workingNotes: 'x'.repeat(WORKING_NOTES_MAX_BYTES) } as HarnessSessionRecord['meta'] }),
+    );
+    expect(atCap.ok).toBe(true);
+    if (atCap.ok) expect(atCap.value.meta.workingNotes).toBe('x'.repeat(WORKING_NOTES_MAX_BYTES));
+
+    for (const bad of [
+      'x'.repeat(WORKING_NOTES_MAX_BYTES + 1),
+      '', // empty → unset (trim)
+      '   ', // whitespace-only → unset
+      42 as unknown,
+      undefined as unknown,
+      null as unknown,
+    ]) {
+      const res = validateSessionRecord(
+        makeRecord({ meta: { workingNotes: bad } as HarnessSessionRecord['meta'] }),
+      );
+      expect(res.ok).toBe(true); // drop-to-unset, not a 400
+      if (res.ok) {
+        expect('workingNotes' in res.value.meta).toBe(false);
+        expect(res.value.meta.workingNotes).toBeUndefined();
+      }
+    }
+
+    // The reserved-key contract is intact: unknown keys are STILL rejected.
+    expect(
+      validateSessionRecord(makeRecord({ meta: { notReserved: 1 } as HarnessSessionRecord['meta'] })).ok,
+    ).toBe(false);
+  });
+
+  it('plan #938 — validateMeta round-trips workingNotes and omits poison; envelope path shares the drop', () => {
+    const ok = validateMeta({ workingNotes: 'finding one' });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.value.workingNotes).toBe('finding one');
+    const poison = validateMeta({ workingNotes: 'x'.repeat(WORKING_NOTES_MAX_BYTES + 1) });
+    expect(poison.ok).toBe(true);
+    if (poison.ok) expect('workingNotes' in poison.value).toBe(false);
+    const empty = validateMeta({ workingNotes: '   ' });
+    expect(empty.ok).toBe(true);
+    if (empty.ok) expect('workingNotes' in empty.value).toBe(false);
+    // Envelope path shares the same drop-to-unset.
+    const env = validateSessionEnvelope({ ...makeRecord(), meta: { workingNotes: 42 as never } });
+    expect(env.ok).toBe(true);
+    if (env.ok) expect('workingNotes' in env.value.meta).toBe(false);
+
+    // Sibling keys coexist independently — the notes block rides beside the
+    // model-messages pointer without disturbing it.
+    const both = validateSessionRecord(
+      makeRecord({
+        meta: { workingNotes: 'note', modelMessagesPointer: 'mm_1' } as HarnessSessionRecord['meta'],
+      }),
+    );
+    expect(both.ok).toBe(true);
+    if (both.ok) {
+      expect(both.value.meta.workingNotes).toBe('note');
+      expect(both.value.meta.modelMessagesPointer).toBe('mm_1');
+    }
+  });
+
   it('adversarial #937 — copyForwardModelMessagesPointer keeps stored pointer when incoming omits; explicit incoming wins', () => {
     const stored = { modelMessagesPointer: 't_mm_keep', checkpointPointer: 'cp_1' };
     const omitted = copyForwardModelMessagesPointer({ turnStatus: 'completed' }, stored);
@@ -1115,6 +1197,59 @@ describe('envelope carrier (phase 0 #515)', () => {
       { modelMessagesPointer: 't_mm_P2' },
     );
     expect(hostOmit.modelMessagesPointer).toBe('t_mm_P2');
+  });
+
+  it('adversarial #940 — copyForwardWorkingNotes keeps stored notes when incoming omits; explicit empty clears', () => {
+    const stored = { workingNotes: 'keep me', personaId: 'p_1' };
+    const omitted = copyForwardWorkingNotes({ turnStatus: 'completed' }, stored);
+    expect(omitted.workingNotes).toBe('keep me');
+    expect(omitted.turnStatus).toBe('completed');
+    const explicit = copyForwardWorkingNotes({ workingNotes: 'new finding' }, stored);
+    expect(explicit.workingNotes).toBe('new finding');
+    const cleared = copyForwardWorkingNotes({ workingNotes: '' }, stored);
+    expect('workingNotes' in cleared).toBe(false);
+    const poison = copyForwardWorkingNotes(
+      { workingNotes: 'x'.repeat(WORKING_NOTES_MAX_BYTES + 1) },
+      stored,
+    );
+    expect('workingNotes' in poison).toBe(false);
+    const emptyStored = copyForwardWorkingNotes({ turnStatus: 'completed' }, {});
+    expect('workingNotes' in emptyStored).toBe(false);
+  });
+
+  it('adversarial #940 — upsertEnvelope copy-forwards workingNotes from LWW existing when incoming omits; explicit empty clears', async () => {
+    const s = new MemorySessionStore();
+    const k = { tenantId: 'tenant-1', userId: 'user-1', sessionId: 's1' };
+    await s.upsertEnvelope(k, {
+      id: 's1',
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      updatedAt: 10,
+      meta: { workingNotes: 'tool wrote this', turnStatus: 'running' },
+    });
+    const hostOmit = await s.upsertEnvelope(k, {
+      id: 's1',
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      updatedAt: 20,
+      meta: { turnStatus: 'completed' },
+    });
+    expect(hostOmit.status).toBe('stored');
+    if (hostOmit.status === 'stored') {
+      expect(hostOmit.envelope.meta.workingNotes).toBe('tool wrote this');
+      expect(hostOmit.envelope.meta.turnStatus).toBe('completed');
+    }
+    const cleared = await s.upsertEnvelope(k, {
+      id: 's1',
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      updatedAt: 30,
+      meta: { workingNotes: '' },
+    });
+    expect(cleared.status).toBe('stored');
+    if (cleared.status === 'stored') {
+      expect('workingNotes' in cleared.envelope.meta).toBe(false);
+    }
   });
 
   it('adversarial #937 — upsertEnvelope copy-forwards modelMessagesPointer from LWW existing when incoming omits', async () => {

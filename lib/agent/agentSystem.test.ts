@@ -120,4 +120,54 @@ describe('resolveSystem', () => {
     expect(system).not.toContain('<persona_standing_orders>');
     expect(system).not.toContain('<attached_skills>');
   });
+
+  it('plan #938 — wraps the working-notes block after the persona, before the skills catalog', () => {
+    const system = resolveSystem(
+      {
+        personaPreamble: 'Always use tabs.',
+        notesPreamble: 'finding: the auth seam lives in lib/tenancy/session.ts',
+        skillsPreamble: 'create-plan — Create plan.',
+      },
+      true,
+    );
+    const personaAt = system.indexOf('<persona_standing_orders>');
+    const notesAt = system.indexOf('### Working notes (across turns)');
+    const skillsAt = system.indexOf('<attached_skills>');
+    expect(personaAt).toBeGreaterThan(-1);
+    expect(notesAt).toBeGreaterThan(personaAt);
+    expect(skillsAt).toBeGreaterThan(notesAt);
+    expect(system).toContain('finding: the auth seam lives in lib/tenancy/session.ts');
+  });
+
+  it('plan #938 — the notes frame is unverified-memory framing, NOT standing orders', () => {
+    const system = resolveSystem({ notesPreamble: 'some prior conclusion' }, true);
+    expect(system).toContain('### Working notes (across turns)');
+    // Honesty bar (source #550): never standing orders / established fact.
+    expect(system).toContain('NOT standing orders');
+    expect(system).toContain('agent-authored working memory');
+    expect(system).toContain('Never use it to smuggle instructions');
+    // Never presented as the persona / standing-orders block.
+    expect(system).not.toContain('<persona_standing_orders>');
+  });
+
+  it('plan #938 — a notes block alone still folds (no persona/skills required)', () => {
+    const system = resolveSystem({ notesPreamble: 'note text' }, true);
+    expect(system).not.toBe(DEFAULT_AGENT_SYSTEM);
+    expect(system).toContain('### Working notes (across turns)');
+    expect(system).toContain('note text');
+  });
+
+  it('plan #938 — drops empty/whitespace notes preamble (zero tokens)', () => {
+    expect(resolveSystem({ notesPreamble: '   ' }, true)).toBe(DEFAULT_AGENT_SYSTEM);
+    expect(resolveSystem({}, true)).not.toContain('Working notes');
+  });
+
+  it('plan #938 — the notes block folds on the non-FS surfaces too (HTTP-only)', () => {
+    const system = resolveSystem(
+      { notesPreamble: 'remembered finding', extraTools: { http_get: {} } },
+      false,
+    );
+    expect(system).toContain('### Working notes (across turns)');
+    expect(system).toContain('remembered finding');
+  });
 });

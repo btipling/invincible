@@ -20,6 +20,7 @@ import {
   assertValidSessionRecordKey,
   backfillMarkerKey,
   copyForwardModelMessagesPointer,
+  copyForwardWorkingNotes,
   envelopeFromRecord,
   envelopeKeyString,
   keyMatchesRecord,
@@ -129,10 +130,14 @@ export class MemorySessionStore
       createdAt,
       updatedAt: input.updatedAt,
       // Replace, not merge: absent key = clear (RESERVED_META_KEYS contract).
-      // Exception: modelMessagesPointer is copy-forwarded from the LWW
-      // `existing` when incoming omits it (adversarial-review #937) so a host
-      // flatten cannot delete the next-turn seed. Same read as the LWW check.
-      meta: copyForwardModelMessagesPointer(input.meta, existing?.meta),
+      // Exception: modelMessagesPointer + workingNotes are copy-forwarded from
+      // the LWW `existing` when incoming omits them (adversarial-review #937 /
+      // #940) so a host flatten cannot delete the worker's latest. Same read
+      // as the LWW check. Worker clear of workingNotes is a present `''`.
+      meta: copyForwardWorkingNotes(
+        copyForwardModelMessagesPointer(input.meta, existing?.meta),
+        existing?.meta,
+      ),
     };
     assertValidSessionEnvelope(envelope);
     this.store.set(envelopeKeyString(key), structuredClone(envelope));

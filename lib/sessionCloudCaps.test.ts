@@ -31,6 +31,8 @@ import {
   sanitizeTurnRunId,
   sanitizeTurnStatus,
   sanitizeTurnStreamCursor,
+  sanitizeWorkingNotes,
+  WORKING_NOTES_MAX_BYTES,
 } from './sessionCloudCaps';
 import { MAX_MODEL_ID_LEN as BRIDGE_MAX_MODEL_ID_LEN, MAX_STATUS_SLOT_LEN, MAX_REASONING_EFFORT_LEN as BRIDGE_MAX_REASONING_EFFORT_LEN, MAX_RESOLVED_PROVIDER_LEN as BRIDGE_MAX_RESOLVED_PROVIDER_LEN } from './harnessBridge';
 
@@ -378,6 +380,47 @@ describe('TURN_WALL_CLOCK caps (plan #923 — hard 1-hour turn wall clock)', () 
     expect(TURN_WALL_CLOCK_PROBE_EVERY_MS).toBe(2_000);
     expect(TURN_WALL_CLOCK_DEADLINE_TTL_MS).toBeLessThan(TURN_WALL_CLOCK_MAX_MS);
     expect(TURN_WALL_CLOCK_PROBE_EVERY_MS).toBeLessThan(TURN_WALL_CLOCK_MAX_MS);
+  });
+});
+
+// Plan #938 (backend-agents A2, source #550): reserved `meta.workingNotes` is
+// the session-owned agent working-notes block. NEW cap (`WORKING_NOTES_MAX_BYTES`
+// = 32 KiB) — no existing cap value changed (no human gate). Length-only
+// freeform text (findings/decisions) — deliberately NO charset restriction.
+describe('sanitizeWorkingNotes + WORKING_NOTES_MAX_BYTES (plan #938 — working-notes carrier)', () => {
+  it('WORKING_NOTES_MAX_BYTES is a NEW generous 32 KiB cap ("a novel is not memory")', () => {
+    expect(WORKING_NOTES_MAX_BYTES).toBe(32 * 1024);
+    // A standing per-round inference cost bounded well under the 1 MiB whole-meta
+    // budget and the 4.5 MB Function wire.
+    expect(WORKING_NOTES_MAX_BYTES).toBeLessThan(1024 * 1024);
+    expect(WORKING_NOTES_MAX_BYTES).toBeLessThan(4.5 * 1024 * 1024);
+  });
+
+  it('keeps freeform text (multi-line, punctuation, code refs) — no charset restriction', () => {
+    const notes =
+      'Found: the auth seam lives in lib/tenancy/session.ts.\n' +
+      'Decision: fold notes after the persona, before skills.\n' +
+      'Open: does LWW cover mid-turn writes? (see #938)';
+    expect(sanitizeWorkingNotes(notes)).toBe(notes);
+    // trims surrounding whitespace
+    expect(sanitizeWorkingNotes('  note  ')).toBe('note');
+  });
+
+  it('drops non-string / empty / whitespace-only (drop-to-unset)', () => {
+    expect(sanitizeWorkingNotes(undefined)).toBeUndefined();
+    expect(sanitizeWorkingNotes(42)).toBeUndefined();
+    expect(sanitizeWorkingNotes(null)).toBeUndefined();
+    expect(sanitizeWorkingNotes('')).toBeUndefined();
+    expect(sanitizeWorkingNotes('   ')).toBeUndefined();
+  });
+
+  it('drops over-cap (never truncates) — at-cap preserved (non-vacuous)', () => {
+    expect(sanitizeWorkingNotes('x'.repeat(WORKING_NOTES_MAX_BYTES))).toBe(
+      'x'.repeat(WORKING_NOTES_MAX_BYTES),
+    );
+    expect(sanitizeWorkingNotes('x'.repeat(WORKING_NOTES_MAX_BYTES + 1))).toBeUndefined();
+    // UTF-8 multibyte counts bytes, not chars: a 16k-char CJK block is 48 KiB — over.
+    expect(sanitizeWorkingNotes('あ'.repeat(16 * 1024 + 1))).toBeUndefined();
   });
 });
 

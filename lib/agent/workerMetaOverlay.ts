@@ -15,7 +15,11 @@
  * Worker-owned keys (the only keys this PATCH may override):
  * `logicalCwd` / `activeSandboxId` / `usage` / `attachedSkills` / `turnRunId` /
  * `turnStatus` / `turnStreamCursor` / `checkpointPointer` / `modelMessagesPointer` /
- * `resolvedProvider`. All host keys
+ * `resolvedProvider` / `workingNotes` (plan #938 — the working-notes tools write
+ * the block best-effort at tool-execute; mid-turn notes survive a cancelled /
+ * wall-clocked / errored turn the same commitment as `change_dir`. Host flatten
+ * PUT copy-forwards this key on omit — adversarial-review #940 — so a stale
+ * snapshot cannot LWW-stomp the tool write). All host keys
  * (`personaId`, `personaSnapshot`, `title`, `selectedModel`, `legacySnapshotId`,
  * `transcriptPointer`, `reasoningEffort`) are preserved byte-for-byte — a worker PATCH can never
  * clobber a host value.
@@ -47,6 +51,7 @@ import {
   sanitizeTurnRunId,
   sanitizeTurnStatus,
   sanitizeTurnStreamCursor,
+  sanitizeWorkingNotes,
   serializeAttachedSkills,
 } from '../sessionCloudCaps';
 import { encodeUsageMetaString } from './usageSummary';
@@ -70,6 +75,7 @@ export const WORKER_META_KEYS = [
   'checkpointPointer',
   'modelMessagesPointer',
   'resolvedProvider',
+  'workingNotes',
 ] as const;
 export type WorkerMetaKey = (typeof WORKER_META_KEYS)[number];
 
@@ -136,6 +142,15 @@ function sanitizeWorkerKeyValue(key: WorkerMetaKey, value: unknown): string | nu
         : undefined;
     case 'resolvedProvider':
       return sanitizeResolvedProvider(value);
+    case 'workingNotes': {
+      // Plan #938 / adversarial #940: the session-owned agent working-notes
+      // block. Length-only freeform text (32 KiB cap). An explicit empty /
+      // poison returns `''` (present marker) so upsertEnvelope copy-forward
+      // does not restore the stored block — host omit vs worker clear.
+      // sanitizeWorkingNotes('') then drops the key to unset.
+      const cleaned = sanitizeWorkingNotes(value);
+      return cleaned !== undefined ? cleaned : '';
+    }
   }
 }
 

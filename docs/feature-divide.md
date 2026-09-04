@@ -138,6 +138,18 @@ attach row and is never the system-prefix inject (that block is catalog-only:
 slug + name + description). Sticky attachment rides
 `meta.attachedSkills` (slugs only), re-resolved each turn as a catalog line.
 
+`meta.attachedSkills` (slugs only), re-resolved each turn as a catalog line.
+
+**Working-notes fold (plan #938):** the session's agent-authored working-notes
+block (`meta.workingNotes`, ≤ 32 KiB) rides the SAME system-prefix seam between
+the persona and the skills catalog — server-owned text folded by
+`resolveSystem` (`notesPreamble`), written only by the always-on
+`working_notes_*` tools (`lib/agent/workingNotesTools.ts`) via the worker
+envelope overlay. The Wasm canvas paints nothing for it (the block is
+server-side system context only, never a transcript row); the agent discovers
+it through the tools' descriptions. See
+[session-model.md](session-model.md) · `workingNotes`.
+
 ## Key source paths
 
 | Concern | Path |

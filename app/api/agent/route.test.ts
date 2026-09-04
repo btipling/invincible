@@ -691,6 +691,9 @@ describe('POST /api/agent', () => {
     });
     expect(runAgent).not.toHaveBeenCalled();
     expect(mcp.buildUserMcpTools).toHaveBeenCalled();
+    // Plan #938 / adversarial #940: working_notes_* are always-on like meta_*
+    // and must not substitute for FS/MCP/http on this 403. If the filter
+    // dropped, this test would go 200 (notes-only turn hiding the workspace).
   });
 
   it('softContinue from resolve skips FS tools and still runs agent when MCP tools exist', async () => {
@@ -1653,6 +1656,63 @@ describe('POST /api/agent', () => {
     expect(arg.prompt).toBe('hi');
     expect(arg.prompt).not.toContain('<reminder>');
     expect(userPersonas).not.toHaveBeenCalled();
+  });
+
+  it('plan #938 / adversarial #940 — folds notesPreamble from the envelope (stores-absent; persona/skills not required)', async () => {
+    mockAuthedSession();
+    mockMcpEmpty();
+    mockByokOk();
+    mockGithubToken();
+    mockResolveSandboxOk();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    const fakeSessionStore = {
+      get: vi.fn(),
+      put: vi.fn(),
+      list: vi.fn(),
+      remove: vi.fn(),
+      readEnvelope: vi.fn(async () => ({
+        id: 'sess_notes',
+        tenantId: 'tenant-1',
+        userId: 'user-1',
+        createdAt: 1,
+        updatedAt: 1,
+        meta: { workingNotes: 'finding: fold even without persona/skills stores' },
+      })),
+      upsertEnvelope: vi.fn(),
+    };
+    vi.doMock('../../../lib/tenancy/harnessSessionsRedis', () => ({
+      resolveSessionStore: async () => ({ ok: true as const, value: fakeSessionStore }),
+      sessionKeyFor: (t: string, u: string, s: string) => ({
+        tenantId: t,
+        userId: u,
+        sessionId: s,
+      }),
+    }));
+    servicesState.harnessSessionsRedis = {
+      resolveTenantIdForUser: vi.fn(async () => ({ ok: true as const, value: 'tenant-1' })),
+    };
+    type RunArg = { notesPreamble?: string; personaPreamble?: string; skillsPreamble?: string };
+    const runAgent = vi.fn(async (_arg: RunArg) => ({ text: 'ok', toolTrace: [] }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent,
+      runAgentStream: vi.fn(),
+    }));
+
+    const { POST } = await loadRoute();
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'what did we conclude?', sessionId: 'sess_notes' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(runAgent).toHaveBeenCalledTimes(1);
+    const arg = runAgent.mock.calls[0]?.[0] as RunArg;
+    expect(arg.notesPreamble).toBe('finding: fold even without persona/skills stores');
+    expect(arg.personaPreamble).toBeUndefined();
+    expect(arg.skillsPreamble).toBeUndefined();
+    expect(fakeSessionStore.readEnvelope).toHaveBeenCalled();
   });
 
   it('strips /slug and folds the catalog skillsPreamble for an attach-with-prose prompt (phase 2 #517, plan #557/#931)', async () => {

@@ -46,6 +46,7 @@ import { createHttpFetchTools } from './httpFetchTools';
 import { createSkillTools } from './skillTools';
 import { createMetaPersonaSkillTools } from './metaTools';
 import { createMetaSandboxTools } from './metaSandboxTools';
+import { createWorkingNotesTools } from './workingNotesTools';
 import type { SessionStoreSeam } from './metaSandboxTools';
 import type {
   BuildUserMcpToolsOptions,
@@ -181,6 +182,19 @@ export async function buildToolWorld(
       userId,
       sessionId,
       userPreferredSandbox: services.userPreferredSandbox,
+      sessionStoreSeam,
+    }),
+  };
+
+  // Plan #938: first-party working-notes tools (`working_notes_*`) — the only
+  // writers of the session-owned `meta.workingNotes` block. Assembled AFTER
+  // `meta_*` and BEFORE the FS/tool-registry merge (mirroring `meta_*`) so both
+  // `/api/agent` and `assembleDurableToolWorld` (durable turns) inherit them.
+  extraTools = {
+    ...extraTools,
+    ...createWorkingNotesTools({
+      userId,
+      sessionId,
       sessionStoreSeam,
     }),
   };

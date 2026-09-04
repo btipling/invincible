@@ -4,6 +4,7 @@ import {
   HARNESS_SESSION_MAX_BODY_BYTES,
   HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES,
   HARNESS_SESSION_MAX_MSG_BYTES,
+  WORKING_NOTES_MAX_BYTES,
 } from './sessionCloudCaps';
 import {
   createHttpSessionRepository,
@@ -936,6 +937,56 @@ describe('overlayEnvelopeMeta', () => {
     expect(poisonedEnv.turnRunId).toBeUndefined();
     expect(poisonedEnv.turnStatus).toBeUndefined();
     expect(poisonedEnv.turnStreamCursor).toBeUndefined();
+  });
+
+  it('plan #938 / adversarial #940 — cloudMetaFor never emits workingNotes (host omit copy-forwards); overlay restores', () => {
+    const snap: SessionSnapshot = {
+      id: 's',
+      updatedAt: 1,
+      messages: [{ id: 'm', role: 'user', text: 't', at: 1 }],
+      workingNotes: 'persisted finding (agent-authored)',
+    };
+    // Host flatten must not emit the worker-authored block — a stale/absent
+    // snapshot at Date.now() would LWW-stomp the tool write (#940 Major).
+    const meta = cloudMetaFor(snap);
+    expect(meta).toBeUndefined();
+    expect(cloudMetaFor({ id: 's', updatedAt: 1, messages: [], cwd: '.' })?.workingNotes)
+      .toBeUndefined();
+
+    // GET overlay still restores (local sidecar only — not a PUT payload).
+    const parsed = parseCloudSessionSnapshot({
+      ...snap,
+      meta: { workingNotes: 'persisted finding (agent-authored)' },
+    });
+    expect(parsed?.workingNotes).toBe('persisted finding (agent-authored)');
+    const round = overlayEnvelopeMeta(parsed!, { workingNotes: 'persisted finding (agent-authored)' });
+    expect(round.workingNotes).toBe('persisted finding (agent-authored)');
+
+    const poisonedEnv = overlayEnvelopeMeta(round, {
+      workingNotes: 'x'.repeat(WORKING_NOTES_MAX_BYTES + 1),
+    });
+    expect(poisonedEnv.workingNotes).toBeUndefined();
+  });
+
+  it('plan #938 — parseCloudSessionSnapshot restores meta.workingNotes; poison drops to unset (never sticky)', () => {
+    const restored = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [{ id: 'm', role: 'user', text: 't', at: 1 }],
+      meta: { workingNotes: 'note from the envelope' },
+    });
+    expect(restored?.workingNotes).toBe('note from the envelope');
+
+    const poison = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [],
+      meta: { workingNotes: 'x'.repeat(WORKING_NOTES_MAX_BYTES + 1) },
+    });
+    expect(poison?.workingNotes).toBeUndefined();
+
+    const bare = parseCloudSessionSnapshot({ id: 's', updatedAt: 1, messages: [] });
+    expect(bare?.workingNotes).toBeUndefined();
   });
 });
 
