@@ -172,9 +172,11 @@ reserved-`meta` carriers are defined in
   stays ephemeral). The projection is written as its **own Blob object** —
   row/byte-capped at `MODEL_MSG_CHECKPOINT_MAX_ROWS` = 4096 /
   `MODEL_MSG_CHECKPOINT_MAX_BYTES` = 8 MiB — and only its object **id** rides in
-  envelope `meta.modelMessagesPointer`. Envelope PUT copy-forwards that pointer
-  when a host flatten omits it (adversarial-review #937) so the next-turn seed
-  survives LWW. `POST /api/turns` reads that pointer pre-start (confused-deputy
+  envelope `meta.modelMessagesPointer`. Host `cloudMetaFor` never emits that
+  pointer (GET overlay is local sidecar-stop only). Envelope PUT copy-forwards
+  the stored worker id when a host flatten omits it (adversarial-review #937)
+  so the next-turn seed survives LWW and cannot be rolled back to a stale GET
+  id. `POST /api/turns` reads that pointer pre-start (confused-deputy
   `isObjectIdBoundTo`, fail-closed) and seeds the next turn's orchestrator from
   it (`priorMessages`); when no bound pointer exists the host's `promptHistory`
   sidecar is the one-shot legacy roll-forward (`formatPromptWithHistory` fold),

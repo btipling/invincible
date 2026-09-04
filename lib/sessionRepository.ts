@@ -392,10 +392,9 @@ export function overlayEnvelopeMeta(
   if (turnStreamCursor !== undefined) out.turnStreamCursor = turnStreamCursor;
   else delete out.turnStreamCursor;
 
-  // Plan #936 (source #549): overlay the model-messages pointer carrier. Same
-  // reserved-meta replace contract: a valid Redis-safe value wins; absent or
-  // poison clears. The host uses it ONLY to decide whether to keep sending the
-  // `promptHistory` roll-forward fold — never to fetch the Blob (feature-divide).
+  // Plan #936 (source #549): overlay the model-messages pointer carrier.
+  // Local only — sidecar-stop after GET. Must NOT round-trip via cloudMetaFor
+  // (adversarial-review #937 Major: a stale snapshot id LWW-stomps the worker).
   const modelMessagesPointer = envMeta.modelMessagesPointer;
   if (
     typeof modelMessagesPointer === 'string' &&
@@ -622,10 +621,10 @@ export type CloudPutBody = {
      */
     usage?: string;
     /**
-     * Plan #936 / adversarial #937: worker seed pointer. Folded when the
-     * snapshot has observed it (GET overlay). Envelope PUT also copy-forwards
-     * the stored value when this key is omitted so a host flatten cannot
-     * delete the next-turn seed.
+     * Plan #936 / adversarial #937: worker seed pointer. Host `cloudMetaFor`
+     * NEVER emits this key (GET overlay is local sidecar-stop only — a stale
+     * snapshot id would LWW-stomp the worker's latest). Envelope PUT
+     * copy-forwards the stored worker value when the key is omitted.
      */
     modelMessagesPointer?: string;
   };
@@ -642,8 +641,10 @@ export type CloudPutBody = {
  * Reserved-meta write contract (`RESERVED_META_KEYS`): this object is the
  * **full desired set**. A key left off is a **clear**, not a hole. Returns
  * `undefined` when every carrier is unset (empty desired set).
- * Exception: `modelMessagesPointer` is copy-forwarded on envelope PUT when
- * omitted (worker-authored seed; adversarial-review #937).
+ * Exception: `modelMessagesPointer` is worker-authored. This helper **never
+ * emits it** (adversarial-review #937 Major): a GET-overlaid snapshot id is
+ * stale the moment the next worker persist writes a new Blob. Envelope PUT
+ * copy-forwards the stored worker pointer when the host omits the key.
  */
 export function cloudMetaFor(
   snapshot: SessionSnapshot,
@@ -705,16 +706,10 @@ export function cloudMetaFor(
   if (turnStreamCursor !== undefined) meta.turnStreamCursor = turnStreamCursor;
   const usage = encodeUsageMetaString(snapshot.usage);
   if (usage !== undefined) meta.usage = usage;
-  // Plan #936 / adversarial #937: fold the worker seed pointer so a host PUT
-  // that *has* seen GET overlay emits it (omit = clear). Envelope PUT also
-  // copy-forwards this key when the snapshot has not observed it yet.
-  const modelMessagesPointer =
-    typeof snapshot.modelMessagesPointer === 'string' &&
-    snapshot.modelMessagesPointer &&
-    isRedisSafeOpaqueId(snapshot.modelMessagesPointer)
-      ? snapshot.modelMessagesPointer
-      : undefined;
-  if (modelMessagesPointer !== undefined) meta.modelMessagesPointer = modelMessagesPointer;
+  // Plan #936 / adversarial #937 Major: NEVER emit modelMessagesPointer.
+  // Worker-authored; GET overlay is local (sidecar-stop). Host PUT omit
+  // lets upsertEnvelope copy-forward the stored worker id. Emitting the
+  // snapshot's (stale) id LWW-stomps P_n with P_{n-1}.
   return meta.logicalCwd === undefined &&
     meta.activeSandboxId === undefined &&
     meta.personaId === undefined &&
@@ -725,8 +720,7 @@ export function cloudMetaFor(
     meta.turnRunId === undefined &&
     meta.turnStatus === undefined &&
     meta.turnStreamCursor === undefined &&
-    meta.usage === undefined &&
-    meta.modelMessagesPointer === undefined
+    meta.usage === undefined
     ? undefined
     : meta;
 }

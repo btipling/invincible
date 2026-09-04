@@ -1108,6 +1108,13 @@ describe('envelope carrier (phase 0 #515)', () => {
     expect(explicit.modelMessagesPointer).toBe('t_mm_host');
     const emptyStored = copyForwardModelMessagesPointer({ turnStatus: 'completed' }, {});
     expect('modelMessagesPointer' in emptyStored).toBe(false);
+    // Host-shaped PUT (cloudMetaFor omits the key even after GET overlay) must
+    // keep the worker's latest, not roll back to a stale GET-era id.
+    const hostOmit = copyForwardModelMessagesPointer(
+      { turnStatus: 'completed' },
+      { modelMessagesPointer: 't_mm_P2' },
+    );
+    expect(hostOmit.modelMessagesPointer).toBe('t_mm_P2');
   });
 
   it('adversarial #937 — upsertEnvelope copy-forwards modelMessagesPointer from LWW existing when incoming omits', async () => {

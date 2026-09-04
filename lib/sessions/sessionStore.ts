@@ -66,10 +66,12 @@ import type { SessionMessage } from '../sessionStore';
  * treats omit as "keep previous."
  *
  * Exception (adversarial-review #937): `modelMessagesPointer` is worker-authored
- * and the host snapshot does not have it until a later GET. Envelope PUT
- * copy-forwards that one key when incoming omits it (`copyForwardModelMessagesPointer`
- * inside `upsertEnvelope`, against the LWW `existing.meta`) so a host flatten PUT
- * cannot delete the next-turn seed. Clear is DELETE, not a PUT-omit.
+ * and the host snapshot's copy is stale the moment the next persist writes a
+ * new Blob. Host `cloudMetaFor` never emits this key. Envelope PUT copy-forwards
+ * it when incoming omits it (`copyForwardModelMessagesPointer` inside
+ * `upsertEnvelope`, against the LWW `existing.meta`) so a host flatten PUT
+ * cannot delete — or roll back — the next-turn seed. Clear is DELETE, not a
+ * PUT-omit.
  */
 export const RESERVED_META_KEYS = [
   'activeSandboxId',
@@ -98,13 +100,13 @@ export type HarnessSessionMeta = {
 };
 
 /**
- * Worker-authored `modelMessagesPointer` (plan #936). Host `cloudMetaFor` omits
- * keys the snapshot does not have; envelope PUT is full-replace (omit = clear).
- * A host flatten PUT after worker persist would otherwise delete the next-turn
- * seed (adversarial-review #937). Copy the stored pointer forward when incoming
- * meta omits the key. An explicit incoming value wins. Clear is DELETE, not a
- * PUT-omit. Applied inside `upsertEnvelope` against the LWW `existing` (same
- * read) so a route extra-read cannot fail-open to omit=clear.
+ * Worker-authored `modelMessagesPointer` (plan #936). Host `cloudMetaFor`
+ * never emits this key (GET overlay is local sidecar-stop; a stale snapshot
+ * id would LWW-stomp the worker's latest — adversarial-review #937 Major).
+ * Envelope PUT is full-replace (omit = clear) for every other key; this helper
+ * copies the stored pointer forward when incoming omits it. An explicit
+ * incoming value wins (worker overlay). Clear is DELETE, not a PUT-omit.
+ * Applied inside `upsertEnvelope` against the LWW `existing` (same read).
  */
 export function copyForwardModelMessagesPointer(
   incoming: HarnessSessionMeta | undefined,

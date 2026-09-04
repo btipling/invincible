@@ -717,22 +717,32 @@ describe('cloudMetaFor usage fold', () => {
     expect(cloudMetaFor({ id: 's', updatedAt: 1, messages: [] })).toBeUndefined();
   });
 
-  it('plan #936 / adversarial #937 — folds modelMessagesPointer; poison omit; omit = clear', () => {
+  it('adversarial #937 Major — never emits modelMessagesPointer (worker-only; GET overlay must not round-trip)', () => {
     const meta = cloudMetaFor({
       id: 's',
       updatedAt: 1,
       messages: [],
       modelMessagesPointer: 't_mm_s1_abc',
     });
-    expect(meta).toEqual({ modelMessagesPointer: 't_mm_s1_abc' });
+    expect(meta).toBeUndefined();
     expect(
       trimForCloudPut({
         id: 's',
         updatedAt: 1,
         messages: [],
         modelMessagesPointer: 't_mm_s1_abc',
-      }).meta,
-    ).toEqual({ modelMessagesPointer: 't_mm_s1_abc' });
+      }).meta?.modelMessagesPointer,
+    ).toBeUndefined();
+
+    const withOther = cloudMetaFor({
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      modelMessagesPointer: 't_mm_s1_abc',
+      turnStatus: 'completed',
+    });
+    expect(withOther).toEqual({ turnStatus: 'completed' });
+    expect('modelMessagesPointer' in (withOther ?? {})).toBe(false);
 
     const poisonedPtr = cloudMetaFor({
       id: 's',
