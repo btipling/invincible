@@ -19,6 +19,7 @@ import {
   shouldAdoptServer,
   trimForCloudPut,
   cloudMetaFor,
+  modelMessagesPointerFromEnvelopeBody,
   truncateUtf8,
   utf8ByteLength,
   type SessionSummary,
@@ -859,6 +860,21 @@ describe('overlayEnvelopeMeta', () => {
     expect(poison.modelMessagesPointer).toBeUndefined();
   });
 
+  it('adversarial #937 Minor — modelMessagesPointerFromEnvelopeBody reads PUT 200 copy-forward; poison/absent unset', () => {
+    expect(
+      modelMessagesPointerFromEnvelopeBody({
+        id: 's',
+        meta: { modelMessagesPointer: 't_mm_P2', turnStatus: 'completed' },
+      }),
+    ).toBe('t_mm_P2');
+    expect(modelMessagesPointerFromEnvelopeBody({ id: 's', meta: {} })).toBeUndefined();
+    expect(
+      modelMessagesPointerFromEnvelopeBody({ meta: { modelMessagesPointer: 'a:b' } }),
+    ).toBeUndefined();
+    expect(modelMessagesPointerFromEnvelopeBody(null)).toBeUndefined();
+    expect(modelMessagesPointerFromEnvelopeBody([])).toBeUndefined();
+  });
+
   it('backend-agents A4 — fold → parse → overlay round-trips all three carriers; poison never sticks', () => {
     const snap: SessionSnapshot = {
       id: 's',
@@ -1476,6 +1492,64 @@ describe('createHttpSessionRepository — envelope carrier (phase 0 #515)', () =
     expect(blobBody.prev).toBeUndefined();
     expect(envBody).toMatchObject({ id: idA, updatedAt: 30 });
     expect((envBody.meta as { transcriptPointer: string }).transcriptPointer).toBe('tx_obj1');
+  });
+
+  it('adversarial #937 Minor — envelope PUT 200 copy-forwarded pointer fires onEnvelopeAck (local sidecar-stop)', async () => {
+    const acks: Array<{ id: string; ptr: string }> = [];
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      if (method === 'POST' && u.endsWith('/transcript')) {
+        return Response.json(
+          { uploadUrl: 'https://blob.example/up', objectId: 'tx_obj1' },
+          { status: 200 },
+        );
+      }
+      if (method === 'PUT' && u === 'https://blob.example/up') {
+        return new Response(null, { status: 204 });
+      }
+      if (method === 'PUT' && u.endsWith('/envelope')) {
+        return Response.json(
+          {
+            id: idA,
+            updatedAt: 30,
+            meta: { transcriptPointer: 'tx_obj1', modelMessagesPointer: 't_mm_P2' },
+          },
+          { status: 200 },
+        );
+      }
+      return new Response(null, { status: 204 });
+    });
+    const repo = createHttpSessionRepository({
+      fetchImpl,
+      carrier: 'envelope',
+      onEnvelopeAck: (id, ptr) => acks.push({ id, ptr }),
+    });
+    repo.put(
+      idA,
+      snap({
+        id: idA,
+        updatedAt: 30,
+        messages: [{ id: 'm', role: 'user', text: 'hi', at: 1 }],
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(acks).toEqual([{ id: idA, ptr: 't_mm_P2' }]);
+    });
+  });
+
+  it('adversarial #937 Minor — envelope PUT 200 without pointer does not fire onEnvelopeAck', async () => {
+    const acks: Array<{ id: string; ptr: string }> = [];
+    const { fetchImpl, putBody } = envelopeFetch();
+    const repo = createHttpSessionRepository({
+      fetchImpl,
+      carrier: 'envelope',
+      onEnvelopeAck: (id, ptr) => acks.push({ id, ptr }),
+    });
+    repo.put(idA, snap({ id: idA, updatedAt: 1, messages: [] }));
+    await vi.waitFor(() => expect(putBody.length).toBeGreaterThanOrEqual(2));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(acks).toEqual([]);
   });
 
   it('fail-closed: non-2xx client→Blob upload does NOT advance the envelope pointer (reader Minor L1)', async () => {

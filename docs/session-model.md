@@ -18,14 +18,9 @@ How harness continuity works: **local-first** browser restore plus
 | `MemorySessionStore` | same | tests / SSR fallback |
 | `LocalStorageSessionStore` | same | default in browser via `createDefaultSessionStore()` |
 | Host wire | `app/harness/HarnessHost.tsx` | first paint from local store; **New session** (Clear alias) resets local + bridge + mints a fresh id |
-| Agent loop | `lib/harnessChat.ts` `runHarnessTurn` | multi-turn via folded history |
+| Agent loop | `lib/harnessChat.ts` `runHarnessTurn` | production durable turns seed history server-side from `meta.modelMessagesPointer`; host fold is the one-shot roll-forward sidecar |
 
-Multi-turn continuity: history is folded into a single `POST /api/chat` (or
-`/api/agent`) prompt (`formatPromptWithHistory`, default **maxMessages=400** /
-**maxChars≈3.5M**). Tool evidence is **display-only** in a `tool_run` role and is
-**not** folded as `Tool:` lines, so a continue-after-stop/cancel turn may re-run
-or infer tools from the persisted assistant prose only. The API remains
-single-shot per request; multi-turn lives in the host session + Wasm transcript.
+Multi-turn continuity on production `/api/turns`: the server seeds the orchestrator from the persisted **model-messages projection** (`meta.modelMessagesPointer` → a session-bound Blob of typed `user` / `assistant`(+`tool-call`) / truncated `tool-result` rows). The host sends the **raw** prompt. `formatPromptWithHistory` rides only as a `promptHistory` sidecar while the session has no observed pointer (legacy roll-forward); once the host observes the pointer (envelope GET overlay or envelope PUT 200 copy-forward) the sidecar stops. Legacy `/api/chat` and `/api/agent` still fold history into a single prompt (`formatPromptWithHistory`, default **maxMessages=400** / **maxChars≈3.5M**). Tool evidence is **display-only** in a `tool_run` role and is **not** folded as `Tool:` lines, so a continue-after-stop/cancel turn on those legacy paths may re-run or infer tools from the persisted assistant prose only. The API remains single-shot per request; multi-turn lives in the host session + Wasm transcript + (durable path) the server-side projection.
 
 **Reload / restore:** thinking never survives a refresh — it is ephemeral UI and
 is not stored in `SessionStore`, so the durable transcript after reload is

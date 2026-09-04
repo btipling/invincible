@@ -80,24 +80,6 @@ const utf8Bytes = (s: string): number => Buffer.byteLength(s, 'utf8');
 const TRUNCATION_MARKER = '… [truncated — full output on sandbox disk / omitted]';
 
 /**
- * UTF-8-safe truncation: keep the longest prefix of `s` whose UTF-8 byte
- * length ≤ `budget`, iterating code points so a multi-byte rune is never split
- * mid-emit (same idiom as `messageCheckpoint.truncateUtf8Safe`).
- */
-function truncateUtf8Safe(s: string, budget: number): string {
-  if (utf8Bytes(s) <= budget) return s;
-  let out = '';
-  let remaining = budget;
-  for (const ch of s) {
-    const b = utf8Bytes(ch);
-    if (b > remaining) break;
-    out += ch;
-    remaining -= b;
-  }
-  return out;
-}
-
-/**
  * Bound a tool `result` to `maxChars` (a char cap — peer-locked ~2k-char
  * excerpt order), by whole code points (never split a surrogate pair), with an
  * explicit marker when truncated. `exec` results are already compact summaries

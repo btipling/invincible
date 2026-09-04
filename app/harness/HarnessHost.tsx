@@ -1220,6 +1220,19 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             adoptCloudSession(snap);
             queueMicrotask(kickColdAttach);
           },
+          // Plan #936 / adversarial-review #937 Minor: fold the PUT 200
+          // copy-forwarded worker pointer onto local (sidecar-stop). Meta-only
+          // — never snap the ring, never PUT (cloudMetaFor still omits the key).
+          onEnvelopeAck: (id, modelMessagesPointer) => {
+            if (cancelled) return;
+            const cur = sessionRef.current;
+            if (cur.id !== id) return;
+            if (cur.modelMessagesPointer === modelMessagesPointer) return;
+            writeLocalSessionMeta(
+              { ...cur, modelMessagesPointer },
+              { paintQuota: false },
+            );
+          },
         });
         repoRef.current = repo;
 
@@ -1719,6 +1732,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     foldPendingModelChange,
     foldPendingReasoningChange,
     kickColdAttach,
+    writeLocalSessionMeta,
   ]);
 
   /**
