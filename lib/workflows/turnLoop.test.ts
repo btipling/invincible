@@ -21,6 +21,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   runTurnLoop,
@@ -35,7 +36,7 @@ import {
   createInMemoryPersistSeam,
   type PersistStepFold,
 } from './persistStep';
-import { reachableImports } from './staticGraph';
+import { reachableImports, resolveFile } from './staticGraph';
 import { createTurnPersistSeam } from '../agent/turnPersistSeam';
 import { MemoryBlobTranscriptStore } from '../sessions/blobStores';
 import { MemorySessionStore } from '../sessions/memorySessionStore';
@@ -869,6 +870,48 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     const tool = mm[2] as { toolCallId?: string; result?: string };
     expect(tool.toolCallId).toBe('c1');
     expect(tool.result).toBe('file body');
+  });
+
+  it('derivePersistFold does not throw when global Buffer is absent (Workflows canvas)', () => {
+    const g = globalThis as { Buffer?: unknown };
+    const saved = g.Buffer;
+    Reflect.deleteProperty(g, 'Buffer');
+    expect(typeof g.Buffer).toBe('undefined');
+    try {
+      expect(() =>
+        derivePersistFold(
+          [
+            { role: 'user', content: 'read the tree' },
+            {
+              role: 'assistant',
+              delta: {
+                text: 'reading',
+                toolCalls: [{ toolName: 'read_file', toolCallId: 'c1' }],
+              },
+            },
+            { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'file body' },
+          ],
+          undefined,
+        ),
+      ).not.toThrow();
+      const fold = derivePersistFold(
+        [
+          { role: 'user', content: 'read the tree' },
+          {
+            role: 'assistant',
+            delta: {
+              text: 'reading',
+              toolCalls: [{ toolName: 'read_file', toolCallId: 'c1' }],
+            },
+          },
+          { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'file body' },
+        ],
+        undefined,
+      );
+      expect((fold?.modelMessages as unknown[] | undefined)?.length).toBe(3);
+    } finally {
+      g.Buffer = saved;
+    }
   });
 
   it('plan #936 row 8b — runTurnLoop seeds messages from priorMessages; terminal persist re-derives a projection that includes prior rows (append-only growth)', async () => {
@@ -5302,5 +5345,24 @@ describe('static-graph clean-flag regression (plan #805 lock)', () => {
       return v.startsWith('db/') || v.startsWith('lib/db/') || v.startsWith('lib/mcp/');
     });
     expect(banned).toEqual([]);
+  });
+
+  it('canvas closure executable code has no Buffer identifier (Workflows VM)', () => {
+    // Production brick class: Node `Buffer` is not in the Workflows sandbox
+    // (VM injects TextEncoder, not Buffer). `'use step'` leaves run on Node
+    // and may use Buffer; they are recorded by the walker but not bundled
+    // into the canvas, so skip them.
+    const root = process.cwd();
+    const reachable = reachableImports('lib/workflows/turnWorkflow.ts', { root });
+    const hits: string[] = [];
+    for (const canon of reachable) {
+      const file = resolveFile(join(root, canon));
+      if (!file) continue;
+      const src = readFileSync(file, 'utf8');
+      const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+      if (code.includes("'use step'") || code.includes('"use step"')) continue;
+      if (/\bBuffer\b/.test(code)) hits.push(canon);
+    }
+    expect(hits).toEqual([]);
   });
 });

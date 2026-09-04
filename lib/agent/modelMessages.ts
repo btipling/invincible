@@ -46,7 +46,9 @@
  * `meta.modelMessagesPointer` (never the 1 MiB envelope meta).
  *
  * Pure, server/client-safe, never throws — malformed rows fail closed to a
- * dropped/truncated projection. No I/O, no store, no secrets.
+ * dropped/truncated projection. No I/O, no store, no secrets. Byte-length uses
+ * `TextEncoder` (not Node `Buffer`) so the Workflows canvas can call this from
+ * `derivePersistFold` — Vercel Workflows has no `Buffer` global.
  */
 import {
   MODEL_MSG_CHECKPOINT_MAX_BYTES,
@@ -74,7 +76,8 @@ export type ModelMessagesLimits = {
   maxToolResultChars: number;
 };
 
-const utf8Bytes = (s: string): number => Buffer.byteLength(s, 'utf8');
+const encoder = new TextEncoder();
+const utf8Bytes = (s: string): number => encoder.encode(s).length;
 
 /** Explicit truncation marker appended after a bounded tool-result excerpt. */
 const TRUNCATION_MARKER = '… [truncated — full output on sandbox disk / omitted]';
