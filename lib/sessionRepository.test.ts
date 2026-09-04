@@ -20,6 +20,7 @@ import {
   trimForCloudPut,
   cloudMetaFor,
   modelMessagesPointerFromEnvelopeBody,
+  keepObservedModelMessagesPointer,
   truncateUtf8,
   utf8ByteLength,
   type SessionSummary,
@@ -873,6 +874,36 @@ describe('overlayEnvelopeMeta', () => {
     ).toBeUndefined();
     expect(modelMessagesPointerFromEnvelopeBody(null)).toBeUndefined();
     expect(modelMessagesPointerFromEnvelopeBody([])).toBeUndefined();
+  });
+
+  it('adversarial #937 Minor — keepObservedModelMessagesPointer copy-forwards same-id omit; explicit/other-id/poison do not', () => {
+    const stored: SessionSnapshot = {
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      modelMessagesPointer: 't_mm_P2',
+    };
+    const omitted: SessionSnapshot = { id: 's', updatedAt: 2, messages: [] };
+    expect(keepObservedModelMessagesPointer(omitted, stored).modelMessagesPointer).toBe(
+      't_mm_P2',
+    );
+    expect(
+      keepObservedModelMessagesPointer(
+        { ...omitted, modelMessagesPointer: 't_mm_P3' },
+        stored,
+      ).modelMessagesPointer,
+    ).toBe('t_mm_P3');
+    expect(
+      keepObservedModelMessagesPointer({ id: 'other', updatedAt: 2, messages: [] }, stored)
+        .modelMessagesPointer,
+    ).toBeUndefined();
+    expect(
+      keepObservedModelMessagesPointer(omitted, {
+        ...stored,
+        modelMessagesPointer: 'a:b',
+      }).modelMessagesPointer,
+    ).toBeUndefined();
+    expect(keepObservedModelMessagesPointer(omitted, undefined).modelMessagesPointer).toBeUndefined();
   });
 
   it('backend-agents A4 — fold → parse → overlay round-trips all three carriers; poison never sticks', () => {

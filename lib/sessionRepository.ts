@@ -530,6 +530,28 @@ export function modelMessagesPointerFromEnvelopeBody(
 }
 
 /**
+ * Local analogue of store `copyForwardModelMessagesPointer` (adversarial-review
+ * #937 Minor on `1a2e27c`). `persist()` / model-pick writes often omit the
+ * worker pointer because `runHarnessTurn`'s snapshot started without it.
+ * Same-id incoming omit keeps the already-observed id so a later persistTurn
+ * cannot clobber `onEnvelopeAck`. Explicit incoming wins (GET overlay, ack).
+ * Different id / poison stored → no copy (Clear reuses the session id via
+ * `writeLocalSession(empty)` which must NOT go through this helper).
+ */
+export function keepObservedModelMessagesPointer(
+  incoming: SessionSnapshot,
+  stored: SessionSnapshot | undefined,
+): SessionSnapshot {
+  if (incoming.modelMessagesPointer !== undefined) return incoming;
+  if (!stored || stored.id !== incoming.id) return incoming;
+  const prev = stored.modelMessagesPointer;
+  if (typeof prev === 'string' && prev && isRedisSafeOpaqueId(prev)) {
+    return { ...incoming, modelMessagesPointer: prev };
+  }
+  return incoming;
+}
+
+/**
  * Merge `usage` and F21 `queue` on same-id adopt.
  *
  * - `usage`: `server.usage ?? local.usage` — server wins when it has one
