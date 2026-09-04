@@ -3,6 +3,9 @@
  * `resolveInStepPreambles` must read `meta.workingNotes` even when the
  * persona/skills stores are ABSENT (the retired `return {}` guard).
  * In-memory envelope fake — no Redis / PGlite / Gateway.
+ *
+ * Imports the helper from `inStepPreambles.ts` (not the `'use step'` file) so
+ * the unit pin does not re-export a store graph into the workflow VM bundle.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WORKING_NOTES_MAX_BYTES } from '../sessionCloudCaps';
@@ -40,7 +43,7 @@ vi.mock('../tenancy/skillInject', () => ({
   }),
 }));
 
-import { resolveInStepPreambles } from './modelGenerateStep';
+import { resolveInStepPreambles } from './inStepPreambles';
 
 const SCOPE = {
   userId: 'user-1',
