@@ -246,8 +246,11 @@ function envelopePersonaSeam(store: SessionEnvelopeStore): SessionStoreLite {
  * persona/skills stores are ABSENT — the early-return guard is widened: the
  * notes fold below only needs the envelope, so the previous
  * "no persona/skills stores → `{}`" early return is retired.
+ *
+ * Exported so the plan #938 DoD pin (stores-absent notes read) can unit-test
+ * this helper without driving the `'use step'` wrapper.
  */
-async function resolveInStepPreambles(args: {
+export async function resolveInStepPreambles(args: {
   userId: string;
   sessionId: string;
   tenantId: string;
