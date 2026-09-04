@@ -120,6 +120,16 @@ export type SessionSnapshot = {
    */
   modelMessagesPointer?: string;
   /**
+   * Plan #938 (source #550) — the session-owned agent working-notes block,
+   * mirrored on the local session as the reserved `meta.workingNotes`. The
+   * agent authors it via the `working_notes_*` tools (worker overlay writes
+   * the envelope); the host mirror is the RESTORE carrier for
+   * refresh/device-switch — the envelope is truth (same contract as every
+   * reserved key). Omitted = no notes (fold omitted = zero tokens). Sanitized
+   * with `sanitizeWorkingNotes` on read (drop-to-unset on poison).
+   */
+  workingNotes?: string;
+  /**
    * backend-agents F21 (plan #815) — the persisted submit-queue MIRROR: an
    * ordered list of host-known prompts not yet durably started (composer
    * submits made while a turn is live). Oldest first. Rides the existing
@@ -144,6 +154,7 @@ import {
   sanitizeTurnRunId,
   sanitizeTurnStatus,
   sanitizeTurnStreamCursor,
+  sanitizeWorkingNotes,
 } from './sessionCloudCaps';
 import { sanitizeUsageSummary } from './agent/usageSummary';
 import { sanitizeQueue } from './turnQueue';
@@ -261,6 +272,7 @@ export class LocalStorageSessionStore implements SessionStore {
         turnStatus?: unknown;
         turnStreamCursor?: unknown;
         modelMessagesPointer?: unknown;
+        workingNotes?: unknown;
         queue?: unknown;
       };
       if (!data || typeof data !== 'object' || !Array.isArray(data.messages)) return null;
@@ -288,6 +300,7 @@ export class LocalStorageSessionStore implements SessionStore {
         turnStatus: rawTurnStatus,
         turnStreamCursor: rawTurnStreamCursor,
         modelMessagesPointer: rawModelMessagesPointer,
+        workingNotes: rawWorkingNotes,
         queue: rawQueue,
         ...rest
       } = data;
@@ -348,6 +361,12 @@ export class LocalStorageSessionStore implements SessionStore {
       else delete out.turnStreamCursor;
       if (modelMessagesPointer !== undefined) out.modelMessagesPointer = modelMessagesPointer;
       else delete out.modelMessagesPointer;
+      // Plan #938: the working-notes mirror re-sanitizes on local load
+      // (drop-to-unset on poison) so a stale or hand-edited localStorage value
+      // never sticks. The envelope is truth; this is the restore carrier.
+      const workingNotes = sanitizeWorkingNotes(rawWorkingNotes);
+      if (workingNotes !== undefined) out.workingNotes = workingNotes;
+      else delete out.workingNotes;
       if (queue !== undefined && queue.length > 0) out.queue = queue;
       else delete out.queue;
       return out;

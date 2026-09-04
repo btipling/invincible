@@ -188,7 +188,25 @@ reserved-`meta` carriers are defined in
   drops oldest rows then re-pairs. The 262 144 B/msg paint caps above are the
   **display** path; the LLM payload is this separate, smaller projection.
 
-The durable model step (`modelGenerateStep`) passes the **same** `resolveSystem()` string as `POST /api/agent` — base standing orders (including “Be concise”), plus optional persona / attached-skill blocks resolved in-step from the assembled tool registry. Persona inject reads and locks `meta.personaSnapshot` on the envelope (`readEnvelope` / `upsertEnvelope`, `updatedAt` unchanged), not the legacy whole-blob `get`/`put`. A missing system prompt is not an output cap; it is what used to let a provider default `max_tokens` look like a mysterious mid-sentence stop. Slash-command `/skill-name` attach still lives on `/api/agent`; the durable step re-resolves sticky and always-on skills only (`command: none`).
+The durable model step (`modelGenerateStep`) passes the **same** `resolveSystem()` string as `POST /api/agent` — base standing orders (including “Be concise”), plus optional persona / **working-notes** / attached-skill blocks resolved in-step from the assembled tool registry. Persona inject reads and locks `meta.personaSnapshot` on the envelope (`readEnvelope` / `upsertEnvelope`, `updatedAt` unchanged), not the legacy whole-blob `get`/`put`. A missing system prompt is not an output cap; it is what used to let a provider default `max_tokens` look like a mysterious mid-sentence stop. Slash-command `/skill-name` attach still lives on `/api/agent`; the durable step re-resolves sticky and always-on skills only (`command: none`).
+
+**Working-notes fold (plan #938, source #550).** The system prompt carries an
+optional `### Working notes (across turns)` block **between the persona and the
+attached-skills catalog** — the session's agent-authored working memory read
+from `meta.workingNotes` on the envelope (≤ `WORKING_NOTES_MAX_BYTES` = 32 KiB,
+`sanitizeWorkingNotes`). Both the durable in-step preamble resolver and legacy
+`/api/agent` fold the same envelope value through the same fixed frame, so they
+cannot drift; the in-step resolver reads the notes even when the persona/skills
+stores are absent. The block is framed as **unverified agent-authored working
+memory — NOT standing orders / established fact** (a notes write must never
+manufacture a persona or smuggle instructions). The agent persists notes
+best-effort at tool-execute via the always-on `working_notes_update` /
+`working_notes_clear` tools (`lib/agent/workingNotesTools.ts`; worker-owned
+copy-forward envelope PATCH — a note survives a cancelled / wall-clocked /
+errored turn; over-cap writes are rejected, never truncated; empty string
+clears). The fold is NOT hot: a note written mid-turn lands on a later model
+round/turn. See [session-model.md](session-model.md) · `workingNotes`
+reserved key.
 
 **Terminal persist is worker-owned and terminal-agnostic (plan #934).** The
 worker's **terminal** persist reconstructs the bound prior chain (so a mid-turn

@@ -176,6 +176,45 @@ export const USER_ALWAYS_ON_SKILLS_MAX = 8;
 export const PERSONA_RECOMMENDED_SKILLS_MAX = 16;
 
 /**
+ * Max UTF-8 byte length of the session-owned agent working-notes block
+ * (plan #938, source #550 — backend-agents A2). The notes are the agent's own
+ * persisted findings/decisions for THIS session, persisted as the reserved
+ * `meta.workingNotes` string scalar on the Redis envelope and folded into the
+ * model system prompt between the persona and the attached-skills catalog.
+ * "A novel is not memory": 32 KiB (~8–16k tokens worst case) bounds the block
+ * as a standing per-round inference cost while staying far under the 1 MiB
+ * whole-meta budget (`HARNESS_SESSION_MAX_META_BYTES`) and the 4.5 MB Function
+ * wire. NEW generous cap — no existing cap value changed → no human gate.
+ * Enforced by `sanitizeWorkingNotes` (tool writes reject over-cap with an
+ * explicit error — never truncate; read-side poison drops to unset).
+ */
+export const WORKING_NOTES_MAX_BYTES = 32 * 1024;
+
+/** UTF-8 byte length of a notes block (client-safe — no Node Buffer here). */
+function workingNotesByteLength(s: string): number {
+  return new TextEncoder().encode(s).length;
+}
+
+/**
+ * Client-safe sanitizer for the reserved `meta.workingNotes` block (plan #938).
+ * Notes are freeform agent-authored text (findings, paths, decisions), so there
+ * is deliberately NO charset restriction — length only. A string is `trim()`ed;
+ * an empty result is `undefined` (unset — `update('')` clears). A value whose
+ * UTF-8 length exceeds `WORKING_NOTES_MAX_BYTES` is poison → `undefined`
+ * (drop-to-unset at read; the tool write path rejects BEFORE persisting, never
+ * silently truncates). Non-strings are poison too. Never throws. Shared by the
+ * server validator, the worker overlay, the system fold, and the host mirror —
+ * no shape drift across the seam.
+ */
+export function sanitizeWorkingNotes(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const s = value.trim();
+  if (!s) return undefined;
+  if (workingNotesByteLength(s) > WORKING_NOTES_MAX_BYTES) return undefined;
+  return s;
+}
+
+/**
  * Parse a stored `meta.attachedSkills` (a JSON-array string of skill slugs) into a
  * slug list. Client-safe single source shared by the host session repository
  * (`cloudMetaFor` / `parseCloudSessionSnapshot`), the server `skillInject`, and the

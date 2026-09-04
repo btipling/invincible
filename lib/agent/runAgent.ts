@@ -135,6 +135,14 @@ export type RunAgentParams = {
    */
   skillsPreamble?: string;
   /**
+   * Session working-notes block text (plan #938). The RAW block text from the
+   * session envelope `meta.workingNotes`; `resolveSystem` wraps it in the
+   * fixed `### Working notes (across turns)` frame between the persona and
+   * the skills. Framed as unverified agent-authored working memory (never
+   * standing orders). Empty/whitespace is dropped (block omitted entirely).
+   */
+  notesPreamble?: string;
+  /**
    * Optional request reasoning-effort token (plan #897). Wins over env /
    * product default when set.
    */

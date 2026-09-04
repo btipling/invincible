@@ -25,6 +25,7 @@ import {
   sanitizeTurnRunId,
   sanitizeTurnStatus,
   sanitizeTurnStreamCursor,
+  sanitizeWorkingNotes,
   serializeAttachedSkills,
   type TurnStatus,
 } from './sessionCloudCaps';
@@ -313,6 +314,12 @@ export function parseCloudSessionSnapshot(
     if (meta.attachedSkills !== undefined) {
       snapshot.attachedSlugs = parseAttachedSkills(meta.attachedSkills);
     }
+    // Plan #938: restore the working-notes mirror from the reserved
+    // `meta.workingNotes` so refresh / device-switch / adopt rebuild the
+    // session's notes block. `sanitizeWorkingNotes` drops poison (non-string /
+    // over-32-KiB) to unset — never a sticky 400.
+    const notes = sanitizeWorkingNotes(meta.workingNotes);
+    if (notes !== undefined) snapshot.workingNotes = notes;
     const usage = decodeUsageMetaString(meta.usage);
     if (usage !== undefined) snapshot.usage = usage;
   }
@@ -411,6 +418,15 @@ export function overlayEnvelopeMeta(
   } else {
     delete out.modelMessagesPointer;
   }
+
+  // Plan #938: overlay the working-notes mirror from the envelope meta. Same
+  // reserved-meta replace contract: a valid value wins; **absent or poison
+  // clears** the field. This overlay is the refresh/device-switch restore path
+  // — without it a reload can drop an unsynced local note (the envelope is the
+  // source of truth; the mirror never PUTs a value the envelope lacks).
+  const workingNotes = sanitizeWorkingNotes(envMeta.workingNotes);
+  if (workingNotes !== undefined) out.workingNotes = workingNotes;
+  else delete out.workingNotes;
 
   // NOTE: the F21 submit-queue mirror (`snapshot.queue`) rides the TRANSCRIPT
   // blob body (parseCloudSessionSnapshot), NOT the envelope meta — it is
@@ -675,6 +691,15 @@ export type CloudPutBody = {
      * copy-forwards the stored worker value when the key is omitted.
      */
     modelMessagesPointer?: string;
+    /**
+     * Plan #938: the session-owned agent working-notes block. Folded from
+     * `snapshot.workingNotes` via `sanitizeWorkingNotes` (drop-to-unset on
+     * poison). Absent = clear (RESERVED_META_KEYS replace contract) — the
+     * host mirror is the agent's own tool-authored value, never a stale
+     * worker pointer, so emitting it keeps refresh / device-switch restore
+     * honest on both carriers.
+     */
+    workingNotes?: string;
   };
 };
 
@@ -754,6 +779,15 @@ export function cloudMetaFor(
   if (turnStreamCursor !== undefined) meta.turnStreamCursor = turnStreamCursor;
   const usage = encodeUsageMetaString(snapshot.usage);
   if (usage !== undefined) meta.usage = usage;
+  // Plan #938: fold the working-notes mirror on every PUT. Sanitized via the
+  // shared client-safe predicate (drop-to-unset on poison); absent = clear
+  // (RESERVED_META_KEYS replace contract). Unlike modelMessagesPointer this is
+  // a HOST mirror of an agent-authored value (the tools write the envelope via
+  // the worker overlay, and this same value round-trips through GET), so a
+  // full-desired-set emit is safe — it cannot LWW-stomp a fresher worker write
+  // with stale data beyond the ordinary host LWW semantics every carrier has.
+  const workingNotes = sanitizeWorkingNotes(snapshot.workingNotes);
+  if (workingNotes !== undefined) meta.workingNotes = workingNotes;
   // Plan #936 / adversarial #937 Major: NEVER emit modelMessagesPointer.
   // Worker-authored; GET overlay is local (sidecar-stop). Host PUT omit
   // lets upsertEnvelope copy-forward the stored worker id. Emitting the
@@ -768,7 +802,8 @@ export function cloudMetaFor(
     meta.turnRunId === undefined &&
     meta.turnStatus === undefined &&
     meta.turnStreamCursor === undefined &&
-    meta.usage === undefined
+    meta.usage === undefined &&
+    meta.workingNotes === undefined
     ? undefined
     : meta;
 }

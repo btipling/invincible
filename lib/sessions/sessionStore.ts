@@ -44,6 +44,7 @@ import {
   sanitizeTurnRunId,
   sanitizeTurnStatus,
   sanitizeTurnStreamCursor,
+  sanitizeWorkingNotes,
 } from '../sessionCloudCaps';
 export { isRedisSafeOpaqueId } from '../sessionCloudCaps';
 import { decodeUsageMetaString } from '../agent/usageSummary';
@@ -91,6 +92,7 @@ export const RESERVED_META_KEYS = [
   'turnRunId',
   'turnStatus',
   'turnStreamCursor',
+  'workingNotes',
 ] as const;
 export type HarnessSessionMetaKey = (typeof RESERVED_META_KEYS)[number];
 
@@ -513,6 +515,18 @@ export function validateMeta(value: unknown): SessionStoreResult<HarnessSessionM
       // (omitted), never 400s the record (same drop-to-unset decision as the other
       // pointer/carrier keys).
       if (isRedisSafeOpaqueId(v)) meta.modelMessagesPointer = v;
+      continue;
+    }
+    if (key === 'workingNotes') {
+      // Plan #938 (source #550): the session-owned agent working-notes block —
+      // a freeform string scalar (length-only cap `WORKING_NOTES_MAX_BYTES` =
+      // 32 KiB via `sanitizeWorkingNotes`; no charset restriction — the notes
+      // are findings/decisions text). Non-critical — a poisoned (non-string /
+      // over-cap) value DROPS to unset (omitted), never 400s the record (same
+      // drop-to-unset decision as the other carrier keys). Tool writes reject
+      // over-cap BEFORE persisting, so the store never sees a truncation lie.
+      const cleaned = sanitizeWorkingNotes(v);
+      if (cleaned !== undefined) meta.workingNotes = cleaned;
       continue;
     }
     if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean') {

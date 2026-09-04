@@ -235,11 +235,17 @@ function envelopePersonaSeam(store: SessionEnvelopeStore): SessionStoreLite {
 }
 
 /**
- * Persona snapshot + sticky/always-on skills. Fail-open independently: a
- * store/inject error on one preamble does not drop the other; any total
- * failure → no preamble (the round still runs with the base system). Slash
- * commands are `none` — attach/detach is `/api/agent` route work, not a
- * replayable step write.
+ * Persona snapshot + sticky/always-on skills + the session working-notes block
+ * (plan #938). Fail-open independently: a store/inject error on one preamble
+ * does not drop the others; any total failure → no preamble (the round still
+ * runs with the base system). Slash commands are `none` — attach/detach is
+ * `/api/agent` route work, not a replayable step write.
+ *
+ * Plan #938: the working-notes fold reads the SAME envelope the
+ * persona/skills preambles resolve through and must run even when the
+ * persona/skills stores are ABSENT — the early-return guard is widened: the
+ * notes fold below only needs the envelope, so the previous
+ * "no persona/skills stores → `{}`" early return is retired.
  */
 async function resolveInStepPreambles(args: {
   userId: string;
@@ -247,11 +253,11 @@ async function resolveInStepPreambles(args: {
   tenantId: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   services: any;
-}): Promise<{ personaPreamble?: string; skillsPreamble?: string }> {
-  if (!args.services.userPersonas && !args.services.userSkills) {
-    return {};
-  }
-
+}): Promise<{
+  personaPreamble?: string;
+  skillsPreamble?: string;
+  notesPreamble?: string;
+}> {
   let envelopeStore: SessionEnvelopeStore | undefined;
   let sessionKey: SessionRecordKey | undefined;
   try {
@@ -267,6 +273,21 @@ async function resolveInStepPreambles(args: {
   } catch {
     envelopeStore = undefined;
     sessionKey = undefined;
+  }
+
+  // Plan #938: the session's working-notes block — read from the envelope
+  // `meta.workingNotes` (the SAME envelope read persona/skills already do),
+  // sanitized through the shared client-safe predicate (poison → unset, never
+  // a failed round). Fail-open: any read problem → no notes block.
+  let notesPreamble: string | undefined;
+  if (envelopeStore && sessionKey) {
+    try {
+      const envelope = await envelopeStore.readEnvelope(sessionKey);
+      const { sanitizeWorkingNotes } = await import('../sessionCloudCaps');
+      notesPreamble = sanitizeWorkingNotes(envelope?.meta?.workingNotes);
+    } catch {
+      notesPreamble = undefined;
+    }
   }
 
   let personaPreamble: string | undefined;
@@ -331,6 +352,7 @@ async function resolveInStepPreambles(args: {
   return {
     ...(personaPreamble ? { personaPreamble } : {}),
     ...(skillsPreamble ? { skillsPreamble } : {}),
+    ...(notesPreamble ? { notesPreamble } : {}),
   };
 }
 
@@ -499,17 +521,19 @@ export async function modelGenerateStep(
   }
 
   const toolNames = Object.keys(world.registry);
-  const { personaPreamble, skillsPreamble } = await resolveInStepPreambles({
-    userId: args.scope.userId,
-    sessionId: args.scope.sessionId,
-    tenantId: args.scope.tenantId,
-    services,
-  });
+  const { personaPreamble, skillsPreamble, notesPreamble } =
+    await resolveInStepPreambles({
+      userId: args.scope.userId,
+      sessionId: args.scope.sessionId,
+      tenantId: args.scope.tenantId,
+      services,
+    });
   const system = resolveSystem(
     {
       extraTools: world.registry,
       personaPreamble,
       skillsPreamble,
+      notesPreamble,
     },
     registryHasFsTools(toolNames),
   );

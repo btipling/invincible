@@ -37,7 +37,8 @@ import {
 } from '../../../lib/tenancy/skillInject';
 import { isEnvelopeStore } from '../../../lib/sessions/sessionStore';
 import { isMetaToolName } from '../../../lib/agent/metaTools';
-import { parseAttachedSkills } from '../../../lib/sessionCloudCaps';
+import { isWorkingNotesToolName } from '../../../lib/agent/workingNotesTools';
+import { parseAttachedSkills, sanitizeWorkingNotes } from '../../../lib/sessionCloudCaps';
 
 export const runtime = 'nodejs';
 // Vercel Pro/Enterprise Fluid extended max is 1800s (30m). 3600s is not offered.
@@ -283,6 +284,37 @@ export async function POST(req: Request): Promise<Response> {
     // returns before the model call). Never tells the model to read the persona.
     if (personaPreamble && modelPrompt.trim()) {
       runParams.prompt = `${modelPrompt}\n\n<reminder>Your persona standing orders (in the <persona_standing_orders> block above) are already in context. Follow them before any tool use.</reminder>`;
+    }
+
+    // Plan #938 — session working-notes fold (legacy `/api/agent` parity with
+    // the durable in-step resolver): read `meta.workingNotes` off the session
+    // envelope when a sessionId is present and sanitize through the shared
+    // client-safe predicate (poison → unset). Fail-open: any store problem →
+    // no notes block (the turn proceeds exactly as today). The fold is NOT
+    // hot: a note written mid-turn lands on a later model round/turn.
+    let notesPreamble: string | undefined;
+    if (parsed.sessionId) {
+      try {
+        const tenantRes =
+          await services.harnessSessionsRedis.resolveTenantIdForUser(userId);
+        if (tenantRes.ok) {
+          const storeRes = await resolveSessionStore();
+          const store =
+            storeRes.ok && isEnvelopeStore(storeRes.value)
+              ? storeRes.value
+              : undefined;
+          if (store) {
+            const envelope = await store.readEnvelope(
+              sessionKeyFor(tenantRes.value, userId, parsed.sessionId),
+            );
+            notesPreamble = sanitizeWorkingNotes(
+              envelope?.meta?.workingNotes,
+            );
+          }
+        }
+      } catch {
+        notesPreamble = undefined;
+      }
     }
 
     // Phase 2 (#517) — resolve attached skills (sticky re-read from
@@ -611,6 +643,7 @@ export async function POST(req: Request): Promise<Response> {
       ...runParams,
       modelId: runParams.modelId,
       ...(personaPreamble ? { personaPreamble } : {}),
+      ...(notesPreamble ? { notesPreamble } : {}),
       ...(skills?.preamble ? { skillsPreamble: skills.preamble } : {}),
       ...(reasoning !== undefined ? { reasoning } : {}),
     };
@@ -628,7 +661,14 @@ export async function POST(req: Request): Promise<Response> {
       k.startsWith('meta_sandbox_'),
     );
     const nonSkillToolCount = Object.keys(extraTools).filter(
-      (k) => k !== 'find_skill' && k !== 'fetch_skill' && !isMetaToolName(k),
+      (k) =>
+        k !== 'find_skill' &&
+        k !== 'fetch_skill' &&
+        !isMetaToolName(k) &&
+        // Plan #938: the working-notes family is always-on like `meta_*` and
+        // must NOT substitute for a real FS/MCP/http surface on a deferred 403
+        // — a notes-only turn would hide the unavailable workspace.
+        !isWorkingNotesToolName(k),
     ).length;
     if (deferredNoFsResponse && !sandboxClient) {
       const canProceed = metaSelectionDeferred
