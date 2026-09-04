@@ -1263,6 +1263,48 @@ describe('POST /api/turns', () => {
     expect(startArgs.userMessage).toBe('FOLDED_HISTORY');
   });
 
+  it('adversarial #937 Major — bound pointer miss + no promptHistory → 503, start() not called', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(null);
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'use what you found', sessionId: 's1' });
+    expect(res.status).toBe(503);
+    const json = await res.json();
+    expect(json.error).toMatch(/model-messages seed/i);
+    expect(startMock).not.toHaveBeenCalled();
+  });
+
+  it('adversarial #937 Major — bound pointer non-array JSON + no promptHistory → 503', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(JSON.stringify({ not: 'an array' }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'use what you found', sessionId: 's1' });
+    expect(res.status).toBe(503);
+    expect(startMock).not.toHaveBeenCalled();
+  });
+
   it('plan #936 row 7e — no pointer + no promptHistory → userMessage falls back to the raw prompt (legacy first-turn)', async () => {
     standardHarness();
     mockAuthedSession();

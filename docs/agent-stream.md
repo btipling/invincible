@@ -180,7 +180,10 @@ reserved-`meta` carriers are defined in
   `isObjectIdBoundTo`, fail-closed) and seeds the next turn's orchestrator from
   it (`priorMessages`); when no bound pointer exists the host's `promptHistory`
   sidecar is the one-shot legacy roll-forward (`formatPromptWithHistory` fold),
-  never a permanent fold. Orphan tool-results (no matching `tool-call`) are
+  never a permanent fold. A **bound** pointer that cannot be read (miss / not
+  JSON / not an array) still uses `promptHistory` when the host sent it; if the
+  sidecar is absent (GET overlay already sidecar-stopped) the route **503s**
+  rather than starting a history-less turn (adversarial-review #937). Orphan tool-results (no matching `tool-call`) are
   dropped with a marker so strict providers accept the seeded array; cap-trim
   drops oldest rows then re-pairs. The 262 144 B/msg paint caps above are the
   **display** path; the LLM payload is this separate, smaller projection.

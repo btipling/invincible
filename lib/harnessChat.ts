@@ -1118,10 +1118,15 @@ export async function runHarnessTurn(
   // pointer, else ignores it. Legacy/test paths (injected sendAgent*/local)
   // keep today's single folded `prompt` unchanged.
   const isDurableTurnPath = opts?.sendAgent == null && opts?.sendAgentStream == null;
-  const historyFold =
-    useHistory && session.messages.length > 0
-      ? formatPromptWithHistory(session.messages, prompt)
-      : undefined;
+  // Skip the 3.5M fold when the durable path already observed a pointer
+  // (adversarial-review #937 Minor): sidecar-stop means we would throw it away.
+  const needsHistoryFold =
+    useHistory &&
+    session.messages.length > 0 &&
+    (!isDurableTurnPath || session.modelMessagesPointer === undefined);
+  const historyFold = needsHistoryFold
+    ? formatPromptWithHistory(session.messages, prompt)
+    : undefined;
   const apiPrompt = isDurableTurnPath ? prompt : (historyFold ?? prompt);
   let promptHistory =
     isDurableTurnPath &&

@@ -333,7 +333,10 @@ export async function POST(req: Request): Promise<Response> {
           // Plan #936: seed the orchestrator from the persisted model-messages
           // projection. Read the bound Blob object while the envelope is in
           // hand (same pre-start read). confused-deputy guard: the pointer must
-          // re-bind to THIS session scope. Any failure → no seed (legacy fold).
+          // re-bind to THIS session scope. Any failure → no seed (legacy fold
+          // IFF the host still sent `promptHistory`). Adversarial-review #937
+          // Major: GET overlay sidecar-stops without reading this sibling Blob,
+          // so a bound miss + no sidecar must not start a history-less turn.
           const mmPointer = envelope.meta?.modelMessagesPointer;
           if (
             typeof mmPointer === 'string' &&
@@ -355,6 +358,15 @@ export async function POST(req: Request): Promise<Response> {
             } catch {
               // Fail-closed: unreadable/missing/malformed projection → no seed.
               priorMessages = undefined;
+            }
+            if (priorMessages === undefined && parsed.promptHistory === undefined) {
+              return Response.json(
+                {
+                  error:
+                    'Unable to read the model-messages seed for this session (fail closed).',
+                },
+                { status: 503 },
+              );
             }
           }
         }
