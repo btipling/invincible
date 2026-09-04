@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -134,6 +134,23 @@ describe('staticGraph — closure walk (matrix 1,2,8,9,10,11,12,13)', () => {
     expect(reachable.has('lib/workflows/turnSseWrite')).toBe(false);
     expect(bannedReach(reachable)).toEqual([]);
     expect([...reachable].some((v) => v.includes('agentStream'))).toBe(false);
+  });
+
+  it('modelGenerateStep.ts must not export extra runtime helpers (prod deploy #940)', () => {
+    // Workflow-mode SWC DCE keeps EXPORTED non-step functions in the canvas
+    // bundle. Exporting `resolveInStepPreambles` from this `'use step'` file
+    // pulled `harnessSessionsRedis` → Blob `node:crypto` and `sessionStore` →
+    // `postgres` into the workflow VM (`workflow-node-module-error`). The
+    // helper lives in `inStepPreambles.ts` and is dynamically imported inside
+    // the step body. Pin: the only exported async function here is the step.
+    const src = readFileSync(join(REPO_ROOT, 'lib/workflows/modelGenerateStep.ts'), 'utf8');
+    expect(src).not.toMatch(/export async function resolveInStepPreambles/);
+    const exportedAsync = [...src.matchAll(/export async function (\w+)/g)].map(
+      (m) => m[1],
+    );
+    expect(exportedAsync).toEqual(['modelGenerateStep']);
+    expect(src).toMatch(/await import\(['"]\.\/inStepPreambles['"]\)/);
+    expect(src).not.toMatch(/from ['"]\.\/inStepPreambles['"]/);
   });
 
   it('positive control (dangerousGraphFixture) reaches a banned module → checker flags it (case 2)', () => {
