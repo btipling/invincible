@@ -90,10 +90,24 @@ function boundSummary(summary: string): string {
 }
 
 /**
+ * Drop paths that cannot sit on a single `Files read/modified:` line without
+ * breaking Goal 4 honesty (adversarial #953). Same C0 / DEL / U+2028 / U+2029
+ * class as `sanitizeReminderPath` (#943). Trim; empty after trim → drop.
+ * Invalid paths are dropped, not counted as cap-omitted.
+ */
+function sanitizeCompactionPath(raw: string): string | undefined {
+  const p = raw.trim();
+  if (!p) return undefined;
+  if (/[\u0000-\u001F\u007F\u2028\u2029]/.test(p)) return undefined;
+  return p;
+}
+
+/**
  * Bound the files-touched list to `COMPACTION_FILES_TOUCHED_MAX` entries —
  * keep the NEWEST paths (last occurrence wins so a re-read is not dropped;
- * adversarial #953), drop the oldest, skip non-string / empty entries.
- * Returns the bound list + the omitted count for the honest marker. Pure.
+ * adversarial #953), drop the oldest, skip non-string / empty / control-char
+ * entries. Returns the bound list + the omitted count for the honest marker.
+ * Pure.
  */
 function boundFilesTouched(paths: readonly unknown[]): {
   paths: string[];
@@ -104,10 +118,12 @@ function boundFilesTouched(paths: readonly unknown[]): {
   const seen = new Set<string>();
   for (let i = paths.length - 1; i >= 0; i--) {
     const p = paths[i];
-    if (typeof p !== 'string' || p.length === 0) continue;
-    if (seen.has(p)) continue;
-    seen.add(p);
-    clean.push(p);
+    if (typeof p !== 'string') continue;
+    const s = sanitizeCompactionPath(p);
+    if (!s) continue;
+    if (seen.has(s)) continue;
+    seen.add(s);
+    clean.push(s);
   }
   clean.reverse();
   if (clean.length <= COMPACTION_FILES_TOUCHED_MAX) {
@@ -122,9 +138,9 @@ function boundFilesTouched(paths: readonly unknown[]): {
  *  - `summary` → `COMPACTION_SUMMARY_MAX_CHARS` (code-point-safe head +
  *    explicit `… [summary truncated]` marker),
  *  - `filesTouched` → `COMPACTION_FILES_TOUCHED_MAX` entries (keep NEWEST
- *    by last occurrence, non-strings dropped) — the omitted count is stored
- *    on `summary` (checkpoint shape has no `omitted` field) so it survives
- *    a seed that does not go through `renderSummaryRow`,
+ *    by last occurrence, non-strings / control-char paths dropped) — the
+ *    omitted count is stored on `summary` (checkpoint shape has no `omitted`
+ *    field) so it survives a seed that does not go through `renderSummaryRow`,
  *  - `retainedTail` → re-paired with `rePairModelMessages` (the cut never
  *    leaves an orphan tool-result / open call on the tail either).
  * Pure, never throws. A planted/hostile tail is still row-typed here; the
@@ -153,7 +169,9 @@ export function buildCheckpoint(
  * `Summary of earlier session (compacted, not live assistant prose):
  * <summary>` followed by a `Files read/modified:` line listing
  * `filesTouched`. NEVER an assistant row; the canvas paints nothing new
- * (server-only row). The overflow marker `… (N earlier paths omitted)` is
+ * (server-only row). Control-char / blank paths are dropped (adversarial
+ * #953) so a summarizer-invented path cannot split the files line or smuggle
+ * a second honesty label. The overflow marker `… (N earlier paths omitted)` is
  * NOT computed here — `buildCheckpoint` bakes it into `checkpoint.summary`
  * because the locked checkpoint shape has no omitted field. Empty summary
  * still renders the label (an honest empty summary, never prose).
@@ -164,8 +182,16 @@ export function renderSummaryRow(
   filesTouched: readonly string[],
 ): ModelMessageRow {
   const lines: string[] = [`${COMPACTION_SUMMARY_LABEL} ${summary}`];
-  if (filesTouched.length > 0) {
-    lines.push(`${FILES_TOUCHED_PREFIX} ${filesTouched.join(', ')}`);
+  const cleaned: string[] = [];
+  const seen = new Set<string>();
+  for (const p of filesTouched) {
+    const s = sanitizeCompactionPath(p);
+    if (!s || seen.has(s)) continue;
+    seen.add(s);
+    cleaned.push(s);
+  }
+  if (cleaned.length > 0) {
+    lines.push(`${FILES_TOUCHED_PREFIX} ${cleaned.join(', ')}`);
   }
   return { role: 'user', content: lines.join('\n\n') };
 }
