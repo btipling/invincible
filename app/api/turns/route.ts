@@ -61,7 +61,7 @@ import {
 } from '../../../lib/agent/agentStream';
 import { overlayWorkerMeta } from '../../../lib/agent/workerMetaOverlay';
 import { buildModelMessages } from '../../../lib/agent/modelMessages';
-import { TURN_START_MIN_INTERVAL_MS, sanitizeTurnRunId } from '../../../lib/sessionCloudCaps';
+import { TURN_START_MIN_INTERVAL_MS, sanitizeTurnRunId, isRedisSafeOpaqueId } from '../../../lib/sessionCloudCaps';
 import { mapByokResolveFailure } from '../../../lib/chatServer';
 import { createProdServices } from '../../../lib/di';
 import { requireSessionUser } from '../../../lib/tenancy/session';
@@ -270,6 +270,9 @@ export async function POST(req: Request): Promise<Response> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let envelopeStore: any = null;
     let persistRunBind: { cwd?: string; activeSandboxId?: string } | undefined;
+    // Plan #941: the per-turn freshness-reminder pointer (sanitize-only; the
+    // model step reads the Blob in-step). Undefined = no prior reminder.
+    let freshnessReminderPointer: string | undefined;
     // B13 strictly-newer overlayClock base: capture the stored envelope's
     // `updatedAt` so the post-start running PATCH can compute a strictly-newer
     // clock (`max(now, stored+1)`) — same construction as createTurnPersistSeam
@@ -369,6 +372,16 @@ export async function POST(req: Request): Promise<Response> {
               );
             }
           }
+          // Plan #941: the per-turn freshness-reminder pointer — sanitize-only
+          // pass-through (Redis-safe opaque shape). The route NEVER reads the
+          // Blob: the model step resolves + reads the reminder in-step
+          // (fail-open), mirroring the #936 seed. Binding is re-enforced
+          // in-step via isObjectIdBoundTo; a poisoned value here just omits
+          // the arg (advisory memory, never a 5xx).
+          const frPointerRaw = envelope.meta?.freshnessReminderPointer;
+          if (typeof frPointerRaw === 'string' && isRedisSafeOpaqueId(frPointerRaw)) {
+            freshnessReminderPointer = frPointerRaw;
+          }
         }
       }
     } catch {
@@ -464,6 +477,9 @@ export async function POST(req: Request): Promise<Response> {
         ...(persistRunBind ? { persistRunBind } : {}),
         ...(reasoning !== undefined ? { reasoning } : {}),
         ...(priorMessages !== undefined ? { priorMessages } : {}),
+        ...(freshnessReminderPointer !== undefined
+          ? { freshnessReminderPointer }
+          : {}),
       },
     ]);
 

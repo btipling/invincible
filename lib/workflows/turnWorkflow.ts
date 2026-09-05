@@ -89,6 +89,15 @@ export interface TurnWorkflowArgs {
    * only. Absent = legacy/first turn.
    */
   priorMessages?: ReadonlyArray<unknown>;
+  /**
+   * Per-turn freshness-reminder pointer (plan #941, source #693) — the
+   * `meta.freshnessReminderPointer` value read (sanitize-only) at
+   * `POST /api/turns`. Forwarded to `runTurnLoop` so the FIRST model round
+   * can fold the volatile reminder in-step (fail-open). Plain serializable
+   * scalar — the pointer never becomes run state beyond this arg. Absent =
+   * no prior reminder.
+   */
+  freshnessReminderPointer?: string;
 }
 
 /**
@@ -122,7 +131,13 @@ export async function turnWorkflow(
     close: () => closeTurnSse(),
   };
 
-  const modelStep: ModelStepFn = async ({ messages, persistRunBind, disableTools, wrapUp }) => {
+  const modelStep: ModelStepFn = async ({
+    messages,
+    persistRunBind,
+    disableTools,
+    wrapUp,
+    freshnessReminderPointer,
+  }) => {
     return modelGenerateStep({
       messages,
       modelId: args.modelId,
@@ -136,6 +151,11 @@ export async function turnWorkflow(
       ...(disableTools ? { disableTools: true } : {}),
       ...(wrapUp !== undefined ? { wrapUp } : {}),
       ...(args.reasoning !== undefined ? { reasoning: args.reasoning } : {}),
+      // Plan #941: the loop passes this ONLY on the first non-wrap-up round —
+      // forward it verbatim (the step folds the reminder in-step, fail-open).
+      ...(freshnessReminderPointer !== undefined
+        ? { freshnessReminderPointer }
+        : {}),
     });
   };
   const toolStep: ToolStepFn = async ({ calls, freshnessSeed, persistRunBind }) => {
@@ -175,6 +195,9 @@ export async function turnWorkflow(
         userMessage: args.userMessage,
         ...(args.priorMessages !== undefined
           ? { priorMessages: args.priorMessages }
+          : {}),
+        ...(args.freshnessReminderPointer !== undefined
+          ? { freshnessReminderPointer: args.freshnessReminderPointer }
           : {}),
       },
     );

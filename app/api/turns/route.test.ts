@@ -1319,6 +1319,58 @@ describe('POST /api/turns', () => {
     expect(startArgs.userMessage).toBe('hi');
   });
 
+  it('plan #941 row 8a — bound freshnessReminderPointer → start() args carry it (sanitize-only; NO blob read in route)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        freshnessReminderPointer: 't_fr_s1_abc',
+      },
+    });
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'edit it', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    // The pointer rides the start args (sanitize-only); the route never reads
+    // the Blob for it (the model step resolves + reads in-step, fail-open).
+    expect(startArgs.freshnessReminderPointer).toBe('t_fr_s1_abc');
+    expect(blobReadMock).not.toHaveBeenCalled();
+  });
+
+  it('plan #941 row 8b — poisoned/foreign-shaped freshnessReminderPointer → arg omitted, no 5xx', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: { freshnessReminderPointer: 'not opaque!' },
+    });
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'hi', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.freshnessReminderPointer).toBeUndefined();
+  });
+
+  it('plan #941 row 8c — absent freshnessReminderPointer → no arg (first turn)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    // Default envelope has no freshnessReminderPointer.
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'hi', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.freshnessReminderPointer).toBeUndefined();
+  });
+
   it('adversarial #937 — bound pointer whose JSON is an unpaired tool array is re-paired before start()', async () => {
     standardHarness();
     mockAuthedSession();

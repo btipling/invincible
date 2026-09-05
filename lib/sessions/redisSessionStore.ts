@@ -52,6 +52,7 @@ import {
   assertValidSessionRecordKey,
   backfillMarkerKey,
   copyForwardModelMessagesPointer,
+  copyForwardFreshnessReminderPointer,
   copyForwardWorkingNotes,
   envelopeFromRecord,
   envelopeKeyString,
@@ -395,12 +396,16 @@ export class RedisSessionStore implements ServerSessionStore, BackfillMarkerStor
       createdAt,
       updatedAt: input.updatedAt,
       // Replace, not merge: absent key = clear (RESERVED_META_KEYS contract).
-      // Exception: modelMessagesPointer + workingNotes are copy-forwarded from
-      // the LWW `existing` when incoming omits them (adversarial-review #937 /
-      // #940) so a host flatten cannot delete the worker's latest. Same read
-      // as the LWW check. Worker clear of workingNotes is a present `''`.
+      // Exception: modelMessagesPointer + freshnessReminderPointer + workingNotes
+      // are copy-forwarded from the LWW `existing` when incoming omits them
+      // (adversarial-review #937 / #940 / plan #941) so a host flatten cannot
+      // delete the worker's latest. Same read as the LWW check. Worker clear of
+      // workingNotes is a present `''`.
       meta: copyForwardWorkingNotes(
-        copyForwardModelMessagesPointer(input.meta, existing?.meta),
+        copyForwardFreshnessReminderPointer(
+          copyForwardModelMessagesPointer(input.meta, existing?.meta),
+          existing?.meta,
+        ),
         existing?.meta,
       ),
     };
