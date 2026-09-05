@@ -373,7 +373,34 @@ describe('trimModelMessagesToBudget (plan #944, testing rows 4–6 + 14)', () =>
     expect(out[out.length - 1]).toEqual(user('newest seed'));
   });
 
+  it('adversarial #945 — many-row trim is O(log n) serializations, not one stringify per dropped row', () => {
+    const rows = Array.from({ length: 400 }, (_, i) => user(`m${i}`));
+    const orig = JSON.stringify;
+    let calls = 0;
+    JSON.stringify = ((...args: Parameters<typeof JSON.stringify>) => {
+      calls += 1;
+      return orig(...args);
+    }) as typeof JSON.stringify;
+    try {
+      const { rows: out, truncated } = trimModelMessagesToBudget(rows, 80, {
+        charsPerToken: 4,
+        currentUserContent: 'ask',
+      });
+      const serializeCalls = calls;
+      expect(truncated).toBe(true);
+      expect(out.length).toBeGreaterThan(0);
+      expect(out.length).toBeLessThan(400);
+      expect(out[out.length - 1]).toEqual(user('m399'));
+      // Linear drop-one stringifies once per dropped row (~300+). Binary search
+      // is ≤ ~2·log2(400) + the fast-path miss ≈ 20.
+      expect(serializeCalls).toBeLessThan(40);
+    } finally {
+      JSON.stringify = orig;
+    }
+  });
+
   it('locked seed caps stay pinned', () => {
+
     expect(MODEL_MSG_SEED_MAX_ROWS).toBe(4_096);
     expect(MODEL_MSG_SEED_MAX_BYTES).toBe(2 * 1024 * 1024);
   });

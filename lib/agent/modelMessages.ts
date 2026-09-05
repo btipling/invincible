@@ -281,6 +281,11 @@ export function buildModelMessages(
  * `rows` and is never dropped here. After the trim, re-pair (orphan
  * tool-results dropped, assistant `toolCalls` with no remaining result
  * stripped) so a strict provider never sees an open call. Pure, never throws.
+ *
+ * Cut is a binary search over the suffix start (adversarial #945): `allowed(i)`
+ * for `rows[i:]` is monotonic, so this is O(log n) serializations, never one
+ * `JSON.stringify` per dropped row (a 4096 × 2k-char seed was 17s on the
+ * `POST /api/turns` start path with the linear shift).
  */
 export function trimModelMessagesToBudget(
   rows: ReadonlyArray<ModelMessageRow>,
@@ -310,33 +315,35 @@ export function trimModelMessagesToBudget(
   // fold already does this). No-ask callers keep at least the newest seed row.
   const minKeep = typeof opts?.currentUserContent === 'string' ? 0 : 1;
 
-  let out = [...rows];
-  let truncated = false;
+  const n = rows.length;
+  if (n === 0) return { rows: [], truncated: false };
+  const maxStart = Math.max(0, n - minKeep);
 
-  const overBudget = (): boolean => {
-    const seedChars = out.length === 0 ? 0 : JSON.stringify(out).length;
-    return Math.ceil((seedChars + askChars) / ratio) > budgetTokens;
+  const allowed = (i: number): boolean => {
+    // Forced keep / empty: the newest minKeep rows (or []) always survive,
+    // even when a single leftover row still exceeds a rail (row 14).
+    if (i >= maxStart) return true;
+    const slice = rows.slice(i);
+    if (slice.length > maxRows) return false;
+    const json = JSON.stringify(slice);
+    if (Math.ceil((json.length + askChars) / ratio) > budgetTokens) return false;
+    if (utf8Bytes(json) > maxBytes) return false;
+    return true;
   };
 
-  // Drop OLDEST rows until under the token budget.
-  while (out.length > minKeep && overBudget()) {
-    out.shift();
-    truncated = true;
+  let start = 0;
+  if (!allowed(0)) {
+    let lo = 0;
+    let hi = maxStart;
+    while (lo < hi) {
+      const mid = lo + ((hi - lo) >> 1);
+      if (allowed(mid)) hi = mid;
+      else lo = mid + 1;
+    }
+    start = lo;
   }
 
-  // Row rail (pathological count — independent of tokens).
-  if (out.length > maxRows) {
-    out.splice(0, out.length - maxRows);
-    truncated = true;
-  }
-
-  // Byte rail (Workflow-arg carrier bound) — drop oldest, keep the newest
-  // unless the ask-aware path is allowed to empty the seed.
-  while (out.length > minKeep && utf8Bytes(JSON.stringify(out)) > maxBytes) {
-    out.shift();
-    truncated = true;
-  }
-
-  return { rows: rePairModelMessages(out), truncated };
+  const out = start === 0 ? [...rows] : rows.slice(start);
+  return { rows: rePairModelMessages(out), truncated: start > 0 };
 }
 

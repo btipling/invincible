@@ -144,7 +144,24 @@ describe('formatPromptWithHistory', () => {
     expect(out).not.toContain(fat);
   });
 
+  it('row 9 (plan #944) — a mid-size window keeps a newest suffix, not a full wipe', () => {
+    const fat = 'b'.repeat(400); // ~100 tokens estimated per row
+    const history = Array.from({ length: 80 }, (_, i) =>
+      makeMessage('user', `${fat}-${i}`),
+    );
+    // 20k window → reserve floor 16384 → budget 3616 tokens ≈ 14k chars.
+    // 80 fat rows overflow that; the newest rows + ask must survive, oldest
+    // must not (binary-search cut, adversarial #945).
+    const out = formatPromptWithHistory(history, 'continue', {
+      contextWindow: 20_000,
+    });
+    expect(out).toContain('User: continue');
+    expect(out).toContain(`${fat}-79`);
+    expect(out).not.toContain(`${fat}-0`);
+  });
+
   it('row 9 (plan #944) — the fold NEVER drops the current ask, even when it alone exceeds the budget', () => {
+
     const hugeAsk = 'a'.repeat(400_000);
     const history = [makeMessage('user', 'hi')];
     const out = formatPromptWithHistory(history, hugeAsk, {

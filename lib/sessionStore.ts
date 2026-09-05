@@ -516,15 +516,30 @@ export function formatPromptWithHistory(
 
   // Token trim: drop OLDEST history rows until the fold fits the budget. The
   // current ask always survives; history may trim to empty to fit it.
+  // Binary search the keep-count (adversarial #945): more rows → larger fold
+  // (monotonic), so this is O(log n) rebuilds, never one join per dropped row.
   let out = linesFor(recent).join('\n');
-  while (recent.length > 0 && estimateTokens(out) > maxTokens) {
-    recent.shift();
-    if (recent.length === 0) {
-      // Every history row was trimmed — send the bare current ask.
-      out = ['', `User: ${newUserPrompt}`, '', 'Assistant:'].join('\n');
-      break;
+  if (recent.length > 0 && estimateTokens(out) > maxTokens) {
+    const n = recent.length;
+    const keepFits = (k: number): boolean => {
+      if (k <= 0) return true;
+      return estimateTokens(linesFor(recent.slice(n - k)).join('\n')) <= maxTokens;
+    };
+    // Full fold does not fit. Max keep in [0, n-1].
+    let lo = 0;
+    let hi = n - 1;
+    while (lo < hi) {
+      const mid = lo + ((hi - lo + 1) >> 1);
+      if (keepFits(mid)) lo = mid;
+      else hi = mid - 1;
     }
-    out = linesFor(recent).join('\n');
+    if (lo === 0) {
+      // Every history row was trimmed — current ask still sent (wrapped).
+      out = ['', `User: ${newUserPrompt}`, '', 'Assistant:'].join('\n');
+    } else {
+      recent.splice(0, n - lo);
+      out = linesFor(recent).join('\n');
+    }
   }
 
   // Char backstop (transport only — never the product rule).
