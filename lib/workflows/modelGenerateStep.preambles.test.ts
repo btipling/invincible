@@ -167,4 +167,15 @@ describe('resolveInStepFreshnessReminder — fail-open (plan #941 / adversarial 
     const text = await resolveInStepFreshnessReminder({ pointer, scope: frScope });
     expect(text).toBeUndefined();
   });
+
+  it('adversarial #943 — bound pointer + {paths, omitted} → rendered marker', async () => {
+    const pointer = newBlobObjectId(frScope);
+    blobRead.mockResolvedValue(
+      JSON.stringify({ paths: ['keep/me.ts'], omitted: 5 }),
+    );
+    const text = await resolveInStepFreshnessReminder({ pointer, scope: frScope });
+    expect(text).toBeDefined();
+    expect(text).toContain('- keep/me.ts');
+    expect(text).toContain('(\u2026 5 earlier paths omitted)');
+  });
 });

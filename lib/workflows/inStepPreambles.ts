@@ -245,8 +245,15 @@ export async function resolveInStepFreshnessReminder(args: {
     for (const p of rawPaths) {
       if (typeof p === 'string' && p) paths.push(p);
     }
-    if (paths.length === 0) return undefined; // zero-read prior turn → no fold
-    return renderFreshnessReminder(paths);
+    const rawOmitted = (parsed as { omitted?: unknown }).omitted;
+    const persistedOmitted =
+      typeof rawOmitted === 'number' &&
+      Number.isFinite(rawOmitted) &&
+      rawOmitted > 0
+        ? Math.floor(rawOmitted)
+        : 0;
+    if (paths.length === 0 && persistedOmitted === 0) return undefined; // zero-read prior turn → no fold
+    return renderFreshnessReminder(paths, persistedOmitted);
   } catch {
     // Fail-open: any read/parse problem → no reminder row, turn unaffected.
     return undefined;

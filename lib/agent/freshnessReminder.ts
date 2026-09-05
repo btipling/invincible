@@ -43,6 +43,15 @@ import {
 /** The derived, persistable projection body (persist seam writes `{paths}`). */
 export type FreshnessReminderPaths = {
   paths: string[];
+  /**
+   * Count of paths dropped by the row/byte cap (adversarial-review #943).
+   * Present on the persisted Blob when > 0 so the next-turn renderer can
+   * emit the honest `… N earlier paths omitted` marker — `serialize` used
+   * to drop this, so the production persist→read→render path never showed
+   * it. Omitted from the JSON when 0 (`{paths}` only) so existing empty /
+   * under-cap blobs stay byte-equal.
+   */
+  omitted?: number;
 };
 
 /** The orchestrator-local message rows the loop stores (loose for replay). */
@@ -54,22 +63,50 @@ function utf8ByteLength(s: string): number {
   return new TextEncoder().encode(s).length;
 }
 
+/**
+ * Control chars (C0, DEL, line/paragraph separators) in a path would split
+ * the rendered `- ${p}` list into extra lines and can smuggle a fake
+ * omitted marker or `Error:` sentence into the trailing user message
+ * (adversarial-review #943 Minor L2). Drop the path rather than collapse
+ * it into a fake name the gate would not recognize.
+ */
+function sanitizeReminderPath(raw: string): string | undefined {
+  const p = raw.trim();
+  if (!p) return undefined;
+  if (/[\u0000-\u001F\u007F\u2028\u2029]/.test(p)) return undefined;
+  return p;
+}
+
 /** Extract a non-empty string `path` from a tool-call `args` object. */
 function pathFromArgs(args: unknown): string | undefined {
   if (args === null || typeof args !== 'object' || Array.isArray(args)) return undefined;
   const raw = (args as { path?: unknown }).path;
   if (typeof raw !== 'string') return undefined;
-  const p = raw.trim();
-  return p ? p : undefined;
+  return sanitizeReminderPath(raw);
+}
+
+/**
+ * Persistable `{paths}` / `{paths, omitted}` JSON. `omitted` is included
+ * only when > 0 so under-cap bodies stay `{paths}` (byte-equal with the
+ * original shape).
+ */
+function encodeReminderBody(paths: string[], omitted: number): string {
+  // Empty list folds nothing next turn — omit the marker (a marker with no
+  // surviving names cannot render). Under-cap bodies stay `{paths}` only.
+  if (paths.length === 0 || omitted <= 0) return JSON.stringify({ paths });
+  return JSON.stringify({ paths, omitted });
 }
 
 /**
  * Bound the path list to the Caps table: at most `FRESHNESS_REMINDER_MAX_PATHS`
- * entries (drop the OLDEST, keep the newest) and the `JSON.stringify({paths})`
- * body under `FRESHNESS_REMINDER_MAX_BYTES` (drop the oldest paths
- * deterministically until it fits — the newest paths always win, mirroring the
- * row cap's keep-newest discipline). Returns the bound list + the count of
- * dropped paths for the honest truncation marker. Never throws.
+ * entries (drop the OLDEST, keep the newest) and the serialized body under
+ * `FRESHNESS_REMINDER_MAX_BYTES` (drop the oldest paths deterministically
+ * until it fits — the newest paths always win, mirroring the row cap's
+ * keep-newest discipline). Returns the bound list + the count of dropped
+ * paths for the honest truncation marker. Byte math uses the SAME encoder
+ * `serializeFreshnessReminder` writes (including `omitted` when > 0) so a
+ * marker-bearing body cannot exceed the persist seam's `writeSegment`
+ * ceiling. Never throws.
  */
 function boundPaths(paths: string[]): { paths: string[]; omitted: number } {
   let rows = [...paths];
@@ -79,11 +116,14 @@ function boundPaths(paths: string[]): { paths: string[]; omitted: number } {
     omitted += rows.length - FRESHNESS_REMINDER_MAX_PATHS;
     rows = rows.slice(rows.length - FRESHNESS_REMINDER_MAX_PATHS);
   }
-  // Byte cap (serialized `{paths}` object body): drop the oldest until it
-  // fits. The newest paths survive (same keep-newest discipline as the row
-  // cap); a single giant path that exceeds the whole cap is dropped with
-  // everything before it (the loop exits with rows possibly empty).
-  while (rows.length > 0 && utf8ByteLength(JSON.stringify({ paths: rows })) > FRESHNESS_REMINDER_MAX_BYTES) {
+  // Byte cap (serialized body): drop the oldest until it fits. The newest
+  // paths survive (same keep-newest discipline as the row cap); a single
+  // giant path that exceeds the whole cap is dropped with everything
+  // before it (the loop exits with rows possibly empty).
+  while (
+    rows.length > 0 &&
+    utf8ByteLength(encodeReminderBody(rows, omitted)) > FRESHNESS_REMINDER_MAX_BYTES
+  ) {
     rows = rows.slice(1);
     omitted += 1;
   }
@@ -154,12 +194,35 @@ export function buildFreshnessReminder(
  * (a windowed/truncated read does NOT grant edit — plan-review Major #1) and
  * keeps the #563 escape hint (`limit>=totalLines` at offset 1). Over-cap input
  * is bounded here too (newest paths win + marker) so a caller that renders an
- * unbounded list still gets a bounded string. Never carries mtimes, sizes,
- * hashes, or file bodies. Never throws.
+ * unbounded list still gets a bounded string.
+ *
+ * `persistedOmitted` (adversarial-review #943): count of paths already
+ * dropped at serialize time. Added to any further boundPaths drop so the
+ * production persist→read→render path can emit the honest marker (the Blob
+ * stores the trimmed list + this count; calling render on the trimmed list
+ * alone would report omitted=0).
+ *
+ * Never carries mtimes, sizes, hashes, or file bodies. Never throws.
  */
-export function renderFreshnessReminder(paths: ReadonlyArray<string>): string | undefined {
-  if (paths.length === 0) return undefined;
-  const { paths: bounded, omitted } = boundPaths([...paths]);
+export function renderFreshnessReminder(
+  paths: ReadonlyArray<string>,
+  persistedOmitted = 0,
+): string | undefined {
+  if (paths.length === 0 && !(persistedOmitted > 0)) return undefined;
+  const cleaned: string[] = [];
+  for (const p of paths) {
+    if (typeof p !== 'string') continue;
+    const s = sanitizeReminderPath(p);
+    if (s) cleaned.push(s);
+  }
+  const extra =
+    typeof persistedOmitted === 'number' &&
+    Number.isFinite(persistedOmitted) &&
+    persistedOmitted > 0
+      ? Math.floor(persistedOmitted)
+      : 0;
+  const { paths: bounded, omitted: boundOmitted } = boundPaths(cleaned);
+  const omitted = extra + boundOmitted;
   if (bounded.length === 0) return undefined;
   const lines: string[] = [
     'Error: File-freshness law for this session (volatile, this turn only):',
@@ -185,12 +248,15 @@ export function renderFreshnessReminder(paths: ReadonlyArray<string>): string | 
 /**
  * Serialize the projection to the persisted `{paths}` JSON body — bounded by
  * `FRESHNESS_REMINDER_MAX_BYTES` (drop the oldest paths deterministically,
- * keep the newest). This is the exact body the persist seam writes as its own
- * Blob object (`writeSegment maxBytes`); trimming here first keeps the seam's
+ * keep the newest). When the cap drops paths, the body is
+ * `{paths, omitted}` so the next-turn renderer can emit the honest marker
+ * (adversarial-review #943). Under-cap / empty stays `{paths}` only. This is
+ * the exact body the persist seam writes as its own Blob object
+ * (`writeSegment maxBytes`); trimming here first keeps the seam's
  * fail-closed byte ceiling a belt-and-suspenders check, not a runtime path.
  * Pure, never throws.
  */
 export function serializeFreshnessReminder(projection: FreshnessReminderPaths): string {
-  const { paths } = boundPaths(projection.paths);
-  return JSON.stringify({ paths });
+  const { paths, omitted } = boundPaths(projection.paths);
+  return encodeReminderBody(paths, omitted);
 }
