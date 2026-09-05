@@ -618,6 +618,39 @@ export const MODEL_MSG_SEED_MAX_BYTES = 2 * 1024 * 1024;
 export const CONTEXT_CHARS_PER_TOKEN = 4;
 
 /**
+ * Pi-style completion-reserve **name** for the compaction trigger (plan #948,
+ * source #552 — A4 compaction phase 1). Same value as
+ * `CONTEXT_RESERVE_MIN_TOKENS` (16 384). `foldBudgetTokens` already subtracts
+ * this reserve; `shouldCompact` (`lib/agent/compactionBudget.ts`) compares
+ * the pre-trim estimate to that fold budget and must **not** subtract it
+ * again (adversarial #953: doing so zeroed the trigger on every ~32k-or-
+ * smaller window). Exported so phase 3 / docs can name the Pi default
+ * without forking a second literal. **NEW generous cap**; no existing cap
+ * value changed → no human gate.
+ */
+export const COMPACTION_RESERVE_TOKENS = 16_384;
+
+/**
+ * Max **chars** of a compaction checkpoint summary (plan #948, source #552).
+ * Bounds the persisted summary text the summarizer returns (enforced by
+ * `buildCheckpoint` in `lib/agent/compaction.ts` with an explicit marker on
+ * overflow — truncate, never drop). Same discipline as
+ * `WORKING_NOTES_MAX_BYTES`. **NEW generous cap**; no existing cap value
+ * changed → no human gate.
+ */
+export const COMPACTION_SUMMARY_MAX_CHARS = 8_000;
+
+/**
+ * Max number of file paths a compaction checkpoint's `filesTouched` list may
+ * carry (plan #948, source #552). Same order as
+ * `FRESHNESS_REMINDER_MAX_PATHS` (64), generous for one compaction span;
+ * `buildCheckpoint` keeps the NEWEST paths (drop-oldest) with an explicit
+ * omitted-count marker. **NEW generous cap**; no existing cap value changed →
+ * no human gate.
+ */
+export const COMPACTION_FILES_TOUCHED_MAX = 256;
+
+/**
  * Path cap for the per-turn freshness reminder (plan #941, source #693). The
  * reminder names exactly what the #277 `RunFileFreshness` gate will demand
  * (a `read_file` before edit); 64 workspace-relative paths (~4–8 KiB
