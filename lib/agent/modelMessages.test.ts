@@ -8,10 +8,13 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   buildModelMessages,
+  trimModelMessagesToBudget,
   type ModelMessageRow,
 } from './modelMessages';
 import {
   MODEL_MSG_CHECKPOINT_MAX_ROWS,
+  MODEL_MSG_SEED_MAX_BYTES,
+  MODEL_MSG_SEED_MAX_ROWS,
   MODEL_MSG_TOOL_RESULT_MAX_CHARS,
 } from '../sessionCloudCaps';
 
@@ -263,5 +266,142 @@ describe('buildModelMessages (plan #936)', () => {
     } finally {
       g.Buffer = saved;
     }
+  });
+});
+
+describe('trimModelMessagesToBudget (plan #944, testing rows 4–6 + 14)', () => {
+  it('row 4 — under-budget seed passes through intact (not truncated)', () => {
+    const rows = [user('go'), assistant('done', [])];
+    const { rows: out, truncated } = trimModelMessagesToBudget(rows, 10_000);
+    expect(truncated).toBe(false);
+    expect(out).toEqual(rows);
+  });
+
+  it('row 4 — token budget: drop OLDEST until under budget; the newest row always survives', () => {
+    const rows = [
+      user('old-1'),
+      assistant('old-2', []),
+      user('old-3'),
+      user('newest ask'),
+    ];
+    // Serialized seed is larger than raw text; budget 3 still forces
+    // drop-oldest until only the newest seed row remains (no-ask path
+    // keeps at least one row).
+    const { rows: out, truncated } = trimModelMessagesToBudget(rows, 3, {
+      charsPerToken: 4,
+    });
+    expect(truncated).toBe(true);
+    expect(out).toEqual([user('newest ask')]);
+  });
+
+  it('row 5 — row rail: splices the oldest rows beyond maxRows', () => {
+    const rows = [user('1'), user('2'), user('3'), user('4')];
+    const { rows: out, truncated } = trimModelMessagesToBudget(rows, 1_000_000, {
+      maxRows: 2,
+      charsPerToken: 4,
+    });
+    expect(truncated).toBe(true);
+    expect(out).toEqual([user('3'), user('4')]);
+  });
+
+  it('row 6 — byte rail: drop oldest until the serialized seed fits the Workflow-arg bound', () => {
+    const rows = [user('x'.repeat(4_000)), user('y'.repeat(4_000)), user('tail')];
+    const { rows: out, truncated } = trimModelMessagesToBudget(rows, 1_000_000, {
+      maxBytes: 4_200,
+      charsPerToken: 4,
+    });
+    expect(truncated).toBe(true);
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(4_200);
+    expect(out[out.length - 1]).toEqual(user('tail'));
+  });
+
+  it('re-pairs after the trim: no orphan tool-results, no open calls', () => {
+    const rows = [
+      user('old ask'),
+      assistant('calling', [{ toolName: 'read_file', toolCallId: 'c1' }]),
+      toolOk('read_file', 'c1', 'bytes'),
+      user('newest'),
+    ];
+    // Budget sized so the assistant+tool pair is trimmed away (the pair rides
+    // or dies together via re-pair): total 38 chars → 10 tok; budget 8.
+    const { rows: out } = trimModelMessagesToBudget(rows, 8, {
+      charsPerToken: 4,
+    });
+    for (const r of out) {
+      if (r.role === 'tool') {
+        expect.fail('a tool row orphaned by the trim must not survive');
+      }
+    }
+    expect(out[out.length - 1]).toEqual(user('newest'));
+  });
+
+  it('row 14 — a single oversized newest seed row is sent as-is when no current ask is in the estimate', () => {
+    const giant = user('z'.repeat(64 * 1024));
+    const { rows: out } = trimModelMessagesToBudget([giant], 10, {
+      charsPerToken: 4,
+    });
+    expect(out).toEqual([giant]);
+  });
+
+  it('adversarial #945 — currentUserContent is in the token rail; history may trim to []', () => {
+    const rows = [user('old-1'), user('old-2'), user('newest seed')];
+    const ask = 'a'.repeat(40); // 10 tokens at ratio 4
+    const { rows: out, truncated } = trimModelMessagesToBudget(rows, 10, {
+      charsPerToken: 4,
+      currentUserContent: ask,
+    });
+    expect(truncated).toBe(true);
+    expect(out).toEqual([]);
+  });
+
+  it('adversarial #945 — toolCalls.args count toward the token rail (serialized seed)', () => {
+    const fatArgs = { old_string: 'x'.repeat(4_000), new_string: 'y'.repeat(4_000) };
+    const rows = [
+      user('old'),
+      assistant('editing', [
+        { toolName: 'str_replace', toolCallId: 'c1', args: fatArgs },
+      ]),
+      toolOk('str_replace', 'c1', 'ok'),
+      user('newest seed'),
+    ];
+    // Tiny budget: args-heavy assistant must not hide behind a short delta.text.
+    const { rows: out, truncated } = trimModelMessagesToBudget(rows, 20, {
+      charsPerToken: 4,
+    });
+    expect(truncated).toBe(true);
+    expect(out.some((r) => r.role === 'assistant')).toBe(false);
+    expect(out[out.length - 1]).toEqual(user('newest seed'));
+  });
+
+  it('adversarial #945 — many-row trim is O(log n) serializations, not one stringify per dropped row', () => {
+    const rows = Array.from({ length: 400 }, (_, i) => user(`m${i}`));
+    const orig = JSON.stringify;
+    let calls = 0;
+    JSON.stringify = ((...args: Parameters<typeof JSON.stringify>) => {
+      calls += 1;
+      return orig(...args);
+    }) as typeof JSON.stringify;
+    try {
+      const { rows: out, truncated } = trimModelMessagesToBudget(rows, 80, {
+        charsPerToken: 4,
+        currentUserContent: 'ask',
+      });
+      const serializeCalls = calls;
+      expect(truncated).toBe(true);
+      expect(out.length).toBeGreaterThan(0);
+      expect(out.length).toBeLessThan(400);
+      expect(out[out.length - 1]).toEqual(user('m399'));
+      // Linear drop-one stringifies once per dropped row (~300+). Binary search
+      // is ≤ ~2·log2(400) + the fast-path miss ≈ 20.
+      expect(serializeCalls).toBeLessThan(40);
+    } finally {
+      JSON.stringify = orig;
+    }
+  });
+
+  it('locked seed caps stay pinned', () => {
+
+    expect(MODEL_MSG_SEED_MAX_ROWS).toBe(4_096);
+    expect(MODEL_MSG_SEED_MAX_BYTES).toBe(2 * 1024 * 1024);
   });
 });

@@ -145,6 +145,7 @@ export type SessionSnapshot = {
 
 import {
   MAX_MODEL_ID_LEN,
+  MODEL_MSG_SEED_MAX_ROWS,
   SKILL_SLUG_RE,
   isRedisSafeOpaqueId,
   sanitizeModelId,
@@ -156,6 +157,7 @@ import {
   sanitizeTurnStreamCursor,
   sanitizeWorkingNotes,
 } from './sessionCloudCaps';
+import { estimateTokens, foldBudgetTokens } from './agent/contextBudget';
 import { sanitizeUsageSummary } from './agent/usageSummary';
 import { sanitizeQueue } from './turnQueue';
 export { MAX_MODEL_ID_LEN, isRedisSafeOpaqueId, sanitizeSessionCwd } from './sessionCloudCaps';
@@ -420,23 +422,49 @@ export function createDefaultSessionStore(): SessionStore {
  * messages are **not** folded (display-only, plan #345), so the agent path no
  * longer re-sends tool summaries on continue — continuation context rides the
  * persisted assistant prose (see docs/harness-limits.md for the re-run caveat).
- * Prefer tail of history when over maxChars.
+ *
+ * Plan #944 (source #551): the fold budget is the **window-derived token
+ * budget** — `window − reserve` in tokens (documented estimator ratio, not a
+ * tokenizer). The caller passes the model's `contextWindow` (from the
+ * `/api/models` catalog push); when omitted the conservative default window
+ * applies — never a fabricated large number. The former 400-message default
+ * is NO LONGER an intelligence cap: a generous row rail
+ * (`MODEL_MSG_SEED_MAX_ROWS`) remains only as a safety rail against
+ * pathological message count. `maxChars` is demoted to a transport BACKSTOP
+ * (never the product rule): token trim first, char slice only as the
+ * last-resort wire guard.
+ *
+ * The budget trims HISTORY, never the current ask: `newUserPrompt` always
+ * survives (history may trim to empty to fit it). A single oversized ask is
+ * sent anyway (never block the turn).
  */
 export function formatPromptWithHistory(
   history: SessionMessage[],
   newUserPrompt: string,
   opts?: {
-    /** @deprecated use maxMessages — kept for call sites */
+    /** @deprecated row-rail clamp only — kept for call sites */
     maxTurns?: number;
+    /** @deprecated the 400 intelligence cap is retired (plan #944); row rail only. */
     maxMessages?: number;
+    /** @deprecated transport backstop only (plan #944) — token budget is the rule. */
     maxChars?: number;
+    /** The model's context window in tokens (catalog push). Omit → conservative default. */
+    contextWindow?: number;
   },
 ): string {
-  // Generous defaults: multi-tool turns are long; 8/12k was a continuity killer.
-  const maxMessages =
+  // Row safety rail (pathological count bound, plan #944) — no longer an
+  // intelligence cap. Legacy `maxTurns`/`maxMessages` opts still tighten the
+  // rail for call-site compatibility; never below 1, never above the rail cap.
+  const railFromOpts =
     opts?.maxMessages ??
-    (opts?.maxTurns != null ? Math.max(opts.maxTurns * 4, opts.maxTurns) : 400);
-  // Host fold budget — leave model/token limits to the gateway, not a toy 12k/32k char wall.
+    (opts?.maxTurns != null
+      ? Math.max(opts.maxTurns * 4, opts.maxTurns)
+      : undefined);
+  const maxMessages = Math.max(
+    1,
+    Math.min(railFromOpts ?? MODEL_MSG_SEED_MAX_ROWS, MODEL_MSG_SEED_MAX_ROWS),
+  );
+  // Transport backstop only (plan #944) — the token budget is the product rule.
   const maxChars = opts?.maxChars ?? 3_500_000;
 
   // user + assistant + system (turn-end / legacy tool lines) + error (stall/cancel context).
@@ -450,30 +478,71 @@ export function formatPromptWithHistory(
       m.role === 'system' ||
       m.role === 'error',
   );
-  const recent = dialogue.slice(-Math.max(1, maxMessages));
+  const recent = dialogue.slice(-maxMessages);
 
   if (recent.length === 0) return newUserPrompt;
 
-  const lines: string[] = [
-    'Previous conversation (Tool lines already ran this session — reuse results; do not repeat the same tool calls unless the user asks or files may have changed):',
-  ];
-  for (const m of recent) {
-    if (m.role === 'user') lines.push(`User: ${m.text}`);
-    else if (m.role === 'assistant') lines.push(`Assistant: ${m.text}`);
-    else if (m.role === 'system') {
-      // Skip end-of-turn markers (not tools).
-      if ((m.text ?? '').startsWith('Turn ended ·')) continue;
-      lines.push(`Tool: ${m.text}`);
-    } else if (m.role === 'error') {
-      if ((m.text ?? '').startsWith('Turn ended ·')) {
+  const HEADER =
+    'Previous conversation (Tool lines already ran this session — reuse results; do not repeat the same tool calls unless the user asks or files may have changed):';
+  const linesFor = (rows: typeof recent): string[] => {
+    const lines: string[] = [HEADER];
+    for (const m of rows) {
+      if (m.role === 'user') lines.push(`User: ${m.text}`);
+      else if (m.role === 'assistant') lines.push(`Assistant: ${m.text}`);
+      else if (m.role === 'system') {
+        // Skip end-of-turn markers (not tools).
+        if ((m.text ?? '').startsWith('Turn ended ·')) continue;
+        lines.push(`Tool: ${m.text}`);
+      } else if (m.role === 'error') {
         lines.push(`Error: ${m.text}`);
-        continue;
       }
-      lines.push(`Error: ${m.text}`);
+    }
+    lines.push('', `User: ${newUserPrompt}`, '', 'Assistant:');
+    return lines;
+  };
+
+  // Token budget = window − reserve (plan #944). The caller's catalog window
+  // (when known) is bound under id '' so `foldBudgetTokens` reads it directly;
+  // omitted → the conservative default window (never a fabricated number).
+  const windowMap = new Map<string, number>();
+  if (
+    typeof opts?.contextWindow === 'number' &&
+    Number.isFinite(opts.contextWindow) &&
+    opts.contextWindow > 0
+  ) {
+    windowMap.set('', Math.floor(opts.contextWindow));
+  }
+  const maxTokens = foldBudgetTokens(windowMap, '');
+
+  // Token trim: drop OLDEST history rows until the fold fits the budget. The
+  // current ask always survives; history may trim to empty to fit it.
+  // Binary search the keep-count (adversarial #945): more rows → larger fold
+  // (monotonic), so this is O(log n) rebuilds, never one join per dropped row.
+  let out = linesFor(recent).join('\n');
+  if (recent.length > 0 && estimateTokens(out) > maxTokens) {
+    const n = recent.length;
+    const keepFits = (k: number): boolean => {
+      if (k <= 0) return true;
+      return estimateTokens(linesFor(recent.slice(n - k)).join('\n')) <= maxTokens;
+    };
+    // Full fold does not fit. Max keep in [0, n-1].
+    let lo = 0;
+    let hi = n - 1;
+    while (lo < hi) {
+      const mid = lo + ((hi - lo + 1) >> 1);
+      if (keepFits(mid)) lo = mid;
+      else hi = mid - 1;
+    }
+    if (lo === 0) {
+      // Every history row was trimmed — current ask still sent (wrapped).
+      out = ['', `User: ${newUserPrompt}`, '', 'Assistant:'].join('\n');
+    } else {
+      recent.splice(0, n - lo);
+      out = linesFor(recent).join('\n');
     }
   }
-  lines.push('', `User: ${newUserPrompt}`, '', 'Assistant:');
-  let out = lines.join('\n');
+
+  // Char backstop (transport only — never the product rule).
   if (out.length > maxChars) {
     // Keep the most recent context (tail).
     out = out.slice(out.length - maxChars);

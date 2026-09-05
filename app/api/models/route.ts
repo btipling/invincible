@@ -1,5 +1,8 @@
 import { createProdServices } from '../../../lib/di';
-import { getJoinedEffortMap } from '../../../lib/gateway/modelCatalog';
+import {
+  getJoinedEffortMap,
+  getJoinedWindowMap,
+} from '../../../lib/gateway/modelCatalog';
 import { requireSessionUser } from '../../../lib/tenancy/session';
 
 export const runtime = 'nodejs';
@@ -11,6 +14,12 @@ export type ModelCatalogEntry = {
   label: string;
   /** Joined catalog `type: effort` values (empty when unpublished). */
   reasoningOptions: string[];
+  /**
+   * The model's published context window in tokens (plan #944). Undefined
+   * when neither catalog source publishes one — the fold trim falls back to
+   * the conservative default; never a fabricated window.
+   */
+  contextWindow?: number;
 };
 
 function shortLabel(modelId: string): string {
@@ -42,16 +51,26 @@ export async function GET(): Promise<Response> {
     // Catalog fail-open lives in getJoinedEffortMap (never throws). Extra
     // try keeps a 503 as grants-fail only if that contract ever drifts.
     let effortMap: Map<string, string[]> = new Map();
+    let windowMap: Map<string, number> = new Map();
     try {
-      effortMap = await getJoinedEffortMap();
+      [effortMap, windowMap] = await Promise.all([
+        getJoinedEffortMap(),
+        getJoinedWindowMap(),
+      ]);
     } catch {
       effortMap = new Map();
+      windowMap = new Map();
     }
-    const models: ModelCatalogEntry[] = ids.map((id) => ({
-      id,
-      label: shortLabel(id),
-      reasoningOptions: effortMap.get(id) ?? [],
-    }));
+    const models: ModelCatalogEntry[] = ids.map((id) => {
+      const window = windowMap.get(id);
+      return {
+        id,
+        label: shortLabel(id),
+        reasoningOptions: effortMap.get(id) ?? [],
+        // Omitted when unpublished — never a fabricated window (plan #944).
+        ...(window !== undefined ? { contextWindow: window } : {}),
+      };
+    });
     return Response.json({ models });
   } catch {
     return Response.json(

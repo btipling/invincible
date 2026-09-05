@@ -23,9 +23,11 @@ describe('GET /api/models', () => {
 
   function mockJoinedEffortMap(
     map: Map<string, string[]> = new Map(),
+    windowMap: Map<string, number> = new Map(),
   ) {
     vi.doMock('../../../lib/gateway/modelCatalog', () => ({
       getJoinedEffortMap: vi.fn(async () => map),
+      getJoinedWindowMap: vi.fn(async () => windowMap),
     }));
   }
 
@@ -124,6 +126,9 @@ describe('GET /api/models', () => {
       getJoinedEffortMap: vi.fn(async () => {
         throw new Error('catalog down');
       }),
+      getJoinedWindowMap: vi.fn(async () => {
+        throw new Error('catalog down');
+      }),
     }));
     const { GET } = await import('./route');
     const res = await GET();
@@ -151,6 +156,33 @@ describe('GET /api/models', () => {
         label: 'glm-5.3-flash',
         reasoningOptions: ['low', 'high', 'xhigh'],
       },
+    ]);
+  });
+
+  it('row 13 (plan #944) — a published window rides the entry; an unpublished window is omitted (never fabricated)', async () => {
+    vi.resetModules();
+    mockSession({ ok: true, user: { id: 'u1', email: 'a@t.com' } });
+    mockResolveInference(
+      vi.fn(async () => ['openai/gpt-5.6', 'zai/glm-5.3-flash']),
+    );
+    mockJoinedEffortMap(
+      new Map(),
+      new Map([['openai/gpt-5.6', 400_000]]),
+    );
+    const { GET } = await import('./route');
+    const res = await GET();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.models).toEqual([
+      {
+        id: 'openai/gpt-5.6',
+        label: 'gpt-5.6',
+        reasoningOptions: [],
+        contextWindow: 400_000,
+      },
+      // Unpublished → the field is simply absent (host falls back to the
+      // conservative default; never a fabricated window).
+      { id: 'zai/glm-5.3-flash', label: 'glm-5.3-flash', reasoningOptions: [] },
     ]);
   });
 });

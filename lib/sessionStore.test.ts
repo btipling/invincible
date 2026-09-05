@@ -106,6 +106,69 @@ describe('formatPromptWithHistory', () => {
     expect(out).toContain('Tool: read_file');
     expect(out).toContain('User: continue');
   });
+
+  it('row 9 (plan #944) — the 400-message intelligence cap is retired to a generous row rail', () => {
+    const many = Array.from({ length: 2_000 }, (_, i) =>
+      makeMessage('user', `m${i}`),
+    );
+    // No maxMessages opt: the fold keeps all 2000 rows (well under the rail).
+    const out = formatPromptWithHistory(many, 'continue');
+    expect(out).toContain('User: m0');
+    expect(out).toContain('User: m1999');
+    // A legacy maxMessages opt still tightens the rail for call sites.
+    const clamped = formatPromptWithHistory(many, 'continue', {
+      maxMessages: 10,
+    });
+    expect(clamped).not.toContain('User: m0');
+    expect(clamped).toContain('User: m1999');
+  });
+
+  it('row 9 (plan #944) — token budget: a small contextWindow trims OLDEST history first; newest + ask survive', () => {
+    const fat = 'b'.repeat(400); // 100 tokens estimated
+    const history = [
+      makeMessage('user', fat),
+      makeMessage('user', fat),
+      makeMessage('user', fat),
+      makeMessage('user', 'latest'),
+    ];
+    // 160k window → 16.5% … reserve floor 16384 → budget 143_616 tokens —
+    // far above 400 tokens; nothing trims (default still huge).
+    const full = formatPromptWithHistory(history, 'continue');
+    expect(full).toContain(fat);
+    // Force the token trim with a small window: budget = 1600 − 16384 < 0 →
+    // floored to 1 token, so every history row trims away but the ASK survives.
+    const out = formatPromptWithHistory(history, 'continue', {
+      contextWindow: 1_600,
+    });
+    expect(out).toContain('User: continue');
+    expect(out).not.toContain(fat);
+  });
+
+  it('row 9 (plan #944) — a mid-size window keeps a newest suffix, not a full wipe', () => {
+    const fat = 'b'.repeat(400); // ~100 tokens estimated per row
+    const history = Array.from({ length: 80 }, (_, i) =>
+      makeMessage('user', `${fat}-${i}`),
+    );
+    // 20k window → reserve floor 16384 → budget 3616 tokens ≈ 14k chars.
+    // 80 fat rows overflow that; the newest rows + ask must survive, oldest
+    // must not (binary-search cut, adversarial #945).
+    const out = formatPromptWithHistory(history, 'continue', {
+      contextWindow: 20_000,
+    });
+    expect(out).toContain('User: continue');
+    expect(out).toContain(`${fat}-79`);
+    expect(out).not.toContain(`${fat}-0`);
+  });
+
+  it('row 9 (plan #944) — the fold NEVER drops the current ask, even when it alone exceeds the budget', () => {
+
+    const hugeAsk = 'a'.repeat(400_000);
+    const history = [makeMessage('user', 'hi')];
+    const out = formatPromptWithHistory(history, hugeAsk, {
+      contextWindow: 1_000,
+    });
+    expect(out).toContain(`User: ${hugeAsk}`);
+  });
 });
 
 describe('session cwd', () => {

@@ -5,6 +5,17 @@
  * this inside a `'use step'` / `'use workflow'` function; `/api/models` and
  * the turn-start HTTP boundary are the only callers. Fail-open to an empty map.
  *
+ * The same two sources also publish a per-model **context window** (plan
+ * #944): Gateway list `context_window` (REST `data[].context_window`; the
+ * endpoints resource's `context_length` is accepted as an alias — never
+ * `max_tokens`, which is the output cap) and models.dev `limit.context` —
+ * parsed into parallel window maps (`getJoinedWindowMap`) with the same
+ * TTL / fail-open / negative-cache discipline. **One GET per source**
+ * parses both the effort list and the window (adversarial #945) —
+ * `/api/models` must not hit each URL twice. Unknown id → the caller
+ * applies the documented conservative default (`lib/agent/contextWindow.ts`),
+ * never a fabricated window.
+ *
  * Failures (throw / HTTP !ok / abort / oversize overlay) are **negatively
  * cached** for the same TTL as a success so a hung catalog cannot stall every
  * `/api/turns` start. Overlapping callers share one in-flight GET per source
@@ -22,6 +33,59 @@ import {
 export const GATEWAY_MODELS_URL = 'https://ai-gateway.vercel.sh/v1/models';
 export const MODELS_DEV_URL = 'https://models.dev/api.json';
 
+/**
+ * Parse a catalog row's published context window into a positive integer
+ * token count (plan #944; adversarial #945). Gateway `GET /v1/models` publishes
+ * `context_window` (REST `data[].context_window`). The endpoints resource
+ * publishes `context_length` — accepted as an alias so a mixed payload still
+ * parses. **Never `max_tokens`** (that is the output cap, often 16k).
+ * models.dev publishes `limit.context` via `parseModelsDevContextWindow`.
+ * Accepts a number (integer > 0) or a numeric string; everything else
+ * (0, negative, fractional, NaN, garbage) → `undefined` (fail-closed — the
+ * caller falls back to the conservative default, never a fabricated window).
+ * When both aliases are present, `context_window` wins. Deliberately no
+ * `% of window` math here (the #547 honesty lock): this is a real published
+ * maximum or nothing.
+ */
+export function parseContextWindow(row: unknown): number | undefined {
+  if (row == null || typeof row !== 'object') return undefined;
+  const o = row as { context_window?: unknown; context_length?: unknown };
+  return positiveIntWindow(o.context_window) ?? positiveIntWindow(o.context_length);
+}
+
+/** Positive integer token count; rejects 0 / negative / fractional / NaN / Infinity. */
+function positiveIntWindow(raw: unknown): number | undefined {
+  if (typeof raw === 'number' && Number.isInteger(raw) && raw > 0) return raw;
+  if (typeof raw === 'string' && /^[0-9]+$/.test(raw)) {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return undefined;
+}
+
+/**
+ * Parse a models.dev row's `limit.context` window (plan #944). Same
+ * fail-closed rule as `parseContextWindow`; the models.dev shape nests the
+ * window under `limit`.
+ */
+export function parseModelsDevContextWindow(row: unknown): number | undefined {
+  if (row == null || typeof row !== 'object') return undefined;
+  const limit = (row as { limit?: unknown }).limit;
+  if (limit == null || typeof limit !== 'object') return undefined;
+  const context = (limit as { context?: unknown }).context;
+  if (typeof context === 'number' && Number.isInteger(context) && context > 0) {
+    return context;
+  }
+  if (
+    typeof context === 'string' &&
+    /^[0-9]+$/.test(context) &&
+    Number.parseInt(context, 10) > 0
+  ) {
+    return Number.parseInt(context, 10);
+  }
+  return undefined;
+}
+
 export type FetchImpl = (
   input: string,
   init?: { signal?: AbortSignal; redirect?: RequestRedirect },
@@ -33,19 +97,90 @@ export type FetchImpl = (
   body?: ReadableStream<Uint8Array> | null;
 }>;
 
-type CacheEntry = { fetchedAt: number; map: Map<string, string[]> };
+/** Model id → published context window in tokens (plan #944). */
+export type WindowMap = Map<string, number>;
 
-let cache: CacheEntry | null = null;
-let inflight: Promise<Map<string, string[]>> | null = null;
-let overlayCache: CacheEntry | null = null;
-let overlayInflight: Promise<Map<string, string[]>> | null = null;
+/** One Gateway / models.dev GET parses both effort and window maps. */
+type SourceBundle = {
+  fetchedAt: number;
+  effort: Map<string, string[]>;
+  windows: WindowMap;
+};
+
+let gatewayBundle: SourceBundle | null = null;
+let gatewayBundleInflight: Promise<SourceBundle> | null = null;
+let overlayBundle: SourceBundle | null = null;
+let overlayBundleInflight: Promise<SourceBundle> | null = null;
 
 /** Test-only: drop Gateway + overlay caches and in-flight GETs. */
 export function resetGatewayModelsCache(): void {
-  cache = null;
-  inflight = null;
-  overlayCache = null;
-  overlayInflight = null;
+  gatewayBundle = null;
+  gatewayBundleInflight = null;
+  overlayBundle = null;
+  overlayBundleInflight = null;
+}
+
+/**
+ * Parse Gateway `/v1/models` JSON into model-id → published context window
+ * (plan #944; adversarial #945). Rows without a parseable `context_window`
+ * (or `context_length` alias) are ABSENT from the map (never a fabricated
+ * default inside the catalog — the default lives in `contextWindowForModel`).
+ * Ignores `max_tokens` and everything else on the row.
+ */
+export function parseGatewayWindowMap(payload: unknown): WindowMap {
+  const out: WindowMap = new Map();
+  if (payload == null || typeof payload !== 'object') return out;
+  const data = (payload as { data?: unknown }).data;
+  if (!Array.isArray(data)) return out;
+  for (const row of data) {
+    if (row == null || typeof row !== 'object') continue;
+    const id = (row as { id?: unknown }).id;
+    if (typeof id !== 'string' || !id.trim()) continue;
+    const w = parseContextWindow(row);
+    if (w !== undefined) out.set(id, w);
+  }
+  return out;
+}
+
+/**
+ * Parse models.dev `api.json` → `vercel.models` `limit.context` windows
+ * (plan #944). Object keys are Gateway ids; lab maps ignored; a row with no
+ * parseable window is simply absent from the map.
+ */
+export function parseModelsDevWindowMap(payload: unknown): WindowMap {
+  const out: WindowMap = new Map();
+  if (payload == null || typeof payload !== 'object' || Array.isArray(payload)) {
+    return out;
+  }
+  const vercel = (payload as { vercel?: unknown }).vercel;
+  if (vercel == null || typeof vercel !== 'object' || Array.isArray(vercel)) {
+    return out;
+  }
+  const models = (vercel as { models?: unknown }).models;
+  if (models == null || typeof models !== 'object' || Array.isArray(models)) {
+    return out;
+  }
+  for (const [id, row] of Object.entries(models as Record<string, unknown>)) {
+    if (!id.trim()) continue;
+    const w = parseModelsDevContextWindow(row);
+    if (w !== undefined) out.set(id, w);
+  }
+  return out;
+}
+
+/**
+ * Overlay fills a missing Gateway window; a published Gateway window WINS
+ * disagreements (same precedence as the effort join — Gateway is primary).
+ */
+export function joinWindowMaps(
+  overlay: WindowMap,
+  gateway: WindowMap,
+): WindowMap {
+  const out: WindowMap = new Map(gateway);
+  for (const [id, w] of overlay) {
+    if (!out.has(id)) out.set(id, w);
+  }
+  return out;
 }
 
 /**
@@ -138,17 +273,16 @@ function effortValuesFromRow(row: object): string[] {
   return values;
 }
 
-async function fetchGatewayEffortMap(
+async function fetchGatewayPayload(
   fetchImpl: FetchImpl,
-): Promise<Map<string, string[]>> {
+): Promise<unknown> {
   const res = await fetchImpl(GATEWAY_MODELS_URL, {
     signal: AbortSignal.timeout(GATEWAY_MODELS_FETCH_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(`gateway models HTTP ${res.status ?? 'error'}`);
   }
-  const payload = await res.json();
-  return parseGatewayEffortMap(payload);
+  return res.json();
 }
 
 async function readCappedUtf8(stream: ReadableStream<Uint8Array>): Promise<string> {
@@ -209,9 +343,9 @@ async function payloadFromModelsDevResponse(res: {
   return res.json();
 }
 
-async function fetchModelsDevEffortMap(
+async function fetchModelsDevPayload(
   fetchImpl: FetchImpl,
-): Promise<Map<string, string[]>> {
+): Promise<unknown> {
   const res = await fetchImpl(MODELS_DEV_URL, {
     signal: AbortSignal.timeout(GATEWAY_MODELS_FETCH_TIMEOUT_MS),
     redirect: 'error',
@@ -219,77 +353,102 @@ async function fetchModelsDevEffortMap(
   if (!res.ok) {
     throw new Error(`models.dev HTTP ${res.status ?? 'error'}`);
   }
-  const payload = await payloadFromModelsDevResponse(res);
-  return parseModelsDevEffortMap(payload);
+  return payloadFromModelsDevResponse(res);
 }
 
-function loadCachedMap(
-  entry: CacheEntry | null,
-  now: number,
-): Map<string, string[]> | null {
+function loadBundle(entry: SourceBundle | null, now: number): SourceBundle | null {
   if (entry && now - entry.fetchedAt < GATEWAY_MODELS_CACHE_TTL_MS) {
-    return entry.map;
+    return entry;
   }
   return null;
 }
 
+function emptyBundle(now: number): SourceBundle {
+  return { fetchedAt: now, effort: new Map(), windows: new Map() };
+}
+
 /**
  * Best-effort per-instance catalog. TTL `GATEWAY_MODELS_CACHE_TTL_MS`.
- * Fetch/parse/timeout failure → last good map, else empty (never throws).
+ * Fetch/parse/timeout failure → last good bundle, else empty (never throws).
  * Failed fetches write that fallback into cache so the next caller within
  * TTL does not retry the GET (adversarial-review #899 L5).
+ * One GET parses effort + window (adversarial #945).
  */
+async function getGatewayBundle(opts?: {
+  fetchImpl?: FetchImpl;
+  now?: () => number;
+}): Promise<SourceBundle> {
+  const now = (opts?.now ?? Date.now)();
+  const hit = loadBundle(gatewayBundle, now);
+  if (hit) return hit;
+  if (gatewayBundleInflight) return gatewayBundleInflight;
+
+  const fetchImpl = opts?.fetchImpl ?? (globalThis.fetch as FetchImpl);
+  gatewayBundleInflight = (async () => {
+    try {
+      const payload = await fetchGatewayPayload(fetchImpl);
+      const bundle: SourceBundle = {
+        fetchedAt: now,
+        effort: parseGatewayEffortMap(payload),
+        windows: parseGatewayWindowMap(payload),
+      };
+      gatewayBundle = bundle;
+      return bundle;
+    } catch {
+      const fallback = gatewayBundle ?? emptyBundle(now);
+      gatewayBundle = { ...fallback, fetchedAt: now };
+      return gatewayBundle;
+    } finally {
+      gatewayBundleInflight = null;
+    }
+  })();
+  return gatewayBundleInflight;
+}
+
 export async function getGatewayEffortMap(opts?: {
   fetchImpl?: FetchImpl;
   now?: () => number;
 }): Promise<Map<string, string[]>> {
-  const now = (opts?.now ?? Date.now)();
-  const hit = loadCachedMap(cache, now);
-  if (hit) return hit;
-  if (inflight) return inflight;
-
-  const fetchImpl = opts?.fetchImpl ?? (globalThis.fetch as FetchImpl);
-  inflight = (async () => {
-    try {
-      const map = await fetchGatewayEffortMap(fetchImpl);
-      cache = { fetchedAt: now, map };
-      return map;
-    } catch {
-      const fallback = cache?.map ?? new Map();
-      cache = { fetchedAt: now, map: fallback };
-      return fallback;
-    } finally {
-      inflight = null;
-    }
-  })();
-  return inflight;
+  return (await getGatewayBundle(opts)).effort;
 }
 
 /** models.dev `vercel.models` overlay — same TTL / fail-open / negative-cache. */
+async function getModelsDevBundle(opts?: {
+  fetchImpl?: FetchImpl;
+  now?: () => number;
+}): Promise<SourceBundle> {
+  const now = (opts?.now ?? Date.now)();
+  const hit = loadBundle(overlayBundle, now);
+  if (hit) return hit;
+  if (overlayBundleInflight) return overlayBundleInflight;
+
+  const fetchImpl = opts?.fetchImpl ?? (globalThis.fetch as FetchImpl);
+  overlayBundleInflight = (async () => {
+    try {
+      const payload = await fetchModelsDevPayload(fetchImpl);
+      const bundle: SourceBundle = {
+        fetchedAt: now,
+        effort: parseModelsDevEffortMap(payload),
+        windows: parseModelsDevWindowMap(payload),
+      };
+      overlayBundle = bundle;
+      return bundle;
+    } catch {
+      const fallback = overlayBundle ?? emptyBundle(now);
+      overlayBundle = { ...fallback, fetchedAt: now };
+      return overlayBundle;
+    } finally {
+      overlayBundleInflight = null;
+    }
+  })();
+  return overlayBundleInflight;
+}
+
 export async function getModelsDevEffortMap(opts?: {
   fetchImpl?: FetchImpl;
   now?: () => number;
 }): Promise<Map<string, string[]>> {
-  const now = (opts?.now ?? Date.now)();
-  const hit = loadCachedMap(overlayCache, now);
-  if (hit) return hit;
-  if (overlayInflight) return overlayInflight;
-
-  const fetchImpl = opts?.fetchImpl ?? (globalThis.fetch as FetchImpl);
-  overlayInflight = (async () => {
-    try {
-      const map = await fetchModelsDevEffortMap(fetchImpl);
-      overlayCache = { fetchedAt: now, map };
-      return map;
-    } catch {
-      const fallback = overlayCache?.map ?? new Map();
-      overlayCache = { fetchedAt: now, map: fallback };
-      return fallback;
-    } finally {
-      overlayInflight = null;
-    }
-  })();
-  return overlayInflight;
+  return (await getModelsDevBundle(opts)).effort;
 }
 
 /** Overlay fills Gateway holes. Each source fail-opens independently. */
@@ -311,4 +470,49 @@ export async function effortValuesForModel(
 ): Promise<string[]> {
   const map = await getJoinedEffortMap(opts);
   return map.get(modelId) ?? [];
+}
+
+/** Load the Gateway window map (plan #944) — same TTL / negative-cache shape. */
+export async function getGatewayWindowMap(opts?: {
+  fetchImpl?: FetchImpl;
+  now?: () => number;
+}): Promise<WindowMap> {
+  return (await getGatewayBundle(opts)).windows;
+}
+
+/** Load the models.dev overlay window map — same shape, streaming-capped body. */
+export async function getModelsDevWindowMap(opts?: {
+  fetchImpl?: FetchImpl;
+  now?: () => number;
+}): Promise<WindowMap> {
+  return (await getModelsDevBundle(opts)).windows;
+}
+
+/**
+ * Joined per-model context-window map (plan #944) — Gateway primary, models.dev
+ * overlay fills holes; each source fail-opens independently to an empty map.
+ * Route/start-boundary callers only (never inside `'use step'`).
+ */
+export async function getJoinedWindowMap(opts?: {
+  fetchImpl?: FetchImpl;
+  now?: () => number;
+}): Promise<WindowMap> {
+  const [overlay, gateway] = await Promise.all([
+    getModelsDevWindowMap(opts),
+    getGatewayWindowMap(opts),
+  ]);
+  return joinWindowMaps(overlay, gateway);
+}
+
+/**
+ * The published context window for one model id (plan #944), or `undefined`
+ * when neither source publishes one — the caller applies the conservative
+ * default (`contextWindowForModel`), never the catalog.
+ */
+export async function contextWindowForModelId(
+  modelId: string,
+  opts?: { fetchImpl?: FetchImpl; now?: () => number },
+): Promise<number | undefined> {
+  const map = await getJoinedWindowMap(opts);
+  return map.get(modelId);
 }

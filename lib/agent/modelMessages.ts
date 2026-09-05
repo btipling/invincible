@@ -45,14 +45,22 @@
  * projection is its own session-bound Blob object; only the object id rides
  * `meta.modelMessagesPointer` (never the 1 MiB envelope meta).
  *
+ * Plan #944: the durable-turn SEED additionally trims to the model's
+ * window-derived token budget (`trimModelMessagesToBudget`) at the route
+ * boundary, under the same drop-oldest/re-pair invariants. The current
+ * ask is the turn's `userMessage`, not the newest seed row (adversarial #945).
+ *
  * Pure, server/client-safe, never throws — malformed rows fail closed to a
  * dropped/truncated projection. No I/O, no store, no secrets. Byte-length uses
  * `TextEncoder` (not Node `Buffer`) so the Workflows canvas can call this from
  * `derivePersistFold` — Vercel Workflows has no `Buffer` global.
  */
 import {
+  CONTEXT_CHARS_PER_TOKEN,
   MODEL_MSG_CHECKPOINT_MAX_BYTES,
   MODEL_MSG_CHECKPOINT_MAX_ROWS,
+  MODEL_MSG_SEED_MAX_BYTES,
+  MODEL_MSG_SEED_MAX_ROWS,
   MODEL_MSG_TOOL_RESULT_MAX_CHARS,
 } from '../sessionCloudCaps';
 
@@ -253,3 +261,89 @@ export function buildModelMessages(
 
   return { rows: rePairModelMessages(rows), truncated };
 }
+
+/**
+ * Token-budget trim of the durable-turn seed (plan #944, source #551 — A3
+ * fold budget; adversarial #945). Given an already-projected `ModelMessageRow[]`,
+ * drop OLDEST rows until the serialized seed satisfies ALL THREE rails:
+ *  - the **token budget** (`budgetTokens`, = window − reserve, estimated via
+ *    the documented chars-per-token ratio over the **serialized seed** plus
+ *    the current `userMessage` that the loop appends after the seed),
+ *  - the **row rail** (`maxRows` — pathological count bound, not the payload
+ *    mechanism), and
+ *  - the **byte rail** (`maxBytes` — the Workflow run-arg carrier bound).
+ *
+ * The current ask is `userMessage`, NOT the newest seed row. When
+ * `currentUserContent` is provided, history may trim to `[]` so the ask
+ * still fits (the host fold already drops every history row to keep the
+ * ask). Without it, keep at least the newest seed row (unit fixtures /
+ * no-ask callers). A single oversized ask is still sent — it is not in
+ * `rows` and is never dropped here. After the trim, re-pair (orphan
+ * tool-results dropped, assistant `toolCalls` with no remaining result
+ * stripped) so a strict provider never sees an open call. Pure, never throws.
+ *
+ * Cut is a binary search over the suffix start (adversarial #945): `allowed(i)`
+ * for `rows[i:]` is monotonic, so this is O(log n) serializations, never one
+ * `JSON.stringify` per dropped row (a 4096 × 2k-char seed was 17s on the
+ * `POST /api/turns` start path with the linear shift).
+ */
+export function trimModelMessagesToBudget(
+  rows: ReadonlyArray<ModelMessageRow>,
+  budgetTokens: number,
+  opts?: {
+    maxRows?: number;
+    maxBytes?: number;
+    /** Override the estimator ratio (tests). Defaults to CONTEXT_CHARS_PER_TOKEN. */
+    charsPerToken?: number;
+    /**
+     * Current turn's user message (appended after the seed as `userMessage`).
+     * Counted in the token rail; never part of `rows`. Presence allows the
+     * seed to trim to [] so history yields to the ask (adversarial #945).
+     */
+    currentUserContent?: string;
+  },
+): { rows: ModelMessageRow[]; truncated: boolean } {
+  const maxRows = opts?.maxRows ?? MODEL_MSG_SEED_MAX_ROWS;
+  const maxBytes = opts?.maxBytes ?? MODEL_MSG_SEED_MAX_BYTES;
+  const ratio =
+    opts?.charsPerToken && opts.charsPerToken > 0
+      ? opts.charsPerToken
+      : CONTEXT_CHARS_PER_TOKEN;
+  const askChars =
+    typeof opts?.currentUserContent === 'string' ? opts.currentUserContent.length : 0;
+  // When the current ask is in the estimate, history may go to zero (host
+  // fold already does this). No-ask callers keep at least the newest seed row.
+  const minKeep = typeof opts?.currentUserContent === 'string' ? 0 : 1;
+
+  const n = rows.length;
+  if (n === 0) return { rows: [], truncated: false };
+  const maxStart = Math.max(0, n - minKeep);
+
+  const allowed = (i: number): boolean => {
+    // Forced keep / empty: the newest minKeep rows (or []) always survive,
+    // even when a single leftover row still exceeds a rail (row 14).
+    if (i >= maxStart) return true;
+    const slice = rows.slice(i);
+    if (slice.length > maxRows) return false;
+    const json = JSON.stringify(slice);
+    if (Math.ceil((json.length + askChars) / ratio) > budgetTokens) return false;
+    if (utf8Bytes(json) > maxBytes) return false;
+    return true;
+  };
+
+  let start = 0;
+  if (!allowed(0)) {
+    let lo = 0;
+    let hi = maxStart;
+    while (lo < hi) {
+      const mid = lo + ((hi - lo) >> 1);
+      if (allowed(mid)) hi = mid;
+      else lo = mid + 1;
+    }
+    start = lo;
+  }
+
+  const out = start === 0 ? [...rows] : rows.slice(start);
+  return { rows: rePairModelMessages(out), truncated: start > 0 };
+}
+
