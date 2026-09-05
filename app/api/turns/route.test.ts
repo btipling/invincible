@@ -1290,7 +1290,7 @@ describe('POST /api/turns', () => {
     const res = await postJson({ prompt: 'use what you found', sessionId: 's1' });
     expect(res.status).toBe(503);
     const json = await res.json();
-    expect(json.error).toMatch(/model-messages seed/i);
+    expect(json.error).toMatch(/session seed/i);
     expect(startMock).not.toHaveBeenCalled();
   });
 
@@ -1660,7 +1660,7 @@ describe('POST /api/turns', () => {
     const res = await postJson({ prompt: 'use what you found', sessionId: 's1' });
     expect(res.status).toBe(503);
     const json = await res.json();
-    expect(json.error).toMatch(/model-messages seed/i);
+    expect(json.error).toMatch(/session seed/i);
     expect(startMock).not.toHaveBeenCalled();
   });
 
@@ -1679,7 +1679,7 @@ describe('POST /api/turns', () => {
     expect(blobReadMock).not.toHaveBeenCalled();
   });
 
-  it('plan #949 row 2h — an over-budget checkpoint seed is token-trimmed with the summary row first to drop (history yields to the ask)', async () => {
+  it('plan #949 row 2h — when the summary row itself cannot fit, the seed yields to the ask', async () => {
     standardHarness();
     mockAuthedSession();
     mockStart();
@@ -1710,10 +1710,60 @@ describe('POST /api/turns', () => {
     const res = await postJson({ prompt: 'continue', sessionId: 's1' });
     expect(res.status).toBe(200);
     const startArgs = startMock.mock.calls[0][1][0];
-    // Budget = 800 − max(16384, ~250) → floored to 1 token; the current ask
-    // rides userMessage and is counted in the rail → the seed trims to []
-    // (the summary row is the OLDEST row and drops first).
+    // Budget = 800 − max(16384, ~250) → floored to 1 token; the summary row
+    // itself cannot fit with the ask, so Goal 4 yields (seed → []).
     expect(startArgs.priorMessages).toEqual([]);
+    expect(startArgs.userMessage).toBe('continue');
+  });
+
+  it('adversarial #954 — Goal 4 summary row is pinned when a fat tail fills the leftover budget', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    const checkpoint = {
+      summary: 'auth model is X — do not revert',
+      filesTouched: ['lib/auth.ts'],
+      retainedTail: [
+        { role: 'user', content: 'OLD_TAIL ' + 'x'.repeat(20_000) },
+        { role: 'user', content: 'newest ask in tail' },
+      ],
+    };
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        compactionPointer: 't_cp_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(JSON.stringify(checkpoint));
+    // 20k window → budget = 20000 − 16384 = 3616 tokens. Summary fits;
+    // summary + 20k-char oldest tail does not. Combined-seed drop-oldest
+    // would have dropped the honesty row; pin keeps it and trims the tail.
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      getJoinedWindowMap: vi.fn(async () => new Map([['anthropic/claude-a', 20_000]])),
+      effortValuesForModel: vi.fn(async () => []),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'continue', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.priorMessages.length).toBeGreaterThanOrEqual(1);
+    const summaryRow = startArgs.priorMessages[0];
+    expect(summaryRow.role).toBe('user');
+    expect(summaryRow.content).toContain(
+      'Summary of earlier session (compacted, not live assistant prose):',
+    );
+    expect(summaryRow.content).toContain('auth model is X — do not revert');
+    expect(summaryRow.content).toContain('lib/auth.ts');
+    expect(startArgs.priorMessages.some((r: { content?: string }) => r.content?.includes('OLD_TAIL'))).toBe(
+      false,
+    );
+    expect(startArgs.priorMessages.at(-1)).toEqual({
+      role: 'user',
+      content: 'newest ask in tail',
+    });
     expect(startArgs.userMessage).toBe('continue');
   });
 

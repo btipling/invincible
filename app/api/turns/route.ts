@@ -436,30 +436,46 @@ export async function POST(req: Request): Promise<Response> {
                       },
                       tail,
                     );
-                    const seed = [
-                      renderSummaryRow(
-                        checkpoint.summary,
-                        checkpoint.filesTouched,
-                      ),
-                      ...checkpoint.retainedTail,
-                    ];
-                    // Plan #944 / adversarial #945: trim the seed to the
+                    const summaryRow = renderSummaryRow(
+                      checkpoint.summary,
+                      checkpoint.filesTouched,
+                    );
+                    // Plan #944 / adversarial #945 + #954: trim to the
                     // model's window-derived token budget (+ row/byte
-                    // rails) at the route boundary — drop oldest, re-pair.
-                    // The current ask is `parsed.prompt` (appended after
-                    // the seed as userMessage); it is counted in the token
-                    // rail so history yields to it. The summary row is the
-                    // OLDEST row in this seed — an extreme rail miss may
-                    // drop it (its content is duplicated inside the
-                    // checkpoint's baked-in overflow marker, and the
-                    // honesty lock holds: what survives is never framed
-                    // as live prose).
+                    // rails). The current ask is `parsed.prompt`
+                    // (appended after the seed as userMessage) and is
+                    // counted in the token rail so history yields to it.
+                    // Goal 4 pin (adversarial #954 Major): the honesty-
+                    // labeled summary row is NOT oldest-disposable
+                    // context. The Phase-1 overflow markers live *inside*
+                    // that row (`… [summary truncated]` / omitted-count)
+                    // and do not duplicate it. Trim the retained tail
+                    // against leftover budget (summary serialization
+                    // reserved in the ask rail). Yield to the ask only
+                    // when the summary row itself cannot fit.
                     const windowMap = await windowPromise;
-                    priorMessages = trimModelMessagesToBudget(
-                      seed,
-                      foldBudgetTokens(windowMap, byok.modelId),
-                      { currentUserContent: parsed.prompt },
-                    ).rows;
+                    const budget = foldBudgetTokens(windowMap, byok.modelId);
+                    const trimOpts = { currentUserContent: parsed.prompt };
+                    const summaryFits =
+                      trimModelMessagesToBudget([summaryRow], budget, trimOpts)
+                        .rows.length > 0;
+                    if (summaryFits) {
+                      const summaryChars = JSON.stringify([summaryRow]).length;
+                      const trimmedTail = trimModelMessagesToBudget(
+                        checkpoint.retainedTail,
+                        budget,
+                        {
+                          currentUserContent: `${parsed.prompt}${'x'.repeat(summaryChars)}`,
+                        },
+                      ).rows;
+                      priorMessages = [summaryRow, ...trimmedTail];
+                    } else {
+                      priorMessages = trimModelMessagesToBudget(
+                        [summaryRow, ...checkpoint.retainedTail],
+                        budget,
+                        trimOpts,
+                      ).rows;
+                    }
                   }
                 }
               }
@@ -507,7 +523,7 @@ export async function POST(req: Request): Promise<Response> {
             return Response.json(
               {
                 error:
-                  'Unable to read the model-messages seed for this session (fail closed).',
+                  'Unable to read the session seed for this session (fail closed).',
               },
               { status: 503 },
             );
