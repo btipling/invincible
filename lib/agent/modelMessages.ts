@@ -138,8 +138,14 @@ function collectCallIds(rows: ReadonlyArray<unknown>): Set<string> {
 /**
  * After a cap trim, drop tool rows whose call is gone and strip assistant
  * `toolCalls` that no longer have a result (Goal 4 / adversarial-review #937).
+ *
+ * Exported for the compaction cut walk (plan #948, source #552 — A4 phase 1):
+ * `findCompactionCut` re-pairs BOTH the compaction span and the retained tail
+ * with this same invariant so a cut never leaves an orphan tool-result or an
+ * open assistant call on either side. Behavior unchanged — a re-export of the
+ * locked #937 rule, never a fork.
  */
-function rePairModelMessages(rows: ModelMessageRow[]): ModelMessageRow[] {
+export function rePairModelMessages(rows: ModelMessageRow[]): ModelMessageRow[] {
   const callIds = collectCallIds(rows);
   const withTools: ModelMessageRow[] = [];
   const resultIds = new Set<string>();
