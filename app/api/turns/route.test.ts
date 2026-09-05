@@ -183,6 +183,7 @@ describe('POST /api/turns', () => {
       overlayWorkerMeta: overlayWorkerMetaMock,
     }));
     vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      getJoinedWindowMap: vi.fn(async () => new Map()),
       effortValuesForModel: vi.fn(async () => []),
     }));
   }
@@ -340,6 +341,7 @@ describe('POST /api/turns', () => {
         })),
       };
       vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+        getJoinedWindowMap: vi.fn(async () => new Map()),
         effortValuesForModel: vi.fn(async () => [
           'none',
           'low',
@@ -385,6 +387,7 @@ describe('POST /api/turns', () => {
         })),
       };
       vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+        getJoinedWindowMap: vi.fn(async () => new Map()),
         effortValuesForModel: vi.fn(async () => ['low', 'high', 'xhigh']),
       }));
       ({ POST } = await import('./route'));
@@ -455,6 +458,7 @@ describe('POST /api/turns', () => {
         })),
       };
       vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+        getJoinedWindowMap: vi.fn(async () => new Map()),
         effortValuesForModel: vi.fn(async () => ['high', 'xhigh']),
       }));
       ({ POST } = await import('./route'));
@@ -1406,5 +1410,71 @@ describe('POST /api/turns', () => {
       { role: 'tool', toolName: 'read_file', toolCallId: 'kept', result: 'bytes' },
     ]);
     expect(startArgs.userMessage).toBe('use it');
+  });
+
+  // --- Plan #944 (source #551) seed-trim rows (testing rows 7–8) ---
+
+  it('plan #944 row 7 — an over-budget projection is token-trimmed (drop oldest) before start(); the newest row survives', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    const fat = 'b'.repeat(1_000);
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(
+      JSON.stringify([
+        { role: 'user', content: fat },
+        { role: 'assistant', delta: { text: fat } },
+        { role: 'user', content: 'newest ask' },
+      ]),
+    );
+    // A small published window → tiny fold budget → the trim fires, but the
+    // newest row must always survive.
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      getJoinedWindowMap: vi.fn(async () => new Map([['anthropic/claude-a', 800]])),
+      effortValuesForModel: vi.fn(async () => []),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'continue', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    // Budget = 800 − max(16384, 120) → floored ≥ 1 token: all history trims
+    // away except the newest row; the current ask rides userMessage.
+    expect(startArgs.priorMessages).toEqual([{ role: 'user', content: 'newest ask' }]);
+    expect(startArgs.userMessage).toBe('continue');
+  });
+
+  it('plan #944 row 8 — an under-budget projection passes through intact (default window; trim is inert)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    const projection = [
+      { role: 'user', content: 'old' },
+      { role: 'user', content: 'newest ask' },
+    ];
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(JSON.stringify(projection));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'go', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    // Empty window map → conservative default (200k) → budget 170k tokens:
+    // this tiny projection is untouched by the trim.
+    expect(startArgs.priorMessages).toEqual(projection);
   });
 });

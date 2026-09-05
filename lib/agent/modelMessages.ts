@@ -45,14 +45,21 @@
  * projection is its own session-bound Blob object; only the object id rides
  * `meta.modelMessagesPointer` (never the 1 MiB envelope meta).
  *
+ * Plan #944: the durable-turn SEED additionally trims to the model's
+ * window-derived token budget (`trimModelMessagesToBudget`) at the route
+ * boundary, under the same drop-oldest/re-pair invariants.
+ *
  * Pure, server/client-safe, never throws — malformed rows fail closed to a
  * dropped/truncated projection. No I/O, no store, no secrets. Byte-length uses
  * `TextEncoder` (not Node `Buffer`) so the Workflows canvas can call this from
  * `derivePersistFold` — Vercel Workflows has no `Buffer` global.
  */
 import {
+  CONTEXT_CHARS_PER_TOKEN,
   MODEL_MSG_CHECKPOINT_MAX_BYTES,
   MODEL_MSG_CHECKPOINT_MAX_ROWS,
+  MODEL_MSG_SEED_MAX_BYTES,
+  MODEL_MSG_SEED_MAX_ROWS,
   MODEL_MSG_TOOL_RESULT_MAX_CHARS,
 } from '../sessionCloudCaps';
 
@@ -252,4 +259,75 @@ export function buildModelMessages(
   }
 
   return { rows: rePairModelMessages(rows), truncated };
+}
+
+/**
+ * Token-budget trim of the durable-turn seed (plan #944, source #551 — A3
+ * fold budget). Given an already-projected `ModelMessageRow[]`, drop OLDEST
+ * rows until the serialized seed satisfies ALL THREE rails:
+ *  - the **token budget** (`budgetTokens`, = window − reserve, estimated via
+ *    the documented chars-per-token ratio),
+ *  - the **row rail** (`maxRows` — pathological count bound, not the payload
+ *    mechanism), and
+ *  - the **byte rail** (`maxBytes` — the Workflow run-arg carrier bound).
+ *
+ * Never drops the NEWEST row (the current ask must always survive — the
+ * budget trims history, not the current turn; a single oversized newest row
+ * is sent as-is). After the trim, re-pair (orphan tool-results dropped,
+ * assistant `toolCalls` with no remaining result stripped) so a strict
+ * provider never sees an open call — the locked `rePairModelMessages`
+ * invariant. Pure, never throws.
+ */
+export function trimModelMessagesToBudget(
+  rows: ReadonlyArray<ModelMessageRow>,
+  budgetTokens: number,
+  opts?: {
+    maxRows?: number;
+    maxBytes?: number;
+    /** Override the estimator ratio (tests). Defaults to CONTEXT_CHARS_PER_TOKEN. */
+    charsPerToken?: number;
+  },
+): { rows: ModelMessageRow[]; truncated: boolean } {
+  const maxRows = opts?.maxRows ?? MODEL_MSG_SEED_MAX_ROWS;
+  const maxBytes = opts?.maxBytes ?? MODEL_MSG_SEED_MAX_BYTES;
+  const ratio =
+    opts?.charsPerToken && opts.charsPerToken > 0
+      ? opts.charsPerToken
+      : CONTEXT_CHARS_PER_TOKEN;
+
+  let out = [...rows];
+  let truncated = false;
+  let tokens = -1;
+
+  const overBudget = (): boolean => {
+    if (out.length === 0) return false;
+    let chars = 0;
+    for (const r of out) {
+      if (r.role === 'user') chars += r.content.length;
+      else if (r.role === 'assistant') chars += r.delta.text.length;
+      else if (r.role === 'tool') chars += r.role.length + r.toolName.length + r.toolCallId.length + ('result' in r ? r.result.length : r.error.length);
+    }
+    tokens = Math.ceil(chars / ratio);
+    return tokens > budgetTokens;
+  };
+
+  // Drop OLDEST rows until under the token budget (keep at least the newest).
+  while (out.length > 1 && overBudget()) {
+    out.shift();
+    truncated = true;
+  }
+
+  // Row rail (pathological count — independent of tokens).
+  if (out.length > maxRows) {
+    out.splice(0, out.length - maxRows);
+    truncated = true;
+  }
+
+  // Byte rail (Workflow-arg carrier bound) — drop oldest, keep the newest.
+  while (out.length > 1 && utf8Bytes(JSON.stringify(out)) > maxBytes) {
+    out.shift();
+    truncated = true;
+  }
+
+  return { rows: rePairModelMessages(out), truncated };
 }

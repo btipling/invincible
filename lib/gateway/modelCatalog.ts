@@ -5,6 +5,13 @@
  * this inside a `'use step'` / `'use workflow'` function; `/api/models` and
  * the turn-start HTTP boundary are the only callers. Fail-open to an empty map.
  *
+ * The same two sources also publish a per-model **context window** (plan
+ * #944): Gateway `context_length`, models.dev `limit.context` — parsed into
+ * parallel window maps (`getJoinedWindowMap`) with the same TTL / fail-open /
+ * negative-cache discipline. Unknown id → the caller applies the documented
+ * conservative default (`lib/agent/contextWindow.ts`), never a fabricated
+ * window.
+ *
  * Failures (throw / HTTP !ok / abort / oversize overlay) are **negatively
  * cached** for the same TTL as a success so a hung catalog cannot stall every
  * `/api/turns` start. Overlapping callers share one in-flight GET per source
@@ -22,6 +29,52 @@ import {
 export const GATEWAY_MODELS_URL = 'https://ai-gateway.vercel.sh/v1/models';
 export const MODELS_DEV_URL = 'https://models.dev/api.json';
 
+/**
+ * Parse a catalog row's published context window into a positive integer
+ * token count (plan #944). Gateway `/v1/models` publishes `context_length`;
+ * models.dev publishes `limit.context`. Accepts a number (integer > 0) or a
+ * numeric string; everything else (0, negative, fractional, NaN, garbage) →
+ * `undefined` (fail-closed — the caller falls back to the conservative
+ * default, never a fabricated window). Deliberately no `% of window` math
+ * here (the #547 honesty lock): this is a real published maximum or nothing.
+ */
+export function parseContextWindow(row: unknown): number | undefined {
+  if (row == null || typeof row !== 'object') return undefined;
+  const raw = (row as { context_length?: unknown }).context_length;
+  if (typeof raw === 'number' && Number.isInteger(raw) && raw > 0) return raw;
+  if (
+    typeof raw === 'string' &&
+    /^[0-9]+$/.test(raw) &&
+    Number.parseInt(raw, 10) > 0
+  ) {
+    return Number.parseInt(raw, 10);
+  }
+  return undefined;
+}
+
+/**
+ * Parse a models.dev row's `limit.context` window (plan #944). Same
+ * fail-closed rule as `parseContextWindow`; the models.dev shape nests the
+ * window under `limit`.
+ */
+export function parseModelsDevContextWindow(row: unknown): number | undefined {
+  if (row == null || typeof row !== 'object') return undefined;
+  const limit = (row as { limit?: unknown }).limit;
+  if (limit == null || typeof limit !== 'object') return undefined;
+  const context = (limit as { context?: unknown }).context;
+  if (typeof context === 'number' && Number.isInteger(context) && context > 0) {
+    return context;
+  }
+  if (
+    typeof context === 'string' &&
+    /^[0-9]+$/.test(context) &&
+    Number.parseInt(context, 10) > 0
+  ) {
+    return Number.parseInt(context, 10);
+  }
+  return undefined;
+}
+
 export type FetchImpl = (
   input: string,
   init?: { signal?: AbortSignal; redirect?: RequestRedirect },
@@ -35,10 +88,18 @@ export type FetchImpl = (
 
 type CacheEntry = { fetchedAt: number; map: Map<string, string[]> };
 
+/** Model id → published context window in tokens (plan #944). */
+export type WindowMap = Map<string, number>;
+
 let cache: CacheEntry | null = null;
 let inflight: Promise<Map<string, string[]>> | null = null;
 let overlayCache: CacheEntry | null = null;
 let overlayInflight: Promise<Map<string, string[]>> | null = null;
+
+let windowCache: { fetchedAt: number; map: WindowMap } | null = null;
+let windowInflight: Promise<WindowMap> | null = null;
+let overlayWindowCache: { fetchedAt: number; map: WindowMap } | null = null;
+let overlayWindowInflight: Promise<WindowMap> | null = null;
 
 /** Test-only: drop Gateway + overlay caches and in-flight GETs. */
 export function resetGatewayModelsCache(): void {
@@ -46,6 +107,72 @@ export function resetGatewayModelsCache(): void {
   inflight = null;
   overlayCache = null;
   overlayInflight = null;
+  windowCache = null;
+  windowInflight = null;
+  overlayWindowCache = null;
+  overlayWindowInflight = null;
+}
+
+/**
+ * Parse Gateway `/v1/models` JSON into model-id → published context window
+ * (plan #944). Rows without a parseable `context_length` are ABSENT from the
+ * map (never a fabricated default inside the catalog — the default lives in
+ * `contextWindowForModel`). Ignores everything else on the row.
+ */
+export function parseGatewayWindowMap(payload: unknown): WindowMap {
+  const out: WindowMap = new Map();
+  if (payload == null || typeof payload !== 'object') return out;
+  const data = (payload as { data?: unknown }).data;
+  if (!Array.isArray(data)) return out;
+  for (const row of data) {
+    if (row == null || typeof row !== 'object') continue;
+    const id = (row as { id?: unknown }).id;
+    if (typeof id !== 'string' || !id.trim()) continue;
+    const w = parseContextWindow(row);
+    if (w !== undefined) out.set(id, w);
+  }
+  return out;
+}
+
+/**
+ * Parse models.dev `api.json` → `vercel.models` `limit.context` windows
+ * (plan #944). Object keys are Gateway ids; lab maps ignored; a row with no
+ * parseable window is simply absent from the map.
+ */
+export function parseModelsDevWindowMap(payload: unknown): WindowMap {
+  const out: WindowMap = new Map();
+  if (payload == null || typeof payload !== 'object' || Array.isArray(payload)) {
+    return out;
+  }
+  const vercel = (payload as { vercel?: unknown }).vercel;
+  if (vercel == null || typeof vercel !== 'object' || Array.isArray(vercel)) {
+    return out;
+  }
+  const models = (vercel as { models?: unknown }).models;
+  if (models == null || typeof models !== 'object' || Array.isArray(models)) {
+    return out;
+  }
+  for (const [id, row] of Object.entries(models as Record<string, unknown>)) {
+    if (!id.trim()) continue;
+    const w = parseModelsDevContextWindow(row);
+    if (w !== undefined) out.set(id, w);
+  }
+  return out;
+}
+
+/**
+ * Overlay fills a missing Gateway window; a published Gateway window WINS
+ * disagreements (same precedence as the effort join — Gateway is primary).
+ */
+export function joinWindowMaps(
+  overlay: WindowMap,
+  gateway: WindowMap,
+): WindowMap {
+  const out: WindowMap = new Map(gateway);
+  for (const [id, w] of overlay) {
+    if (!out.has(id)) out.set(id, w);
+  }
+  return out;
 }
 
 /**
@@ -311,4 +438,107 @@ export async function effortValuesForModel(
 ): Promise<string[]> {
   const map = await getJoinedEffortMap(opts);
   return map.get(modelId) ?? [];
+}
+
+/** Load the Gateway window map (plan #944) — same TTL / negative-cache shape. */
+export async function getGatewayWindowMap(opts?: {
+  fetchImpl?: FetchImpl;
+  now?: () => number;
+}): Promise<WindowMap> {
+  const now = (opts?.now ?? Date.now)();
+  if (windowCache && now - windowCache.fetchedAt < GATEWAY_MODELS_CACHE_TTL_MS) {
+    return windowCache.map;
+  }
+  if (windowInflight) return windowInflight;
+
+  const fetchImpl = opts?.fetchImpl ?? (globalThis.fetch as FetchImpl);
+  windowInflight = (async () => {
+    try {
+      const res = await fetchImpl(GATEWAY_MODELS_URL, {
+        signal: AbortSignal.timeout(GATEWAY_MODELS_FETCH_TIMEOUT_MS),
+      });
+      if (!res.ok) {
+        throw new Error(`gateway models HTTP ${res.status ?? 'error'}`);
+      }
+      const payload = await res.json();
+      const map = parseGatewayWindowMap(payload);
+      windowCache = { fetchedAt: now, map };
+      return map;
+    } catch {
+      const fallback = windowCache?.map ?? new Map();
+      windowCache = { fetchedAt: now, map: fallback };
+      return fallback;
+    } finally {
+      windowInflight = null;
+    }
+  })();
+  return windowInflight;
+}
+
+/** Load the models.dev overlay window map — same shape, streaming-capped body. */
+export async function getModelsDevWindowMap(opts?: {
+  fetchImpl?: FetchImpl;
+  now?: () => number;
+}): Promise<WindowMap> {
+  const now = (opts?.now ?? Date.now)();
+  if (
+    overlayWindowCache &&
+    now - overlayWindowCache.fetchedAt < GATEWAY_MODELS_CACHE_TTL_MS
+  ) {
+    return overlayWindowCache.map;
+  }
+  if (overlayWindowInflight) return overlayWindowInflight;
+
+  const fetchImpl = opts?.fetchImpl ?? (globalThis.fetch as FetchImpl);
+  overlayWindowInflight = (async () => {
+    try {
+      const res = await fetchImpl(MODELS_DEV_URL, {
+        signal: AbortSignal.timeout(GATEWAY_MODELS_FETCH_TIMEOUT_MS),
+        redirect: 'error',
+      });
+      if (!res.ok) {
+        throw new Error(`models.dev HTTP ${res.status ?? 'error'}`);
+      }
+      const payload = await payloadFromModelsDevResponse(res);
+      const map = parseModelsDevWindowMap(payload);
+      overlayWindowCache = { fetchedAt: now, map };
+      return map;
+    } catch {
+      const fallback = overlayWindowCache?.map ?? new Map();
+      overlayWindowCache = { fetchedAt: now, map: fallback };
+      return fallback;
+    } finally {
+      overlayWindowInflight = null;
+    }
+  })();
+  return overlayWindowInflight;
+}
+
+/**
+ * Joined per-model context-window map (plan #944) — Gateway primary, models.dev
+ * overlay fills holes; each source fail-opens independently to an empty map.
+ * Route/start-boundary callers only (never inside `'use step'`).
+ */
+export async function getJoinedWindowMap(opts?: {
+  fetchImpl?: FetchImpl;
+  now?: () => number;
+}): Promise<WindowMap> {
+  const [overlay, gateway] = await Promise.all([
+    getModelsDevWindowMap(opts),
+    getGatewayWindowMap(opts),
+  ]);
+  return joinWindowMaps(overlay, gateway);
+}
+
+/**
+ * The published context window for one model id (plan #944), or `undefined`
+ * when neither source publishes one — the caller applies the conservative
+ * default (`contextWindowForModel`), never the catalog.
+ */
+export async function contextWindowForModelId(
+  modelId: string,
+  opts?: { fetchImpl?: FetchImpl; now?: () => number },
+): Promise<number | undefined> {
+  const map = await getJoinedWindowMap(opts);
+  return map.get(modelId);
 }

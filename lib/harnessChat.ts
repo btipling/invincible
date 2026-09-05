@@ -296,6 +296,13 @@ export type RunHarnessChatOptions = {
   modelId?: string;
   /** Live Wasm effort pick (protocol v23). Omit when hidden/empty. */
   reasoning?: string;
+  /**
+   * The selected model's published context window in tokens (plan #944, from
+   * the `/api/models` catalog push `contextWindow`). Sizes the legacy
+   * `formatPromptWithHistory` fold's token budget. Omit → the conservative
+   * default window (never a fabricated number).
+   */
+  contextWindow?: number;
 };
 
 export type RunHarnessTurnOptions = Omit<RunHarnessChatOptions, 'history'> & {
@@ -771,7 +778,9 @@ export async function runHarnessChat(
 
   const apiPrompt =
     useHistory && history.length > 0
-      ? formatPromptWithHistory(history, prompt)
+      ? formatPromptWithHistory(history, prompt, {
+          contextWindow: opts?.contextWindow,
+        })
       : prompt;
 
   bridge.setLifecycle(Lifecycle.Busy);
@@ -1120,12 +1129,16 @@ export async function runHarnessTurn(
   const isDurableTurnPath = opts?.sendAgent == null && opts?.sendAgentStream == null;
   // Skip the 3.5M fold when the durable path already observed a pointer
   // (adversarial-review #937 Minor): sidecar-stop means we would throw it away.
+  // Plan #944: the fold's budget is now the model's window-derived token
+  // budget (catalog `contextWindow` push; conservative default when absent).
   const needsHistoryFold =
     useHistory &&
     session.messages.length > 0 &&
     (!isDurableTurnPath || session.modelMessagesPointer === undefined);
   const historyFold = needsHistoryFold
-    ? formatPromptWithHistory(session.messages, prompt)
+    ? formatPromptWithHistory(session.messages, prompt, {
+        contextWindow: opts?.contextWindow,
+      })
     : undefined;
   const apiPrompt = isDurableTurnPath ? prompt : (historyFold ?? prompt);
   let promptHistory =
@@ -1997,6 +2010,7 @@ export async function runHarnessTurn(
     history: session.messages,
     useHistory: opts?.useHistory,
     modelId: opts?.modelId,
+    contextWindow: opts?.contextWindow,
   });
 
   if (result.ok) {

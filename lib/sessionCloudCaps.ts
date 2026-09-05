@@ -554,6 +554,70 @@ export const MODEL_MSG_CHECKPOINT_MAX_ROWS = 4096;
 export const MODEL_MSG_CHECKPOINT_MAX_BYTES = 8 * 1024 * 1024;
 
 /**
+ * Conservative default context window in **tokens** for a model whose context
+ * window is published by neither catalog source (plan #944, source #551 — A3
+ * fold budget). Near the low end of modern catalog windows so a small-window
+ * model is never over-fed; never a fabricated large number and never a fake
+ * `% of window` (the #547 honesty lock). **NEW generous cap**; no existing
+ * cap value changed → no human gate. Consumed by
+ * `lib/agent/contextWindow.ts` + `lib/agent/contextBudget.ts`.
+ */
+export const CONTEXT_WINDOW_DEFAULT_TOKENS = 200_000;
+
+/**
+ * Pi-style completion-reserve floor (plan #944). The fold budget is
+ * `window − reserve`; the reserve covers the completion plus system/tool
+ * overhead. The effective reserve is
+ * `floor(max(CONTEXT_RESERVE_MIN_TOKENS, CONTEXT_RESERVE_FRACTION × window))`
+ * (peer-locked Pi/OMP default `max(16384, 0.15 × window)`). **NEW cap**; no
+ * existing cap value changed → no human gate. Consumed by
+ * `lib/agent/contextBudget.ts` `foldBudgetTokens`.
+ */
+export const CONTEXT_RESERVE_MIN_TOKENS = 16_384;
+
+/**
+ * Fractional completion reserve (plan #944) — 15% of the model window,
+ * per the Pi-style rule `max(CONTEXT_RESERVE_MIN_TOKENS, 0.15 × window)`.
+ * **NEW cap**; no existing cap value changed → no human gate.
+ */
+export const CONTEXT_RESERVE_FRACTION = 0.15;
+
+/**
+ * Row-count **safety rail** for the durable-turn model-messages seed
+ * (plan #944). Mirrors `MODEL_MSG_CHECKPOINT_MAX_ROWS`; bounds a
+ * pathological message *count* (replay/DoS bound) — deliberately NOT the
+ * payload-size mechanism (that is the token budget + `MODEL_MSG_SEED_MAX_BYTES`).
+ * **NEW generous cap**; no existing cap value changed → no human gate.
+ * Enforced in `lib/agent/modelMessages.ts` `trimModelMessagesToBudget`.
+ */
+export const MODEL_MSG_SEED_MAX_ROWS = 4_096;
+
+/**
+ * Serialized-byte ceiling on the trimmed `priorMessages` **Workflow run arg**
+ * (plan #944). `priorMessages` is passed as a `start(turnWorkflow, …)` arg
+ * (a serialized run input re-carried into the orchestrator), so the seed trim
+ * also enforces this ceiling before `start()` — a large-window seed can never
+ * bloat the Workflow-arg channel past a bound it tolerates. Set at ~2 MiB to
+ * mirror the Function-body bound (`HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES`).
+ * **NEW cap**; no existing cap value changed → no human gate. Enforced in
+ * `lib/agent/modelMessages.ts` `trimModelMessagesToBudget`.
+ */
+export const MODEL_MSG_SEED_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Documented fold-time estimator ratio — **chars per token** (plan #944).
+ * At the seed/fold boundary there is no provider count for the
+ * not-yet-assembled context (a `UsageSummary` is a per-completion count
+ * captured after a round, not a pre-send measurement), so the budget trims
+ * with `tokens ≈ ceil(chars / 4)` — the conventional English-prose order.
+ * Provider token counts (already captured in `usageSummary.ts`) remain the
+ * occupancy-meter signal (#556), never this budget's input. **NEW cap**;
+ * no existing cap value changed → no human gate. Consumed by
+ * `lib/agent/contextBudget.ts` `estimateTokens`.
+ */
+export const CONTEXT_CHARS_PER_TOKEN = 4;
+
+/**
  * Path cap for the per-turn freshness reminder (plan #941, source #693). The
  * reminder names exactly what the #277 `RunFileFreshness` gate will demand
  * (a `read_file` before edit); 64 workspace-relative paths (~4–8 KiB

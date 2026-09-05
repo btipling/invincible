@@ -54,13 +54,17 @@ import {
   resolveAgentReasoning,
   shouldFetchEffortCatalog,
 } from '../../../lib/agent/reasoningConfig';
-import { effortValuesForModel } from '../../../lib/gateway/modelCatalog';
+import { effortValuesForModel, getJoinedWindowMap } from '../../../lib/gateway/modelCatalog';
 import {
   AGENT_STREAM_CONTENT_TYPE,
   wantsAgentStream,
 } from '../../../lib/agent/agentStream';
 import { overlayWorkerMeta } from '../../../lib/agent/workerMetaOverlay';
-import { buildModelMessages } from '../../../lib/agent/modelMessages';
+import {
+  buildModelMessages,
+  trimModelMessagesToBudget,
+} from '../../../lib/agent/modelMessages';
+import { foldBudgetTokens } from '../../../lib/agent/contextBudget';
 import { TURN_START_MIN_INTERVAL_MS, sanitizeTurnRunId, isRedisSafeOpaqueId } from '../../../lib/sessionCloudCaps';
 import { mapByokResolveFailure } from '../../../lib/chatServer';
 import { createProdServices } from '../../../lib/di';
@@ -149,6 +153,8 @@ function isHardSandboxDeny(
  * The route passes ONLY serializable values to `start()`: `scope`, `modelId`,
  * `userMessage`, optional `persistRunBind`, optional `reasoning`. NO `tools` dict — tool schemas
  * are assembled in-step via the shared `assembleDurableToolWorld` helper.
+ * Plan #944: a seeded `priorMessages` is trimmed to the model's window-derived
+ * token budget (+ row/byte rails) at this boundary before `start()`.
  */
 export async function POST(req: Request): Promise<Response> {
   // Auth gate FIRST (mirrors app/api/agent/route.ts POST gate) — before any
@@ -262,6 +268,13 @@ export async function POST(req: Request): Promise<Response> {
       ? effortValuesForModel(byok.modelId)
       : Promise.resolve([] as string[]);
 
+    // Plan #944: resolve the model's context window at the ROUTE boundary
+    // (never inside a `'use step'`) so the seeded `priorMessages` can be
+    // trimmed to the window-derived token budget before `start()`. Fail-open
+    // to an empty map → the conservative default window (never a lie, never
+    // a fabricated large number). Rides the same TTL/negative-cache catalog.
+    const windowPromise = getJoinedWindowMap();
+
     // 2. Resolve the envelope store + session key once — reused for the
     //    persistRunBind read (B13 fallback) AND the post-start running PATCH
     //    (C14d). A store resolve error is best-effort: no bind / no PATCH, but
@@ -355,7 +368,17 @@ export async function POST(req: Request): Promise<Response> {
                   // Rebuild (re-pair + caps) so a planted/stale blob cannot
                   // seed an unpaired tool-result at a strict provider
                   // (adversarial-review #937).
-                  priorMessages = buildModelMessages(parsedProjection).rows;
+                  const built = buildModelMessages(parsedProjection).rows;
+                  // Plan #944: trim the seed to the model's window-derived
+                  // token budget (+ row/byte safety rails) at the route
+                  // boundary — drop oldest, re-pair, never drop the newest
+                  // row (the current ask). The window resolves from the
+                  // joined catalog (conservative default when unpublished).
+                  const windowMap = await windowPromise;
+                  priorMessages = trimModelMessagesToBudget(
+                    built,
+                    foldBudgetTokens(windowMap, byok.modelId),
+                  ).rows;
                 }
               }
             } catch {

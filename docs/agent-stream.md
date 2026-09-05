@@ -92,6 +92,8 @@ submit so no ghost request is sent.
 | Error | **Yes** | Included as `Error:` (stall/cancel context) |
 | Thinking | **No** (display-only) | Never |
 
+The fold is bounded by the model **window − reserve** token budget (plan #944): the published `/api/models` `contextWindow` (conservative 200k default when unpublished), estimated tokens (`ceil(chars/4)`, never a tokenizer); the newest history row and the current ask always survive. The durable `/api/turns` seed is trimmed to the same budget at the route boundary (`trimModelMessagesToBudget`).
+
 ## Reasoning / model config
 
 | Control | Effect |

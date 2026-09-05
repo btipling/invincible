@@ -91,6 +91,7 @@ import {
   discardPendingReasoningChange,
 } from '../../lib/harnessHostReasoningPersist';
 import { sanitizeReasoningEffort } from '../../lib/sessionCloudCaps';
+import { parseModelCatalogEntries, contextWindowFor } from '../../lib/harnessModelCatalog';
 import { applyResolvedProvider } from '../../lib/agent/resolvedProvider';
 import { paintQuotaAfterRebuild, tryLocalSave } from '../../lib/hostQuotaError';
 import {
@@ -167,7 +168,7 @@ async function fetchHarnessBuildId(): Promise<string> {
 }
 
 type ModelCatalogResult =
-  | { ok: true; models: string[]; reasoningById: Record<string, string[]> }
+  | { ok: true; models: string[]; reasoningById: Record<string, string[]>; windowById: Record<string, number> }
   | { ok: false; status: number; message: string };
 
 async function fetchModelCatalogOnce(): Promise<ModelCatalogResult> {
@@ -194,31 +195,18 @@ async function fetchModelCatalogOnce(): Promise<ModelCatalogResult> {
         message: `Model catalog unavailable (${res.status}).`,
       };
     }
-    const data = (await res.json()) as {
-      models?: { id?: string; reasoningOptions?: unknown }[];
-    };
-    if (!Array.isArray(data.models)) {
+    const data = (await res.json()) as { models?: unknown };
+    // Pure parse (plan #944, testing row 13): ids + effort lists + the
+    // published context windows in one pass.
+    const parsed = parseModelCatalogEntries(data.models);
+    if (!parsed) {
       return {
         ok: false,
         status: res.status,
         message: 'Model catalog response invalid.',
       };
     }
-    const models: string[] = [];
-    const reasoningById: Record<string, string[]> = {};
-    for (const m of data.models) {
-      const id = typeof m?.id === 'string' ? m.id.trim() : '';
-      if (!id) continue;
-      models.push(id);
-      const raw = Array.isArray(m.reasoningOptions) ? m.reasoningOptions : [];
-      const values: string[] = [];
-      for (const v of raw) {
-        const token = sanitizeReasoningEffort(v);
-        if (token && !values.includes(token)) values.push(token);
-      }
-      reasoningById[id] = values;
-    }
-    return { ok: true, models, reasoningById };
+    return { ok: true, ...parsed };
   } catch {
     return {
       ok: false,
@@ -371,6 +359,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const sessionRef = useRef<SessionSnapshot>(createEmptySession());
   /** Gateway effort lists keyed by model id (from GET /api/models). */
   const reasoningByIdRef = useRef<Record<string, string[]>>({});
+  /** Published context windows keyed by model id (plan #944 — legacy fold budget). */
+  const windowByIdRef = useRef<Record<string, number>>({});
   /** Oldest session.messages index currently hydrated into the Wasm ring. */
   const ringWindowStartRef = useRef(0);
 
@@ -770,6 +760,12 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       }
       const modelId = bridge.getSelectedModel();
       const reasoning = bridge.getSelectedReasoning();
+      // Plan #944: the selected model's published context window (catalog
+      // push) sizes the legacy fold trim; omitted → conservative default.
+      const contextWindow = contextWindowFor(
+        windowByIdRef.current,
+        modelId ?? undefined,
+      );
       if (!attaching && !modelId) {
         setHostNote('No model selected — catalog empty, failed to load, or not granted.');
         try {
@@ -901,6 +897,9 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             skipUserAppend: opts?.skipUserAppend === true,
             ...(modelId ? { modelId } : {}),
             ...(reasoning ? { reasoning } : {}),
+            // Plan #944: the model's published window sizes the legacy
+            // promptHistory fold trim (durable path ignores the sidecar).
+            ...(contextWindow !== undefined ? { contextWindow } : {}),
             // Phase 2 (#627 / #625): persist every mid-turn session patch
             // (cwd change, sandbox switch) via the same persist callback the
             // turn-end path uses — local write + coalesced cloud PUT.
@@ -1278,12 +1277,14 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         if (catalog.ok) {
           bridge.setModelCatalog(catalog.models);
           reasoningByIdRef.current = catalog.reasoningById;
+          windowByIdRef.current = catalog.windowById;
           if (catalog.models.length === 0) {
             setHostNote('No models granted — ask a tenant admin for inference access.');
           }
         } else {
           bridge.setModelCatalog([]);
           reasoningByIdRef.current = {};
+          windowByIdRef.current = {};
           setHostNote(catalog.message);
         }
 
