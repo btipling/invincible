@@ -13,8 +13,10 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  COMPACTION_CHECKPOINT_MAX_BYTES,
   COMPACTION_FILES_TOUCHED_MAX,
   COMPACTION_SUMMARY_MAX_CHARS,
+  MODEL_MSG_SEED_MAX_BYTES,
 } from '../sessionCloudCaps';
 import {
   buildCheckpoint,
@@ -421,5 +423,14 @@ describe('buildCheckpoint (plan #948 row 4 — caps table enforcement)', () => {
       over.retainedTail,
     );
     expect(over2).toEqual(over);
+  });
+});
+
+describe('compaction checkpoint persist cap (plan #949 / adversarial #954)', () => {
+  it('COMPACTION_CHECKPOINT_MAX_BYTES composes with the Phase-1 tail / seed byte rail', () => {
+    // A legal findCompactionCut tail may serialize to MODEL_MSG_SEED_MAX_BYTES;
+    // the checkpoint object adds summary/files/keys. Slack is 256 KiB.
+    expect(COMPACTION_CHECKPOINT_MAX_BYTES).toBe(MODEL_MSG_SEED_MAX_BYTES + 256 * 1024);
+    expect(COMPACTION_CHECKPOINT_MAX_BYTES).toBeGreaterThan(MODEL_MSG_SEED_MAX_BYTES);
   });
 });

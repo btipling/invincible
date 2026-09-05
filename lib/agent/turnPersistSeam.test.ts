@@ -23,7 +23,7 @@ import type { PersistStepSeam } from '../workflows/persistStep';
 import { reachableImports } from '../workflows/staticGraph';
 import { parseCloudSessionSnapshot } from '../sessionRepository';
 import { reconstructTranscriptChain } from '../sessions/transcriptChunks';
-import { HARNESS_SESSION_MAX_BODY_BYTES, TRANSCRIPT_CHUNK_WALK_MAX } from '../sessionCloudCaps';
+import { HARNESS_SESSION_MAX_BODY_BYTES, TRANSCRIPT_CHUNK_WALK_MAX, COMPACTION_CHECKPOINT_MAX_BYTES } from '../sessionCloudCaps';
 import { formatPromptWithHistory, makeMessage } from '../sessionStore';
 
 const scope: ObjectScope = {
@@ -472,6 +472,44 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
       filesTouched: [],
       retainedTail: [],
     });
+  });
+
+  it('adversarial #954 — a Phase-1-legal ~1.2 MiB tail checkpoint persists (cap composes with seed byte rail)', async () => {
+    const { seam, blobStore } = await makeSeam();
+    const tail = [{ role: 'user', content: 'x'.repeat(Math.floor(1.2 * 1024 * 1024)) }];
+    const checkpoint = { summary: 's', filesTouched: [], retainedTail: tail };
+    const raw = JSON.stringify(checkpoint);
+    expect(raw.length).toBeGreaterThan(1024 * 1024);
+    expect(raw.length).toBeLessThanOrEqual(COMPACTION_CHECKPOINT_MAX_BYTES);
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [{ d: 1 }],
+      content: '{"delta":"x"}',
+      fold: { ...fold, compactionCheckpoint: checkpoint },
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const body = res.compactionPointer ? await blobStore.read(res.compactionPointer) : null;
+    expect(JSON.parse(body ?? 'null')).toEqual(checkpoint);
+  });
+
+  it('adversarial #954 — checkpoint over COMPACTION_CHECKPOINT_MAX_BYTES → compaction_write_failed', async () => {
+    const { seam } = await makeSeam();
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: '{"delta":"x"}',
+      fold: {
+        compactionCheckpoint: {
+          summary: 'x'.repeat(COMPACTION_CHECKPOINT_MAX_BYTES),
+          filesTouched: [],
+          retainedTail: [],
+        },
+      },
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('compaction_write_failed');
   });
 
   it('matrix 5 — cwd/usage/activeSandboxId folded from the final-state fold; host keys preserved byte-for-byte (B8 copy-forward)', async () => {
