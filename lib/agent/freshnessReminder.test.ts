@@ -167,7 +167,7 @@ describe('renderer (plan #941 row 3)', () => {
     expect(text).toContain('A windowed/truncated read does NOT grant edit');
     expect(text).not.toMatch(/windowed read (is|would be) enough/i);
     expect(pathsOf(text)).toEqual(['src/foo.ts']);
-    expect(text).toContain('Paths read in earlier turns of this session');
+    expect(text).toContain('Paths read in the previous turn');
   });
 
   it('empty list → undefined (no fold); zero-read turn renders nothing', () => {

@@ -540,6 +540,17 @@ export function derivePersistFold(
   usage: unknown,
   runBind?: PersistRunBind,
   resolvedProvider?: string,
+  /**
+   * Index of this run's first row in `messages` (plan #941 adversarial
+   * CONCERNS on PR #943). `runTurnLoop` seeds
+   * `[...priorMessages, user, …this run]`; the reminder names THIS run's
+   * committed `read_file` paths only. `#936` prior rows keep
+   * `assistant.delta.toolCalls[].args.path` — walking the full array would
+   * re-derive last turn's paths on a zero-read chat and break Goal 3
+   * volatility. Default 0 keeps existing unit fixtures that pass a
+   * this-run-only array.
+   */
+  thisRunStart = 0,
 ): PersistStepFold | undefined {
   const checkpoint: Array<{ role: string; content: string }> = [];
   let cwd: string | undefined = runBind?.cwd;
@@ -555,12 +566,17 @@ export function derivePersistFold(
   // the SAME reconstructed rows — user / assistant(+tool-calls) / truncated
   // tool-result rows the NEXT turn seeds from. Bounded by buildModelMessages.
   const modelMessages = buildModelMessages(messages).rows;
-  // Per-turn freshness reminder (plan #941, source #693): a sibling derivation
-  // over the SAME reconstructed rows — the paths of THIS run's committed
-  // `read_file` calls (possibly []). ALWAYS carried when the fold exists:
-  // volatility means a zero-read turn writes `{paths:[]}` and VOLATILE-CLEARS
+  // Per-turn freshness reminder (plan #941, source #693): THIS run's
+  // committed `read_file` paths only (slice at `thisRunStart` — the
+  // `#936` seed is the same orchestrator shape and must not leak into
+  // the volatile list). Possibly `[]`. ALWAYS carried when the fold
+  // exists: a zero-read turn writes `{paths:[]}` and VOLATILE-CLEARS
   // the prior turn's reminder (the next turn folds nothing).
-  const freshnessReminderPaths = buildFreshnessReminder(messages).paths;
+  const start = Math.max(
+    0,
+    Math.min(Number.isFinite(thisRunStart) ? Math.floor(thisRunStart) : 0, messages.length),
+  );
+  const freshnessReminderPaths = buildFreshnessReminder(messages.slice(start)).paths;
   if (
     checkpoint.length === 0 &&
     usage === undefined &&
@@ -680,7 +696,14 @@ export async function runTurnLoop(
     | { ok: false; code: string; error: string }
   > => {
     steps += 1;
-    const fold = derivePersistFold(messages, usage, deps.persistRunBind, resolvedProvider);
+    const thisRunStart = (input.priorMessages ?? []).length;
+    const fold = derivePersistFold(
+      messages,
+      usage,
+      deps.persistRunBind,
+      resolvedProvider,
+      thisRunStart,
+    );
     return deps.persistStep({
       turnRunId: deps.turnRunId,
       deltas,

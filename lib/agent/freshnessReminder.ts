@@ -171,7 +171,7 @@ export function renderFreshnessReminder(paths: ReadonlyArray<string>): string | 
     '(offset 1 covering every line; for a long file, limit>=totalLines as the',
     'status line hints). A windowed/truncated read does NOT grant edit. Never',
     'rewrite or trust last turn\u2019s bytes as current.',
-    'Paths read in earlier turns of this session (re-read before editing):',
+    'Paths read in the previous turn (re-read before editing):',
   ];
   for (const p of bounded) {
     lines.push(`- ${p}`);

@@ -338,7 +338,10 @@ describe('turnWorkflow entry (backend-agents B13)', () => {
     expect(String(last.content)).toContain('a FULL read');
     expect((m.at(-2) as { role: string; content?: unknown }).content).toBe('now edit it');
 
-    // Turn 3 (zero-read): volatility — {paths:[]} persisted, pointer advanced.
+    // Turn 3 (zero-read) WITH the production `#936` seed still in
+    // priorMessages (the bound model-messages pointer path). Volatility
+    // must still persist {paths:[]} — the seeded read_file pair must not
+    // leak into this run's reminder (adversarial-review #943 Major).
     generateImpl.fn = async () => ({
       ok: true as const,
       delta: { text: 'no tools', toolCalls: [] },
@@ -347,6 +350,19 @@ describe('turnWorkflow entry (backend-agents B13)', () => {
       userMessage: 'nothing to read',
       modelId: 'mock-model',
       scope,
+      priorMessages: [
+        { role: 'user', content: 'read the file' },
+        {
+          role: 'assistant',
+          delta: {
+            text: 'reading',
+            toolCalls: [{ toolName: 'read_file', toolCallId: 'c1', args: { path: 'src/foo.ts' } }],
+          },
+        },
+        { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'turn-1 file body' },
+        { role: 'user', content: 'now edit it' },
+        { role: 'assistant', delta: { text: 'turn-2 answer', toolCalls: [] } },
+      ],
     });
     expect(r3.status).toBe('completed');
     const env3 = await envelopeStore.readEnvelope(scope);
