@@ -6,13 +6,15 @@
  * the turn-start HTTP boundary are the only callers. Fail-open to an empty map.
  *
  * The same two sources also publish a per-model **context window** (plan
- * #944): Gateway `context_length`, models.dev `limit.context` — parsed into
- * parallel window maps (`getJoinedWindowMap`) with the same TTL / fail-open /
- * negative-cache discipline. **One GET per source** parses both the effort
- * list and the window (adversarial #945) — `/api/models` must not hit each
- * URL twice. Unknown id → the caller applies the documented
- * conservative default (`lib/agent/contextWindow.ts`), never a fabricated
- * window.
+ * #944): Gateway list `context_window` (REST `data[].context_window`; the
+ * endpoints resource's `context_length` is accepted as an alias — never
+ * `max_tokens`, which is the output cap) and models.dev `limit.context` —
+ * parsed into parallel window maps (`getJoinedWindowMap`) with the same
+ * TTL / fail-open / negative-cache discipline. **One GET per source**
+ * parses both the effort list and the window (adversarial #945) —
+ * `/api/models` must not hit each URL twice. Unknown id → the caller
+ * applies the documented conservative default (`lib/agent/contextWindow.ts`),
+ * never a fabricated window.
  *
  * Failures (throw / HTTP !ok / abort / oversize overlay) are **negatively
  * cached** for the same TTL as a success so a hung catalog cannot stall every
@@ -33,23 +35,30 @@ export const MODELS_DEV_URL = 'https://models.dev/api.json';
 
 /**
  * Parse a catalog row's published context window into a positive integer
- * token count (plan #944). Gateway `/v1/models` publishes `context_length`;
- * models.dev publishes `limit.context`. Accepts a number (integer > 0) or a
- * numeric string; everything else (0, negative, fractional, NaN, garbage) →
- * `undefined` (fail-closed — the caller falls back to the conservative
- * default, never a fabricated window). Deliberately no `% of window` math
- * here (the #547 honesty lock): this is a real published maximum or nothing.
+ * token count (plan #944; adversarial #945). Gateway `GET /v1/models` publishes
+ * `context_window` (REST `data[].context_window`). The endpoints resource
+ * publishes `context_length` — accepted as an alias so a mixed payload still
+ * parses. **Never `max_tokens`** (that is the output cap, often 16k).
+ * models.dev publishes `limit.context` via `parseModelsDevContextWindow`.
+ * Accepts a number (integer > 0) or a numeric string; everything else
+ * (0, negative, fractional, NaN, garbage) → `undefined` (fail-closed — the
+ * caller falls back to the conservative default, never a fabricated window).
+ * When both aliases are present, `context_window` wins. Deliberately no
+ * `% of window` math here (the #547 honesty lock): this is a real published
+ * maximum or nothing.
  */
 export function parseContextWindow(row: unknown): number | undefined {
   if (row == null || typeof row !== 'object') return undefined;
-  const raw = (row as { context_length?: unknown }).context_length;
+  const o = row as { context_window?: unknown; context_length?: unknown };
+  return positiveIntWindow(o.context_window) ?? positiveIntWindow(o.context_length);
+}
+
+/** Positive integer token count; rejects 0 / negative / fractional / NaN / Infinity. */
+function positiveIntWindow(raw: unknown): number | undefined {
   if (typeof raw === 'number' && Number.isInteger(raw) && raw > 0) return raw;
-  if (
-    typeof raw === 'string' &&
-    /^[0-9]+$/.test(raw) &&
-    Number.parseInt(raw, 10) > 0
-  ) {
-    return Number.parseInt(raw, 10);
+  if (typeof raw === 'string' && /^[0-9]+$/.test(raw)) {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n > 0) return n;
   }
   return undefined;
 }
@@ -113,9 +122,10 @@ export function resetGatewayModelsCache(): void {
 
 /**
  * Parse Gateway `/v1/models` JSON into model-id → published context window
- * (plan #944). Rows without a parseable `context_length` are ABSENT from the
- * map (never a fabricated default inside the catalog — the default lives in
- * `contextWindowForModel`). Ignores everything else on the row.
+ * (plan #944; adversarial #945). Rows without a parseable `context_window`
+ * (or `context_length` alias) are ABSENT from the map (never a fabricated
+ * default inside the catalog — the default lives in `contextWindowForModel`).
+ * Ignores `max_tokens` and everything else on the row.
  */
 export function parseGatewayWindowMap(payload: unknown): WindowMap {
   const out: WindowMap = new Map();

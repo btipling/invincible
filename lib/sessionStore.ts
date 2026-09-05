@@ -435,8 +435,8 @@ export function createDefaultSessionStore(): SessionStore {
  * last-resort wire guard.
  *
  * The budget trims HISTORY, never the current ask: `newUserPrompt` always
- * survives, and at least the newest history row is kept. A single oversized
- * ask is sent anyway (never block the turn).
+ * survives (history may trim to empty to fit it). A single oversized ask is
+ * sent anyway (never block the turn).
  */
 export function formatPromptWithHistory(
   history: SessionMessage[],
@@ -515,7 +515,7 @@ export function formatPromptWithHistory(
   const maxTokens = foldBudgetTokens(windowMap, '');
 
   // Token trim: drop OLDEST history rows until the fold fits the budget. The
-  // current ask (and the newest history row) always survive.
+  // current ask always survives; history may trim to empty to fit it.
   let out = linesFor(recent).join('\n');
   while (recent.length > 0 && estimateTokens(out) > maxTokens) {
     recent.shift();

@@ -1414,7 +1414,7 @@ describe('POST /api/turns', () => {
 
   // --- Plan #944 (source #551) seed-trim rows (testing rows 7–8) ---
 
-  it('plan #944 row 7 — an over-budget projection is token-trimmed (drop oldest) before start(); the newest row survives', async () => {
+  it('plan #944 row 7 — an over-budget projection is token-trimmed (drop oldest) before start(); history yields to the current ask', async () => {
     standardHarness();
     mockAuthedSession();
     mockStart();
@@ -1434,8 +1434,9 @@ describe('POST /api/turns', () => {
         { role: 'user', content: 'newest ask' },
       ]),
     );
-    // A small published window → tiny fold budget → the trim fires, but the
-    // newest row must always survive.
+    // A small published window → tiny fold budget → the trim fires. Adversarial
+    // #945: the current ask rides userMessage and is counted in the token rail,
+    // so last-turn seed history yields to it (may trim to []).
     vi.doMock('../../../lib/gateway/modelCatalog', () => ({
       getJoinedWindowMap: vi.fn(async () => new Map([['anthropic/claude-a', 800]])),
       effortValuesForModel: vi.fn(async () => []),
