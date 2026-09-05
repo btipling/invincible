@@ -651,6 +651,24 @@ export const COMPACTION_SUMMARY_MAX_CHARS = 8_000;
 export const COMPACTION_FILES_TOUCHED_MAX = 256;
 
 /**
+ * Byte cap for the persisted compaction checkpoint Blob object (plan #949,
+ * source #552 — A4 compaction phase 2). The checkpoint (`{summary,
+ * filesTouched, retainedTail}` from #948's `buildCheckpoint`) is its OWN
+ * session-bound Blob object — never envelope `meta` (only the ≤512-char
+ * pointer id rides `meta` as `compactionPointer`) — so this may exceed the
+ * whole-meta budget, mirroring `MODEL_MSG_CHECKPOINT_MAX_BYTES` (8 MiB).
+ * 1 MiB is generous for summary (8 000 chars) + filesTouched (≤256 paths) +
+ * a bounded retained tail; an oversized write fails closed
+ * (`compaction_write_failed`) rather than ever ballooning the provider wire,
+ * and the route re-validates + re-pairs on read so only a well-formed
+ * checkpoint seeds. Far below the 8 MiB model-messages object and the 4.5 MB
+ * Function wire. **NEW generous cap**; no existing cap value changed →
+ * **no human gate**. Enforced in `lib/agent/turnPersistSeam.ts`
+ * `writeSegment maxBytes`.
+ */
+export const COMPACTION_CHECKPOINT_MAX_BYTES = 1024 * 1024;
+
+/**
  * Path cap for the per-turn freshness reminder (plan #941, source #693). The
  * reminder names exactly what the #277 `RunFileFreshness` gate will demand
  * (a `read_file` before edit); 64 workspace-relative paths (~4–8 KiB

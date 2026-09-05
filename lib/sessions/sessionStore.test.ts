@@ -14,6 +14,7 @@ import {
   sessionPrefix,
   copyForwardModelMessagesPointer,
   copyForwardFreshnessReminderPointer,
+  copyForwardCompactionPointer,
   copyForwardWorkingNotes,
 } from './sessionStore';
 import {
@@ -185,6 +186,7 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
       'turnStreamCursor',
       'workingNotes',
       'freshnessReminderPointer',
+      'compactionPointer',
     ]);
     for (const k of RESERVED_META_KEYS) {
       // `attachedSkills` is a JSON-encoded string; `usage` is a JSON UsageSummary
@@ -1429,6 +1431,227 @@ describe('envelope carrier (phase 0 #515)', () => {
     expect(explicit.status).toBe('stored');
     if (explicit.status === 'stored') {
       expect(explicit.envelope.meta.freshnessReminderPointer).toBe('t_fr_new');
+    }
+  });
+
+  it('plan #949 — accepts a valid Redis-safe meta.compactionPointer and DROPS a poisoned one to unset (never 400)', () => {
+    // The compaction pointer is the sibling of `checkpointPointer` /
+    // `modelMessagesPointer` (same Redis-safe opaque rule) but a DISTINCT
+    // reserved key — the compaction checkpoint (`{summary, filesTouched,
+    // retainedTail}`) is its own Blob surface, never folded into either
+    // sibling projection. The BODY never rides in meta; only the object id.
+    const ok = validateSessionRecord(
+      makeRecord({ meta: { compactionPointer: 'cp_abc-123DEF' } as HarnessSessionRecord['meta'] }),
+    );
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.value.meta.compactionPointer).toBe('cp_abc-123DEF');
+    expect(validateMeta({ compactionPointer: 'cp_abc123' }).ok).toBe(true);
+
+    // Poisoned / null / non-opaque (glob, `:`, space, `.`, `/`, over-length,
+    // non-string) are DROPPED to unset — never a 400 (same drop-to-unset
+    // decision as the other pointer carriers).
+    for (const bad of [
+      'cp a:b',
+      '*',
+      'a?b',
+      'has space',
+      'a.b',
+      'cp/abc',
+      'x'.repeat(513),
+      42 as unknown,
+      undefined as unknown,
+      null as unknown,
+    ]) {
+      const res = validateSessionRecord(
+        makeRecord({ meta: { compactionPointer: bad } as HarnessSessionRecord['meta'] }),
+      );
+      expect(res.ok).toBe(true); // drop-to-unset, not a 400
+      if (res.ok) {
+        expect('compactionPointer' in res.value.meta).toBe(false);
+        expect(res.value.meta.compactionPointer).toBeUndefined();
+      }
+    }
+
+    // The reserved-key contract is intact: unknown keys are STILL rejected.
+    expect(
+      validateSessionRecord(makeRecord({ meta: { notReserved: 1 } as HarnessSessionRecord['meta'] })).ok,
+    ).toBe(false);
+  });
+
+  it('plan #949 — validateMeta round-trips compactionPointer and omits poison; DISTINCT from the older B6 checkpointPointer sibling', () => {
+    const ok = validateMeta({ compactionPointer: 'cp_abc123-def' });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.value.compactionPointer).toBe('cp_abc123-def');
+
+    const poison = validateMeta({ compactionPointer: 'x'.repeat(513) });
+    expect(poison.ok).toBe(true);
+    if (poison.ok) expect('compactionPointer' in poison.value).toBe(false);
+    const nonOpaque = validateMeta({ compactionPointer: 'a:b' });
+    expect(nonOpaque.ok).toBe(true);
+    if (nonOpaque.ok) expect('compactionPointer' in nonOpaque.value).toBe(false);
+
+    // Envelope path shares the same drop-to-unset, never a 400.
+    const env = validateSessionEnvelope({ ...makeRecord(), meta: { compactionPointer: 'a b' } });
+    expect(env.ok).toBe(true);
+    if (env.ok) expect('compactionPointer' in env.value.meta).toBe(false);
+
+    // Sibling keys coexist independently — the compaction checkpoint pointer
+    // is distinct from the B6 checkpoint pointer and a poisoned compaction
+    // pointer never disturbs a valid sibling.
+    const all = validateSessionRecord(
+      makeRecord({
+        meta: {
+          checkpointPointer: 'b6_1',
+          compactionPointer: 'cp_1',
+          modelMessagesPointer: 'mm_1',
+        } as HarnessSessionRecord['meta'],
+      }),
+    );
+    expect(all.ok).toBe(true);
+    if (all.ok) {
+      expect(all.value.meta.checkpointPointer).toBe('b6_1');
+      expect(all.value.meta.compactionPointer).toBe('cp_1');
+      expect(all.value.meta.modelMessagesPointer).toBe('mm_1');
+    }
+    const mixed = validateSessionRecord(
+      makeRecord({
+        meta: { modelMessagesPointer: 'mm_1', compactionPointer: 'a:b' } as HarnessSessionRecord['meta'],
+      }),
+    );
+    expect(mixed.ok).toBe(true);
+    if (mixed.ok) {
+      expect(mixed.value.meta.modelMessagesPointer).toBe('mm_1');
+      expect('compactionPointer' in mixed.value.meta).toBe(false);
+    }
+  });
+
+  it('plan #949 — copyForwardCompactionPointer keeps stored pointer when incoming omits; explicit incoming wins', () => {
+    const stored = { compactionPointer: 't_cp_keep', modelMessagesPointer: 't_mm_keep' };
+    const omitted = copyForwardCompactionPointer({ turnStatus: 'completed' }, stored);
+    expect(omitted.compactionPointer).toBe('t_cp_keep');
+    expect(omitted.turnStatus).toBe('completed');
+    const explicit = copyForwardCompactionPointer(
+      { compactionPointer: 't_cp_host' },
+      stored,
+    );
+    expect(explicit.compactionPointer).toBe('t_cp_host');
+    const emptyStored = copyForwardCompactionPointer({ turnStatus: 'completed' }, {});
+    expect('compactionPointer' in emptyStored).toBe(false);
+    // Host-shaped PUT (cloudMetaFor never emits the key) must keep the worker's
+    // latest checkpoint carrier, not clear it.
+    const hostOmit = copyForwardCompactionPointer(
+      { turnStatus: 'completed' },
+      { compactionPointer: 't_cp_P2' },
+    );
+    expect(hostOmit.compactionPointer).toBe('t_cp_P2');
+    // Poisoned stored value is NOT copy-forwarded.
+    const poisonedStored = copyForwardCompactionPointer(
+      { turnStatus: 'completed' },
+      { compactionPointer: 'a:b' },
+    );
+    expect('compactionPointer' in poisonedStored).toBe(false);
+  });
+
+  it('plan #949 — upsertEnvelope copy-forwards compactionPointer from LWW existing when incoming omits (durable, no volatility)', async () => {
+    const s = new MemorySessionStore();
+    const k = { tenantId: 'tenant-1', userId: 'user-1', sessionId: 's1' };
+    await s.upsertEnvelope(k, {
+      id: 's1',
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      updatedAt: 10,
+      meta: { compactionPointer: 't_cp_keep', turnStatus: 'running' },
+    });
+    // A host flatten omit (cloudMetaFor never emits the key) keeps the worker's
+    // latest pointer — a stale snapshot cannot clear the checkpoint carrier.
+    const hostOmit = await s.upsertEnvelope(k, {
+      id: 's1',
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      updatedAt: 20,
+      meta: { turnStatus: 'completed' },
+    });
+    expect(hostOmit.status).toBe('stored');
+    if (hostOmit.status === 'stored') {
+      expect(hostOmit.envelope.meta.compactionPointer).toBe('t_cp_keep');
+      expect(hostOmit.envelope.meta.turnStatus).toBe('completed');
+    }
+    // The worker overlay's explicit value wins (the next compaction's pointer).
+    const explicit = await s.upsertEnvelope(k, {
+      id: 's1',
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      updatedAt: 30,
+      meta: { compactionPointer: 't_cp_new' },
+    });
+    expect(explicit.status).toBe('stored');
+    if (explicit.status === 'stored') {
+      expect(explicit.envelope.meta.compactionPointer).toBe('t_cp_new');
+    }
+  });
+
+  it('plan #949 — copyForwardCompactionPointer keeps stored pointer when incoming omits; explicit incoming wins; poisoned stored is NOT copied', () => {
+    const stored = { compactionPointer: 't_cp_keep', modelMessagesPointer: 't_mm_keep' };
+    const omitted = copyForwardCompactionPointer({ turnStatus: 'completed' }, stored);
+    expect(omitted.compactionPointer).toBe('t_cp_keep');
+    expect(omitted.turnStatus).toBe('completed');
+    const explicit = copyForwardCompactionPointer(
+      { compactionPointer: 't_cp_host' },
+      stored,
+    );
+    expect(explicit.compactionPointer).toBe('t_cp_host');
+    const emptyStored = copyForwardCompactionPointer({ turnStatus: 'completed' }, {});
+    expect('compactionPointer' in emptyStored).toBe(false);
+    // Host-shaped PUT (cloudMetaFor never emits the key) must keep the worker's
+    // latest checkpoint carrier, not clear it.
+    const hostOmit = copyForwardCompactionPointer(
+      { turnStatus: 'completed' },
+      { compactionPointer: 't_cp_P2' },
+    );
+    expect(hostOmit.compactionPointer).toBe('t_cp_P2');
+    // Poisoned stored value is NOT copy-forwarded.
+    const poisonedStored = copyForwardCompactionPointer(
+      { turnStatus: 'completed' },
+      { compactionPointer: 'a:b' },
+    );
+    expect('compactionPointer' in poisonedStored).toBe(false);
+  });
+
+  it('plan #949 — upsertEnvelope copy-forwards compactionPointer from LWW existing when incoming omits', async () => {
+    const s = new MemorySessionStore();
+    const k = { tenantId: 'tenant-1', userId: 'user-1', sessionId: 's1' };
+    await s.upsertEnvelope(k, {
+      id: 's1',
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      updatedAt: 10,
+      meta: { compactionPointer: 't_cp_keep', turnStatus: 'running' },
+    });
+    // A host flatten omit (cloudMetaFor never emits the key) keeps the worker's
+    // latest pointer — a stale snapshot cannot clear the durable checkpoint.
+    const hostOmit = await s.upsertEnvelope(k, {
+      id: 's1',
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      updatedAt: 20,
+      meta: { turnStatus: 'completed' },
+    });
+    expect(hostOmit.status).toBe('stored');
+    if (hostOmit.status === 'stored') {
+      expect(hostOmit.envelope.meta.compactionPointer).toBe('t_cp_keep');
+      expect(hostOmit.envelope.meta.turnStatus).toBe('completed');
+    }
+    // The worker overlay's explicit value wins (the next compaction's pointer).
+    const explicit = await s.upsertEnvelope(k, {
+      id: 's1',
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      updatedAt: 30,
+      meta: { compactionPointer: 't_cp_new' },
+    });
+    expect(explicit.status).toBe('stored');
+    if (explicit.status === 'stored') {
+      expect(explicit.envelope.meta.compactionPointer).toBe('t_cp_new');
     }
   });
 

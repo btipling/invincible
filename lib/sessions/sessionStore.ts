@@ -77,6 +77,8 @@ import type { SessionMessage } from '../sessionStore';
  * PUT-omit; `modelMessagesPointer` Clear is DELETE. `freshnessReminderPointer`
  * (plan #941) is the third worker-authored sibling — same copy-forward class
  * (`copyForwardFreshnessReminderPointer`); Clear is DELETE.
+ * `compactionPointer` (plan #949) is the fourth worker-authored sibling —
+ * same copy-forward class (`copyForwardCompactionPointer`); Clear is DELETE.
  */
 export const RESERVED_META_KEYS = [
   'activeSandboxId',
@@ -98,6 +100,7 @@ export const RESERVED_META_KEYS = [
   'turnStreamCursor',
   'workingNotes',
   'freshnessReminderPointer',
+  'compactionPointer',
 ] as const;
 export type HarnessSessionMetaKey = (typeof RESERVED_META_KEYS)[number];
 
@@ -148,6 +151,30 @@ export function copyForwardFreshnessReminderPointer(
   const prev = stored?.freshnessReminderPointer;
   if (typeof prev === 'string' && prev && isRedisSafeOpaqueId(prev)) {
     out.freshnessReminderPointer = prev;
+  }
+  return out;
+}
+
+/**
+ * Worker-authored `compactionPointer` (plan #949, source #552 — A4 compaction
+ * phase 2). Same class as `modelMessagesPointer` / `freshnessReminderPointer`:
+ * written by the terminal persist seam's B8 overlay when a compaction ran
+ * (write-once/read carrier — the NEXT compaction replaces it), while the host
+ * snapshot is stale the moment the worker writes. Host `cloudMetaFor` never
+ * emits this key; envelope PUT copy-forwards the stored pointer when incoming
+ * omits it. An explicit incoming value wins (worker overlay). Clear is
+ * DELETE, not a PUT-omit. Applied inside `upsertEnvelope` against the LWW
+ * `existing` (same read).
+ */
+export function copyForwardCompactionPointer(
+  incoming: HarnessSessionMeta | undefined,
+  stored: HarnessSessionMeta | undefined,
+): HarnessSessionMeta {
+  const out: HarnessSessionMeta = { ...(incoming ?? {}) };
+  if (Object.prototype.hasOwnProperty.call(out, 'compactionPointer')) return out;
+  const prev = stored?.compactionPointer;
+  if (typeof prev === 'string' && prev && isRedisSafeOpaqueId(prev)) {
+    out.compactionPointer = prev;
   }
   return out;
 }
@@ -594,6 +621,19 @@ export function validateMeta(value: unknown): SessionStoreResult<HarnessSessionM
       // the record (same drop-to-unset decision as the other pointer/carrier
       // keys).
       if (isRedisSafeOpaqueId(v)) meta.freshnessReminderPointer = v;
+      continue;
+    }
+    if (key === 'compactionPointer') {
+      // Plan #949 (source #552 — A4 compaction phase 2): the reserved
+      // compaction-checkpoint pointer, a **sibling** of `checkpointPointer`
+      // and `modelMessagesPointer` (same Redis-safe opaque rule, distinct
+      // key — the compaction checkpoint `{summary, filesTouched,
+      // retainedTail}` is its own Blob surface, never folded into either
+      // sibling projection). The BODY never rides in `meta`; only the object
+      // id does. Non-critical — a poisoned/non-opaque value DROPS to unset
+      // (omitted), never 400s the record (same drop-to-unset decision as the
+      // other pointer/carrier keys).
+      if (isRedisSafeOpaqueId(v)) meta.compactionPointer = v;
       continue;
     }
     if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean') {

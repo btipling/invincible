@@ -41,6 +41,7 @@ import {
   MODEL_MSG_CHECKPOINT_MAX_BYTES,
   TURN_MSG_CHECKPOINT_MAX_BYTES,
   TRANSCRIPT_CHUNK_WALK_MAX,
+  COMPACTION_CHECKPOINT_MAX_BYTES,
 } from '../sessionCloudCaps';
 import { serializeFreshnessReminder } from './freshnessReminder';
 import { fitSnapshotUtf8 } from './fitSnapshotUtf8';
@@ -505,9 +506,46 @@ export function createTurnPersistSeam(
         }
       }
 
+      // Compaction checkpoint (plan #949, source #552 — A4 phase 2): write the
+      // typed `{summary, filesTouched, retainedTail}` object as its OWN Blob
+      // object; only the object id rides in meta (`compactionPointer`). Same
+      // B6 / #936 / #941 pattern. Written ONLY when the fold carries a
+      // checkpoint (a compaction ran this turn) — write-once/read carrier:
+      // absent fold → no pointer written, the prior pointer survives via B8
+      // copy-forward (no volatility — the checkpoint is durable, unlike the
+      // per-turn reminder). Phase 3 wires the producer (`derivePersistFold`).
+      // The tail is pre-bounded by #948 `buildCheckpoint` (re-paired, capped);
+      // the byte cap here fail-closes an oversized write — never a truncation
+      // lie (the route re-validates on read).
+      let compactionPointer: string | undefined;
+      if (input.fold?.compactionCheckpoint !== undefined) {
+        const cpObjectId = newBlobObjectId(scope);
+        if (!isObjectIdBoundTo(cpObjectId, scope)) {
+          return await failWrite({
+            ok: false,
+            code: 'compaction_write_failed',
+            error: 'minted compaction-checkpoint object id is not bound to the session scope.',
+          });
+        }
+        try {
+          await blobStore.writeSegment({
+            objectId: cpObjectId,
+            content: JSON.stringify(input.fold.compactionCheckpoint),
+            contentType: 'application/json',
+            maxBytes: COMPACTION_CHECKPOINT_MAX_BYTES,
+          });
+          compactionPointer = cpObjectId;
+          patch.compactionPointer = cpObjectId;
+        } catch (err) {
+          return await failWrite({
+            ok: false,
+            code: 'compaction_write_failed',
+            error: `compaction-checkpoint blob write failed: ${toMessage(err)}`,
+          });
+        }
+      }
+
       // Freshness-reminder projection (plan #941, source #693): write the
-      // volatile `{paths}` JSON as its OWN Blob object; only the object id
-      // rides in meta (`freshnessReminderPointer`). Same B6 / #936 pattern.
       // ALWAYS written when the fold carries the sibling (possibly `[]`) —
       // volatility: a zero-read turn rewrites the projection as `{paths:[]}`
       // and advances the pointer, so the next turn folds nothing (a stale
@@ -587,6 +625,7 @@ export function createTurnPersistSeam(
         objectId: seg.objectId,
         ...(checkpointPointer !== undefined ? { checkpointPointer } : {}),
         ...(modelMessagesPointer !== undefined ? { modelMessagesPointer } : {}),
+        ...(compactionPointer !== undefined ? { compactionPointer } : {}),
         ...(freshnessReminderPointer !== undefined
           ? { freshnessReminderPointer }
           : {}),

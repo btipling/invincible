@@ -18,6 +18,9 @@
  * `freshnessReminderPointer` (plan #941 — the terminal persist seam writes the
  * volatile per-turn reminder pointer on every persist; host flatten PUT
  * copy-forwards this key on omit, same class as the other worker pointers) /
+ * `compactionPointer` (plan #949 — the terminal persist seam writes the
+ * compaction-checkpoint pointer when a compaction ran; host flatten PUT
+ * copy-forwards this key on omit, same class as the other worker pointers) /
  * `resolvedProvider` / `workingNotes` (plan #938 — the working-notes tools write
  * the block best-effort at tool-execute; mid-turn notes survive a cancelled /
  * wall-clocked / errored turn the same commitment as `change_dir`. Host flatten
@@ -78,6 +81,7 @@ export const WORKER_META_KEYS = [
   'checkpointPointer',
   'modelMessagesPointer',
   'freshnessReminderPointer',
+  'compactionPointer',
   'resolvedProvider',
   'workingNotes',
 ] as const;
@@ -147,6 +151,15 @@ function sanitizeWorkerKeyValue(key: WorkerMetaKey, value: unknown): string | nu
     case 'freshnessReminderPointer':
       // Plan #941: Redis-safe opaque sibling of `modelMessagesPointer`; the
       // volatile `{paths}` BODY never rides in `meta` — only the object id.
+      return typeof value === 'string' && value !== '' && isRedisSafeOpaqueId(value)
+        ? value
+        : undefined;
+    case 'compactionPointer':
+      // Plan #949: Redis-safe opaque sibling of `checkpointPointer` /
+      // `modelMessagesPointer`; the compaction-checkpoint BODY (summary +
+      // filesTouched + retainedTail) never rides in `meta` — only the
+      // object id. DISTINCT from the older `checkpointPointer` (the B6
+      // display projection); a compaction write never touches that sibling.
       return typeof value === 'string' && value !== '' && isRedisSafeOpaqueId(value)
         ? value
         : undefined;

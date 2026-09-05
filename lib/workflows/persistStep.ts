@@ -63,6 +63,20 @@ export interface PersistStepFold {
    * prior turn's reminder. Plain serializable values only.
    */
   freshnessReminder?: string[];
+  /**
+   * The persisted compaction checkpoint (plan #949, source #552 — A4 phase 2)
+   * — the typed `{summary, filesTouched, retainedTail}` object #948's
+   * `buildCheckpoint` produces when a compaction ran this turn. The real seam
+   * writes it as its OWN Blob object (`meta.compactionPointer`); absent =
+   * no compaction ran (no pointer written; the prior pointer survives via
+   * copy-forward). Phase 3 wires the producer (`derivePersistFold`); the
+   * carrier + read ship here. Plain serializable values only.
+   */
+  compactionCheckpoint?: {
+    summary: string;
+    filesTouched: string[];
+    retainedTail: unknown[];
+  };
 }
 
 /** The B7/B8 persist seam surface this step shells (store-ish, serializable-safe). */
@@ -79,7 +93,7 @@ export interface PersistStepSeam {
     turnRunId: string;
     deltas: ReadonlyArray<unknown>;
     content: string;
-    /** Run final-state fold (cwd/usage/sandbox/checkpoint/modelMessages/freshnessReminder) — optional. */
+    /** Run final-state fold (cwd/usage/sandbox/checkpoint/modelMessages/freshnessReminder/compactionCheckpoint) — optional. */
     fold?: PersistStepFold;
     /**
      * Default true. Mid-turn writes pass false so B8 overlays `running`
@@ -93,6 +107,7 @@ export interface PersistStepSeam {
         checkpointPointer?: string;
         modelMessagesPointer?: string;
         freshnessReminderPointer?: string;
+        compactionPointer?: string;
         status: 'completed' | 'running';
       }
     | { ok: false; code: string; error: string }
@@ -131,6 +146,7 @@ export type PersistStepResult =
       checkpointPointer?: string;
       modelMessagesPointer?: string;
       freshnessReminderPointer?: string;
+      compactionPointer?: string;
     }
   | { ok: false; code: string; error: string };
 
@@ -246,6 +262,9 @@ export async function persistStep(
       : {}),
     ...(result.freshnessReminderPointer !== undefined
       ? { freshnessReminderPointer: result.freshnessReminderPointer }
+      : {}),
+    ...(result.compactionPointer !== undefined
+      ? { compactionPointer: result.compactionPointer }
       : {}),
   };
 }

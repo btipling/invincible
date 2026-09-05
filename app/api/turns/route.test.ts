@@ -1479,4 +1479,236 @@ describe('POST /api/turns', () => {
     // this tiny projection is untouched by the trim.
     expect(startArgs.priorMessages).toEqual(projection);
   });
+
+  // --- Plan #949 (source #552) seed-preference rows (A4 compaction phase 2) ---
+  // Locked fallback chain: compactionPointer → modelMessagesPointer → legacy
+  // `promptHistory` sidecar.
+
+  it('plan #949 row 2a — bound+well-formed compactionPointer → seeds [summaryRow, ...re-paired retainedTail]; modelMessagesPointer ignored', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    const checkpoint = {
+      summary: 'earlier session summarized',
+      filesTouched: ['src/a.ts', 'lib/b.ts'],
+      retainedTail: [
+        { role: 'user', content: 'resume here' },
+        // Orphan tool-result + open call in the planted tail → re-paired away.
+        { role: 'tool', toolName: 'search', toolCallId: 'ghost', result: 'orphan' },
+        {
+          role: 'assistant',
+          delta: { text: 'reading', toolCalls: [{ toolName: 'read_file', toolCallId: 'kept' }] },
+        },
+        { role: 'tool', toolName: 'read_file', toolCallId: 'kept', result: 'bytes' },
+      ],
+    };
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        compactionPointer: 't_cp_s1_abc',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockImplementation(async (id: string) =>
+      id === 't_cp_s1_abc' ? JSON.stringify(checkpoint) : JSON.stringify([]),
+    );
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'continue', sessionId: 's1', promptHistory: 'FOLDED' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.priorMessages).toEqual([
+      {
+        role: 'user',
+        content:
+          'Summary of earlier session (compacted, not live assistant prose): earlier session summarized\n\nFiles read/modified: src/a.ts, lib/b.ts',
+      },
+      { role: 'user', content: 'resume here' },
+      {
+        role: 'assistant',
+        delta: { text: 'reading', toolCalls: [{ toolName: 'read_file', toolCallId: 'kept' }] },
+      },
+      { role: 'tool', toolName: 'read_file', toolCallId: 'kept', result: 'bytes' },
+    ]);
+    expect(startArgs.userMessage).toBe('continue');
+    // The checkpoint read wins over the projection read — exactly one blob read.
+    expect(blobReadMock).toHaveBeenCalledTimes(1);
+    expect(blobReadMock).toHaveBeenCalledWith('t_cp_s1_abc');
+  });
+
+  it('plan #949 row 2b — malformed checkpoint body (wrong shape) → falls back to modelMessagesPointer, no 5xx', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        compactionPointer: 't_cp_s1_abc',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    const projection = [{ role: 'user', content: 'mm seed row' }];
+    blobReadMock.mockImplementation(async (id: string) =>
+      id === 't_cp_s1_abc' ? JSON.stringify({ not: 'a checkpoint' }) : JSON.stringify(projection),
+    );
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'go', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.priorMessages).toEqual(projection);
+    expect(startArgs.userMessage).toBe('go');
+    expect(blobReadMock).toHaveBeenCalledWith('t_cp_s1_abc');
+    expect(blobReadMock).toHaveBeenCalledWith('t_mm_s1_abc');
+  });
+
+  it('plan #949 row 2c — bound checkpoint read misses (null) → falls back to modelMessagesPointer', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        compactionPointer: 't_cp_s1_abc',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    const projection = [{ role: 'user', content: 'mm seed row' }];
+    blobReadMock.mockImplementation(async (id: string) =>
+      id === 't_cp_s1_abc' ? null : JSON.stringify(projection),
+    );
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'go', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.priorMessages).toEqual(projection);
+  });
+
+  it('plan #949 row 2d — no compactionPointer → modelMessagesPointer still seeds (unchanged #936 path)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    const projection = [{ role: 'user', content: 'mm seed row' }];
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(JSON.stringify(projection));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'go', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.priorMessages).toEqual(projection);
+    expect(startArgs.userMessage).toBe('go');
+  });
+
+  it('plan #949 row 2e — foreign/unbound compactionPointer → falls back to the legacy fold; no checkpoint blob read', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        compactionPointer: 't_cp_OTHERSESSION_abc',
+        promptHistory: undefined,
+      },
+    });
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'hi', sessionId: 's1', promptHistory: 'FOLDED_HISTORY' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.priorMessages).toBeUndefined();
+    expect(startArgs.userMessage).toBe('FOLDED_HISTORY');
+    expect(blobReadMock).not.toHaveBeenCalled();
+  });
+
+  it('plan #949 row 2f — bound checkpoint miss + no modelMessagesPointer + no promptHistory → 503 (shared #937 fail-closed), start not called', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        compactionPointer: 't_cp_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(null);
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'use what you found', sessionId: 's1' });
+    expect(res.status).toBe(503);
+    const json = await res.json();
+    expect(json.error).toMatch(/model-messages seed/i);
+    expect(startMock).not.toHaveBeenCalled();
+  });
+
+  it('plan #949 row 2g — both pointers absent → legacy promptHistory sidecar (locked third fallback)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    // Default envelope has neither pointer.
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'go', sessionId: 's1', promptHistory: 'FOLDED_HISTORY' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.priorMessages).toBeUndefined();
+    expect(startArgs.userMessage).toBe('FOLDED_HISTORY');
+    expect(blobReadMock).not.toHaveBeenCalled();
+  });
+
+  it('plan #949 row 2h — an over-budget checkpoint seed is token-trimmed with the summary row first to drop (history yields to the ask)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    const checkpoint = {
+      summary: 'big history',
+      filesTouched: [],
+      retainedTail: [
+        { role: 'user', content: 'b'.repeat(1_000) },
+        { role: 'user', content: 'newest ask in tail' },
+      ],
+    };
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        compactionPointer: 't_cp_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(JSON.stringify(checkpoint));
+    // Small published window → tiny fold budget → the #944 trim fires.
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      getJoinedWindowMap: vi.fn(async () => new Map([['anthropic/claude-a', 800]])),
+      effortValuesForModel: vi.fn(async () => []),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'continue', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    // Budget = 800 − max(16384, ~250) → floored to 1 token; the current ask
+    // rides userMessage and is counted in the rail → the seed trims to []
+    // (the summary row is the OLDEST row and drops first).
+    expect(startArgs.priorMessages).toEqual([]);
+    expect(startArgs.userMessage).toBe('continue');
+  });
 });
