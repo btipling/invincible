@@ -74,7 +74,9 @@ import type { SessionMessage } from '../sessionStore';
  * `upsertEnvelope`, against the LWW `existing.meta`) so a host flatten PUT
  * cannot delete — or roll back — the worker's latest. Worker **clear** of
  * `workingNotes` is an explicit empty-string PATCH (present marker), not a
- * PUT-omit; `modelMessagesPointer` Clear is DELETE.
+ * PUT-omit; `modelMessagesPointer` Clear is DELETE. `freshnessReminderPointer`
+ * (plan #941) is the third worker-authored sibling — same copy-forward class
+ * (`copyForwardFreshnessReminderPointer`); Clear is DELETE.
  */
 export const RESERVED_META_KEYS = [
   'activeSandboxId',
@@ -95,6 +97,7 @@ export const RESERVED_META_KEYS = [
   'turnStatus',
   'turnStreamCursor',
   'workingNotes',
+  'freshnessReminderPointer',
 ] as const;
 export type HarnessSessionMetaKey = (typeof RESERVED_META_KEYS)[number];
 
@@ -122,6 +125,29 @@ export function copyForwardModelMessagesPointer(
   const prev = stored?.modelMessagesPointer;
   if (typeof prev === 'string' && prev && isRedisSafeOpaqueId(prev)) {
     out.modelMessagesPointer = prev;
+  }
+  return out;
+}
+
+/**
+ * Worker-authored `freshnessReminderPointer` (plan #941, source #693). Same
+ * class as `modelMessagesPointer`: written by the terminal persist seam's B8
+ * overlay every persist (volatility — every turn replaces it), while the host
+ * snapshot is stale the moment the worker writes. Host `cloudMetaFor` never
+ * emits this key; envelope PUT copy-forwards the stored pointer when incoming
+ * omits it. An explicit incoming value wins (worker overlay). Clear is
+ * DELETE, not a PUT-omit. Applied inside `upsertEnvelope` against the LWW
+ * `existing` (same read).
+ */
+export function copyForwardFreshnessReminderPointer(
+  incoming: HarnessSessionMeta | undefined,
+  stored: HarnessSessionMeta | undefined,
+): HarnessSessionMeta {
+  const out: HarnessSessionMeta = { ...(incoming ?? {}) };
+  if (Object.prototype.hasOwnProperty.call(out, 'freshnessReminderPointer')) return out;
+  const prev = stored?.freshnessReminderPointer;
+  if (typeof prev === 'string' && prev && isRedisSafeOpaqueId(prev)) {
+    out.freshnessReminderPointer = prev;
   }
   return out;
 }
@@ -556,6 +582,18 @@ export function validateMeta(value: unknown): SessionStoreResult<HarnessSessionM
       // over-cap BEFORE persisting, so the store never sees a truncation lie.
       const cleaned = sanitizeWorkingNotes(v);
       if (cleaned !== undefined) meta.workingNotes = cleaned;
+      continue;
+    }
+    if (key === 'freshnessReminderPointer') {
+      // Plan #941 (source #693): the reserved per-turn freshness-reminder
+      // pointer, a **sibling** of `modelMessagesPointer` (same Redis-safe
+      // opaque rule, distinct key — the volatile `{paths}` projection is its
+      // own Blob surface, never folded into the model-messages projection).
+      // The BODY never rides in `meta`; only the object id does. Non-critical
+      // — a poisoned/non-opaque value DROPS to unset (omitted), never 400s
+      // the record (same drop-to-unset decision as the other pointer/carrier
+      // keys).
+      if (isRedisSafeOpaqueId(v)) meta.freshnessReminderPointer = v;
       continue;
     }
     if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean') {

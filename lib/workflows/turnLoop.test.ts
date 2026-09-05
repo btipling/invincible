@@ -872,6 +872,175 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(tool.result).toBe('file body');
   });
 
+  it('plan #941 row 6 — derivePersistFold derives a freshnessReminder sibling (paths of committed read_file calls)', () => {
+    const fold = derivePersistFold(
+      [
+        { role: 'user', content: 'read the tree' },
+        {
+          role: 'assistant',
+          delta: {
+            text: 'reading',
+            toolCalls: [
+              { toolName: 'read_file', toolCallId: 'c1', args: { path: 'src/foo.ts' } },
+              { toolName: 'read_file', toolCallId: 'c2', args: { path: 'lib/bar.ts' } },
+            ],
+          },
+        },
+        { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'file body' },
+        { role: 'tool', toolName: 'read_file', toolCallId: 'c2', result: 'more body' },
+        { role: 'persist', content: 'loop-internal' },
+        { role: 'error', content: 'wrap-up error' },
+      ],
+      undefined,
+    );
+    expect(fold?.freshnessReminder).toEqual(['src/foo.ts', 'lib/bar.ts']);
+  });
+
+  it('plan #941 row 6b — zero-read turn: the fold still carries freshnessReminder [] (volatility clear)', () => {
+    // A no-tool turn (user+assistant only): the fold carries the EMPTY reminder
+    // so the persist seam rewrites {paths:[]} and clears the prior turn's list.
+    const fold = derivePersistFold(
+      [
+        { role: 'user', content: 'just answer' },
+        { role: 'assistant', delta: { text: 'ok', toolCalls: [] } },
+      ],
+      undefined,
+    );
+    expect(fold).toBeDefined();
+    expect(fold?.freshnessReminder).toEqual([]);
+  });
+
+  it('plan #941 adversarial #943 — seeded prior read_file rows do NOT leak into this-run reminder (thisRunStart slice)', () => {
+    // Production `#936` seed keeps `args.path` on assistant toolCalls. Walking
+    // the full array would re-derive last turn's paths on a zero-read chat.
+    const prior = [
+      { role: 'user', content: 'read the tree' },
+      {
+        role: 'assistant',
+        delta: {
+          text: 'reading',
+          toolCalls: [{ toolName: 'read_file', toolCallId: 'c1', args: { path: 'src/foo.ts' } }],
+        },
+      },
+      { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'file body' },
+    ];
+    const thisRun = [
+      { role: 'user', content: 'just answer' },
+      { role: 'assistant', delta: { text: 'ok', toolCalls: [] } },
+    ];
+    const fold = derivePersistFold([...prior, ...thisRun], undefined, undefined, undefined, prior.length);
+    expect(fold?.freshnessReminder).toEqual([]);
+  });
+
+  it('plan #941 adversarial #943 — this-run read is kept; prior read_file paths are not', () => {
+    const prior = [
+      { role: 'user', content: 'read a' },
+      {
+        role: 'assistant',
+        delta: {
+          text: 'reading',
+          toolCalls: [{ toolName: 'read_file', toolCallId: 'c0', args: { path: 'old.ts' } }],
+        },
+      },
+      { role: 'tool', toolName: 'read_file', toolCallId: 'c0', result: 'old body' },
+    ];
+    const thisRun = [
+      { role: 'user', content: 'now read b' },
+      {
+        role: 'assistant',
+        delta: {
+          text: 'reading',
+          toolCalls: [{ toolName: 'read_file', toolCallId: 'c1', args: { path: 'new.ts' } }],
+        },
+      },
+      { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'new body' },
+    ];
+    const fold = derivePersistFold([...prior, ...thisRun], undefined, undefined, undefined, prior.length);
+    expect(fold?.freshnessReminder).toEqual(['new.ts']);
+  });
+
+  it('plan #941 — derivePersistFold with NO rows at all stays undefined (no empty-fold persist write)', () => {
+    expect(derivePersistFold([], undefined)).toBeUndefined();
+  });
+
+  it('plan #941 row 7 — loop passes the pointer to modelStep on round 1 ONLY (later rounds + wrap-up omit it)', async () => {
+    const { deps, closed } = wiredDeps();
+    let round = 0;
+    const modelStep = vi.fn(async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          ok: true as const,
+          delta: {
+            text: 'read',
+            toolCalls: [{ toolName: 'read_file', toolCallId: 'a', args: { path: 'a.ts' } }],
+          },
+        };
+      }
+      return { ok: true as const, delta: { text: 'done', toolCalls: [] } };
+    });
+    const toolStep = vi.fn(okBatch());
+    const result = await runTurnLoop(
+      { ...deps, modelStep, toolStep },
+      { userMessage: 'go', freshnessReminderPointer: 't_fr_prior' },
+    );
+    expect(result.status).toBe('completed');
+    expect(result.rounds).toBe(2);
+    // Round 1: the pointer is present (the prior turn's reminder rides in).
+    const round1 = (modelStep.mock.calls[0] as unknown[])?.[0] as {
+      freshnessReminderPointer?: string;
+    };
+    expect(round1?.freshnessReminderPointer).toBe('t_fr_prior');
+    // Round 2 (this turn's own tool rows are already in messages): omitted.
+    const round2 = (modelStep.mock.calls[1] as unknown[])?.[0] as {
+      freshnessReminderPointer?: string;
+    };
+    expect(round2?.freshnessReminderPointer).toBeUndefined();
+    expect(closed()).toBe(1);
+  });
+
+  it('plan #941 row 7b — no pointer → modelStep never receives the arg', async () => {
+    const { deps, closed } = wiredDeps();
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'hi', toolCalls: [] },
+    }));
+    await runTurnLoop({ ...deps, modelStep, toolStep: vi.fn() }, { userMessage: 'hello' });
+    const round1 = (modelStep.mock.calls[0] as unknown[])?.[0] as Record<string, unknown>;
+    expect('freshnessReminderPointer' in round1).toBe(false);
+    expect(closed()).toBe(1);
+  });
+
+  it('plan #941 adversarial #943 — runTurnLoop persist fold is [] when this run read nothing, even with a seeded prior read_file (args.path)', async () => {
+    const { deps, closed } = wiredDeps();
+    const persistSpy = vi.fn(deps.persistStep);
+    const priorMessages = [
+      { role: 'user', content: 'turn-1 user' },
+      {
+        role: 'assistant',
+        delta: {
+          text: 'reading',
+          toolCalls: [{ toolName: 'read_file', toolCallId: 'c1', args: { path: 'src/foo.ts' } }],
+        },
+      },
+      { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'file body' },
+    ];
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'turn-2 answer', toolCalls: [] },
+    }));
+    const result = await runTurnLoop(
+      { ...deps, persistStep: persistSpy, modelStep, toolStep: vi.fn() },
+      { userMessage: 'just chat', priorMessages },
+    );
+    expect(result.status).toBe('completed');
+    const terminalArg = persistSpy.mock.calls[persistSpy.mock.calls.length - 1]?.[0] as {
+      fold?: PersistStepFold;
+    };
+    expect(terminalArg.fold?.freshnessReminder).toEqual([]);
+    expect(closed()).toBe(1);
+  });
+
   it('derivePersistFold does not throw when global Buffer is absent (Workflows canvas)', () => {
     const g = globalThis as { Buffer?: unknown };
     const saved = g.Buffer;

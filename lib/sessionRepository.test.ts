@@ -756,6 +756,37 @@ describe('cloudMetaFor usage fold', () => {
     expect(poisonedPtr).toBeUndefined();
     expect(cloudMetaFor({ id: 's', updatedAt: 1, messages: [] })).toBeUndefined();
   });
+
+  it('plan #941 — never emits freshnessReminderPointer (worker-only volatile pointer)', () => {
+    // Same class as modelMessagesPointer: written by the terminal persist seam
+    // on every persist; a host flatten PUT at Date.now() must never carry (and
+    // thereby LWW-stomp) it. upsertEnvelope copy-forwards on omit.
+    const meta = cloudMetaFor({
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      freshnessReminderPointer: 't_fr_s1_abc',
+    } as unknown as SessionSnapshot);
+    expect(meta).toBeUndefined();
+    const trimmed = trimForCloudPut({
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      freshnessReminderPointer: 't_fr_s1_abc',
+    } as unknown as SessionSnapshot);
+    expect('freshnessReminderPointer' in (trimmed.meta ?? {})).toBe(false);
+
+    const withOther = cloudMetaFor({
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      freshnessReminderPointer: 't_fr_s1_abc',
+      turnStatus: 'completed',
+    } as unknown as SessionSnapshot);
+    expect(withOther).toEqual({ turnStatus: 'completed' });
+    expect('freshnessReminderPointer' in (withOther ?? {})).toBe(false);
+    expect(cloudMetaFor({ id: 's', updatedAt: 1, messages: [] })).toBeUndefined();
+  });
 });
 
 describe('overlayEnvelopeMeta', () => {

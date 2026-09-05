@@ -272,6 +272,100 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     expect(env?.meta?.turnStatus).toBe('completed');
   });
 
+  it('plan #941 row 4 — freshness-reminder written as its OWN Blob object; meta.freshnessReminderPointer set; body never in meta', async () => {
+    const { seam, blobStore, envelopeStore } = await makeSeam();
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [{ d: 1 }],
+      content: '{"delta":"x"}',
+      fold: { ...fold, freshnessReminder: ['src/foo.ts', 'lib/bar.ts'] },
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.freshnessReminderPointer).toBeDefined();
+    // Distinct object from the checkpoint / model-messages / transcript pointers.
+    expect(res.freshnessReminderPointer).not.toBe(res.checkpointPointer);
+    expect(res.freshnessReminderPointer).not.toBe(res.modelMessagesPointer);
+    expect(res.freshnessReminderPointer).not.toBe(res.objectId);
+    const env = await envelopeStore.readEnvelope(key);
+    expect(env?.meta?.freshnessReminderPointer).toBe(res.freshnessReminderPointer);
+    // The `{paths}` BODY is its own Blob object — never a meta key.
+    const frBody = res.freshnessReminderPointer
+      ? await blobStore.read(res.freshnessReminderPointer)
+      : null;
+    expect(JSON.parse(frBody ?? 'null')).toEqual({ paths: ['src/foo.ts', 'lib/bar.ts'] });
+    expect(Object.keys(env?.meta ?? {})).not.toContain('freshnessReminder');
+    expect(Object.keys(env?.meta ?? {})).not.toContain('freshnessReminderBody');
+    // Bound + Redis-safe (same mint discipline as the sibling pointers).
+    expect(res.freshnessReminderPointer).toMatch(/^t_[A-Za-z0-9_-]{1,512}$/);
+  });
+
+  it('plan #941 row 4b — zero-read turn writes {paths:[]} and ADVANCES the pointer (volatility)', async () => {
+    const { seam, blobStore, envelopeStore } = await makeSeam();
+    // Prior turn left a stale pointer.
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 10,
+      meta: { freshnessReminderPointer: 't_fr_stale_ptr_0000' },
+    });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [{ d: 1 }],
+      content: '{"delta":"x"}',
+      fold: {
+        checkpoint: [{ role: 'user', content: 'no tools this turn' }],
+        freshnessReminder: [],
+      },
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    // Rewritten (not stale, not cleared) with an empty body.
+    expect(res.freshnessReminderPointer).toBeDefined();
+    expect(res.freshnessReminderPointer).not.toBe('t_fr_stale_ptr_0000');
+    const env = await envelopeStore.readEnvelope(key);
+    expect(env?.meta?.freshnessReminderPointer).toBe(res.freshnessReminderPointer);
+    const body = res.freshnessReminderPointer
+      ? await blobStore.read(res.freshnessReminderPointer)
+      : null;
+    expect(JSON.parse(body ?? 'null')).toEqual({ paths: [] });
+  });
+
+  it('plan #941 row 4c — freshness-reminder blob write fails → {ok:false, code:freshness_reminder_write_failed}; no pointer advance', async () => {
+    const { seam, envelopeStore } = await makeSeam({ blobStore: new ThrowingBlobStore() });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: '{"delta":"x"}',
+      fold: { freshnessReminder: ['src/foo.ts'] },
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('freshness_reminder_write_failed');
+    const env = await envelopeStore.readEnvelope(key);
+    expect(env?.meta?.freshnessReminderPointer).toBeUndefined();
+    expect(env?.meta?.transcriptPointer).toBeUndefined();
+  });
+
+  it('plan #941 — no freshnessReminder fold → no pointer written; prior pointer survives (copy-forward)', async () => {
+    const { seam, envelopeStore } = await makeSeam({
+      seed: { updatedAt: 1000, meta: { freshnessReminderPointer: 't_fr_prior_0000' } },
+    });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [{ d: 1 }],
+      content: '{"delta":"x"}',
+      fold: { cwd: 'docs' },
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.freshnessReminderPointer).toBeUndefined();
+    const env = await envelopeStore.readEnvelope(key);
+    // B8 copy-forward keeps the prior worker pointer (host flatten cannot clear).
+    expect(env?.meta?.freshnessReminderPointer).toBe('t_fr_prior_0000');
+  });
+
   it('matrix 5 — cwd/usage/activeSandboxId folded from the final-state fold; host keys preserved byte-for-byte (B8 copy-forward)', async () => {
     const { seam, envelopeStore } = await makeSeam({
       seed: {

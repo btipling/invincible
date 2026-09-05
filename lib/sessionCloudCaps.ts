@@ -554,6 +554,30 @@ export const MODEL_MSG_CHECKPOINT_MAX_ROWS = 4096;
 export const MODEL_MSG_CHECKPOINT_MAX_BYTES = 8 * 1024 * 1024;
 
 /**
+ * Path cap for the per-turn freshness reminder (plan #941, source #693). The
+ * reminder names exactly what the #277 `RunFileFreshness` gate will demand
+ * (a `read_file` before edit); 64 workspace-relative paths (~4–8 KiB
+ * rendered) is generous for one turn's edit surface and keeps the fold a
+ * small string — never a second 8 MiB problem. Overflow drops the OLDEST
+ * paths (keeps newest — the reads the model is most likely to edit) with an
+ * explicit `… (N earlier paths omitted)` marker line. **NEW generous cap**;
+ * no existing cap value changed → **no human gate**. Enforced in
+ * `lib/agent/freshnessReminder.ts`.
+ */
+export const FRESHNESS_REMINDER_MAX_PATHS = 64;
+
+/**
+ * Byte ceiling on the persisted `{paths}` JSON object (plan #941, source
+ * #693) — its own session-bound Blob object, **never** envelope `meta` (only
+ * the ≤512-char `freshnessReminderPointer` id rides `meta`). 16 KiB ≫ 64
+ * typical paths; bounds a pathological path-length blowup deterministically
+ * (trim keeps the newest paths). **NEW generous cap**; no existing cap value
+ * changed → **no human gate**. Enforced in `lib/agent/freshnessReminder.ts`
+ * + the persist seam's `writeSegment maxBytes`.
+ */
+export const FRESHNESS_REMINDER_MAX_BYTES = 16 * 1024;
+
+/**
  * Max UTF-8 byte length of a model id carried as the session carrier
  * `meta.selectedModel` (plan #616 / source #610). Single TS source shared by the
  * host trim/parse (`lib/sessionRepository.ts`, `lib/sessionStore.ts`) and server

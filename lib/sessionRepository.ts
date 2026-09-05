@@ -713,10 +713,12 @@ export type CloudPutBody = {
  * Reserved-meta write contract (`RESERVED_META_KEYS`): this object is the
  * **full desired set**. A key left off is a **clear**, not a hole. Returns
  * `undefined` when every carrier is unset (empty desired set).
- * Exception: `modelMessagesPointer` is worker-authored. This helper **never
- * emits it** (adversarial-review #937 Major): a GET-overlaid snapshot id is
- * stale the moment the next worker persist writes a new Blob. Envelope PUT
- * copy-forwards the stored worker pointer when the host omits the key.
+ * Exception: `modelMessagesPointer` and `freshnessReminderPointer` are
+ * worker-authored. This helper **never emits them** (adversarial-review
+ * #937 Major / plan #941): a GET-overlaid snapshot id is stale the moment
+ * the next worker persist writes a new Blob. Envelope PUT copy-forwards
+ * the stored worker pointer when the host omits the key. `workingNotes`
+ * is the same never-emit class (adversarial-review #940).
  */
 export function cloudMetaFor(
   snapshot: SessionSnapshot,

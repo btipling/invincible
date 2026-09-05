@@ -53,6 +53,7 @@ import {
 } from '../agent/modelFinish';
 import { TURN_WALL_CLOCK_MAX_MS } from '../sessionCloudCaps';
 import { buildModelMessages } from '../agent/modelMessages';
+import { buildFreshnessReminder } from '../agent/freshnessReminder';
 import { logTurnLoop } from './turnLog';
 
 /**
@@ -149,6 +150,15 @@ export interface ModelStepFn {
      * for the CURRENT sandbox + cwd, not the stale start snapshot.
      */
     persistRunBind?: PersistRunBind;
+    /**
+     * Per-turn freshness-reminder pointer (plan #941, source #693) — present
+     * ONLY on the FIRST model round of a run (non-wrap-up). The step resolves
+     * the bound Blob object in-step and folds the volatile reminder as the
+     * trailing `{role:'error'}` row. Later rounds (this turn's own committed
+     * tool rows are already in `messages`) and all wrap-up rounds omit it.
+     * Plain serializable scalar (a Blob object id) — never the text.
+     */
+    freshnessReminderPointer?: string;
   }): Promise<
     | { ok: true; delta: TurnLoopDelta }
     | {
@@ -289,6 +299,15 @@ export interface TurnLoopInput {
    * turn (singleton).
    */
   priorMessages?: ReadonlyArray<unknown>;
+  /**
+   * Per-turn freshness-reminder pointer (plan #941, source #693) — the
+   * `meta.freshnessReminderPointer` value read pre-start at `POST /api/turns`
+   * (sanitize only; the route never reads the Blob). The loop forwards it to
+   * `deps.modelStep` on the FIRST model round only; the step resolves the
+   * reminder in-step (fail-open). Plain serializable scalar. Absent = no
+   * prior reminder (first turn / zero-read prior turn / degraded mode).
+   */
+  freshnessReminderPointer?: string;
 }
 
 /** Terminal result + the delta log for replay reconstruction (roundtrip). */
@@ -521,6 +540,17 @@ export function derivePersistFold(
   usage: unknown,
   runBind?: PersistRunBind,
   resolvedProvider?: string,
+  /**
+   * Index of this run's first row in `messages` (plan #941 adversarial
+   * CONCERNS on PR #943). `runTurnLoop` seeds
+   * `[...priorMessages, user, …this run]`; the reminder names THIS run's
+   * committed `read_file` paths only. `#936` prior rows keep
+   * `assistant.delta.toolCalls[].args.path` — walking the full array would
+   * re-derive last turn's paths on a zero-read chat and break Goal 3
+   * volatility. Default 0 keeps existing unit fixtures that pass a
+   * this-run-only array.
+   */
+  thisRunStart = 0,
 ): PersistStepFold | undefined {
   const checkpoint: Array<{ role: string; content: string }> = [];
   let cwd: string | undefined = runBind?.cwd;
@@ -536,13 +566,25 @@ export function derivePersistFold(
   // the SAME reconstructed rows — user / assistant(+tool-calls) / truncated
   // tool-result rows the NEXT turn seeds from. Bounded by buildModelMessages.
   const modelMessages = buildModelMessages(messages).rows;
+  // Per-turn freshness reminder (plan #941, source #693): THIS run's
+  // committed `read_file` paths only (slice at `thisRunStart` — the
+  // `#936` seed is the same orchestrator shape and must not leak into
+  // the volatile list). Possibly `[]`. ALWAYS carried when the fold
+  // exists: a zero-read turn writes `{paths:[]}` and VOLATILE-CLEARS
+  // the prior turn's reminder (the next turn folds nothing).
+  const start = Math.max(
+    0,
+    Math.min(Number.isFinite(thisRunStart) ? Math.floor(thisRunStart) : 0, messages.length),
+  );
+  const freshnessReminderPaths = buildFreshnessReminder(messages.slice(start)).paths;
   if (
     checkpoint.length === 0 &&
     usage === undefined &&
     cwd === undefined &&
     activeSandboxId === undefined &&
     resolvedProvider === undefined &&
-    modelMessages.length === 0
+    modelMessages.length === 0 &&
+    freshnessReminderPaths.length === 0
   ) {
     return undefined;
   }
@@ -553,6 +595,12 @@ export function derivePersistFold(
     ...(resolvedProvider !== undefined ? { resolvedProvider } : {}),
     ...(checkpoint.length > 0 ? { checkpoint } : {}),
     ...(modelMessages.length > 0 ? { modelMessages } : {}),
+    // Volatility (plan #941 Goal 3): the reminder rides EVERY persist fold —
+    // including the empty list — so the persist seam always rewrites the
+    // projection and a zero-read turn clears the prior turn's paths. A pure
+    // no-tool turn (user+assistant only, no other fold fields) still emits a
+    // fold with just the empty reminder so the clear advances the pointer.
+    freshnessReminder: freshnessReminderPaths,
   };
 }
 
@@ -648,7 +696,14 @@ export async function runTurnLoop(
     | { ok: false; code: string; error: string }
   > => {
     steps += 1;
-    const fold = derivePersistFold(messages, usage, deps.persistRunBind, resolvedProvider);
+    const thisRunStart = (input.priorMessages ?? []).length;
+    const fold = derivePersistFold(
+      messages,
+      usage,
+      deps.persistRunBind,
+      resolvedProvider,
+      thisRunStart,
+    );
     return deps.persistStep({
       turnRunId: deps.turnRunId,
       deltas,
@@ -806,8 +861,18 @@ export async function runTurnLoop(
       }
       // ONE model round — schemas only, never execute (B9 core). Delta return.
       // Pass the running bind so the model sees FS tools for the CURRENT sandbox
-      // + cwd, not the stale start snapshot.
-      const gen = await deps.modelStep({ messages, persistRunBind: bind });
+      // + cwd, not the stale start snapshot. Plan #941: the FIRST round also
+      // carries the prior turn's freshness-reminder pointer (the step folds the
+      // volatile reminder in-step, fail-open); later rounds omit it — this
+      // turn's own committed tool rows are already in `messages`, and repeating
+      // the block every round is token waste burying the user's last message.
+      const gen = await deps.modelStep({
+        messages,
+        persistRunBind: bind,
+        ...(round === 1 && input.freshnessReminderPointer !== undefined
+          ? { freshnessReminderPointer: input.freshnessReminderPointer }
+          : {}),
+      });
       if (!gen.ok) {
         if (gen.code === 'wall_clock') {
           // Dedicated wall sentinel — the wall wrap-up terminal-persists +

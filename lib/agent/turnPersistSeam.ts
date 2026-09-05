@@ -37,10 +37,12 @@
  */
 import {
   HARNESS_SESSION_MAX_BODY_BYTES,
+  FRESHNESS_REMINDER_MAX_BYTES,
   MODEL_MSG_CHECKPOINT_MAX_BYTES,
   TURN_MSG_CHECKPOINT_MAX_BYTES,
   TRANSCRIPT_CHUNK_WALK_MAX,
 } from '../sessionCloudCaps';
+import { serializeFreshnessReminder } from './freshnessReminder';
 import { fitSnapshotUtf8 } from './fitSnapshotUtf8';
 import {
   newBlobObjectId,
@@ -503,6 +505,43 @@ export function createTurnPersistSeam(
         }
       }
 
+      // Freshness-reminder projection (plan #941, source #693): write the
+      // volatile `{paths}` JSON as its OWN Blob object; only the object id
+      // rides in meta (`freshnessReminderPointer`). Same B6 / #936 pattern.
+      // ALWAYS written when the fold carries the sibling (possibly `[]`) —
+      // volatility: a zero-read turn rewrites the projection as `{paths:[]}`
+      // and advances the pointer, so the next turn folds nothing (a stale
+      // path list never survives two turns). The body is pre-trimmed by
+      // `serializeFreshnessReminder` (newest paths kept); the byte cap here
+      // is belt-and-suspenders.
+      let freshnessReminderPointer: string | undefined;
+      if (input.fold?.freshnessReminder !== undefined) {
+        const frObjectId = newBlobObjectId(scope);
+        if (!isObjectIdBoundTo(frObjectId, scope)) {
+          return await failWrite({
+            ok: false,
+            code: 'freshness_reminder_write_failed',
+            error: 'minted freshness-reminder object id is not bound to the session scope.',
+          });
+        }
+        try {
+          await blobStore.writeSegment({
+            objectId: frObjectId,
+            content: serializeFreshnessReminder({ paths: input.fold.freshnessReminder }),
+            contentType: 'application/json',
+            maxBytes: FRESHNESS_REMINDER_MAX_BYTES,
+          });
+          freshnessReminderPointer = frObjectId;
+          patch.freshnessReminderPointer = frObjectId;
+        } catch (err) {
+          return await failWrite({
+            ok: false,
+            code: 'freshness_reminder_write_failed',
+            error: `freshness-reminder blob write failed: ${toMessage(err)}`,
+          });
+        }
+      }
+
       // Transcript (B7): write this-run chunk + advance transcriptPointer
       // only on a successful PUT (fail-closed, LWW). A failure here returns a
       // value; the pointer is never advanced on a partial write. NOTE (honest
@@ -548,6 +587,9 @@ export function createTurnPersistSeam(
         objectId: seg.objectId,
         ...(checkpointPointer !== undefined ? { checkpointPointer } : {}),
         ...(modelMessagesPointer !== undefined ? { modelMessagesPointer } : {}),
+        ...(freshnessReminderPointer !== undefined
+          ? { freshnessReminderPointer }
+          : {}),
       };
     },
   };

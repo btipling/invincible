@@ -187,6 +187,30 @@ reserved-`meta` carriers are defined in
   dropped with a marker so strict providers accept the seeded array; cap-trim
   drops oldest rows then re-pairs. The 262 144 B/msg paint caps above are the
   **display** path; the LLM payload is this separate, smaller projection.
+- **Freshness reminder (per-turn volatile fold, plan #941, source #693).** A
+  sibling projection to the model-messages one: `lib/agent/freshnessReminder.ts`
+  derives, from the SAME reconstructed rows at persist time, the workspace paths
+  of the turn's committed `read_file` calls (paired by `toolCallId`, deduped,
+  capped at `FRESHNESS_REMINDER_MAX_PATHS` = 64 drop-oldest /
+  `FRESHNESS_REMINDER_MAX_BYTES` = 16 KiB keep-newest). The terminal persist
+  seam writes it as its **own Blob object** and only the object **id** rides in
+  envelope `meta.freshnessReminderPointer` (worker-owned; host `cloudMetaFor`
+  never emits it; envelope PUT copy-forwards on omit — same class as
+  `modelMessagesPointer`). **Volatility:** the projection is rewritten on
+  EVERY persist — a zero-read turn writes `{paths:[]}` and advances the
+  pointer, so a stale path list never survives two turns. The NEXT turn's
+  FIRST model round reads it in-step (the route passes the pointer
+  sanitize-only — never a Blob read in the route; `isObjectIdBoundTo`
+  re-enforced in-step, fail-open) and folds a trailing `Error: File-freshness
+  law…` reminder row (the `{role:'error'}` fold idiom → trailing `user`
+  message BELOW the whole history): earlier `tool_result` snapshots are NOT
+  live file views — re-read the path THIS turn (a **full** read; a
+  windowed/truncated read does NOT grant edit) before `str_replace` /
+  `write_file`. Later rounds of the same turn omit the fold (the turn's own
+  tool rows are already in `messages`), and wrap-up rounds never see it. Any
+  read/parse failure → no row, turn proceeds (advisory memory, never a 5xx).
+  Names only — never mtimes, sizes, hashes, or file bodies (freshness stays
+  disk-side, #277).
 
 The durable model step (`modelGenerateStep`) passes the **same** `resolveSystem()` string as `POST /api/agent` — base standing orders (including “Be concise”), plus optional persona / **working-notes** / attached-skill blocks resolved in-step from the assembled tool registry. Persona inject reads and locks `meta.personaSnapshot` on the envelope (`readEnvelope` / `upsertEnvelope`, `updatedAt` unchanged), not the legacy whole-blob `get`/`put`. A missing system prompt is not an output cap; it is what used to let a provider default `max_tokens` look like a mysterious mid-sentence stop. Slash-command `/skill-name` attach still lives on `/api/agent`; the durable step re-resolves sticky and always-on skills only (`command: none`).
 
@@ -281,6 +305,7 @@ Product philosophy: **no live-tool / thinking-segment UX walls** — cancel with
 | Durable-turn wall clock | `lib/sessionCloudCaps.ts` (`TURN_WALL_CLOCK_MAX_MS` + `TURN_WALL_CLOCK_WRAPUP_MAX_MS` + TTL/probe seams), `lib/workflows/turnDeadline.ts` (`deadlineSignal` / `isDeadlineElapsed` / `wrapUpDeadlineAt` / `combineAbortSignals`), `lib/workflows/turnWorkflow.ts` (`deadlineAt` from `getWorkflowMetadata().workflowStartedAt`), `lib/workflows/modelGenerateStep.ts` + `lib/agent/generateOneRound.ts` (deadline `AbortSignal`, wall wrap-up bound + `reasoning: 'none'` (`wrapUp === 'wall'` only; `wrapUp === 'steps'` still carries the 1h signal), `'wall_clock'` code on deadline abort), `lib/workflows/toolExecuteStep.ts` (whole-batch deadline gate + deadline signal + between-wave skip + `'wall_clock'`), `lib/workflows/turnLoop.ts` (wrap-up persist is the first `completed`; when both caps fire, wall wins; a steps wrap-up `'wall_clock'` is the wall terminal), `lib/workflows/turnLog.ts` (`invincible.turn.loop`) |
 | Durable stream write | `lib/workflows/turnSseWrite.ts` (5xx/429/timeout latch immediately; SDK retries 429 inside the first `write()`; one held writer per model/tool burst; sparse `writeOnDefaultStream` for loop `done` / `error`) |
 | Durable persist | `lib/workflows/persistStep.ts` (Blob JSON is `id` + `messages`, not `deltas`), `lib/agent/turnPersistSeam.ts` (trim oldest to 8 MiB), `lib/workflows/turnLoop.ts` (persist `{ok:false}` of **any** code continues the loop — never an SSE `error`). Persist oversize is **not** an SSE `error`. |
+| Freshness reminder (plan #941) | `lib/agent/freshnessReminder.ts` (pure build/render/serialize), `lib/sessionCloudCaps.ts` (`FRESHNESS_REMINDER_MAX_PATHS`/`_MAX_BYTES`), `lib/agent/turnPersistSeam.ts` (volatile `{paths}` Blob write + `meta.freshnessReminderPointer`), `lib/workflows/turnLoop.ts` (`derivePersistFold` sibling + first-round-only `modelStep` arg), `lib/workflows/turnWorkflow.ts` + `lib/workflows/modelGenerateStep.ts` + `lib/workflows/inStepPreambles.ts` (`resolveInStepFreshnessReminder` — in-step read, fail-open trailing fold), `app/api/turns/route.ts` (sanitize-only pointer pass-through), `lib/sessions/sessionStore.ts` + `lib/agent/workerMetaOverlay.ts` + `lib/sessionRepository.ts` (reserved key / copy-forward / host-never-emits) |
 | Durable tool batch | `lib/workflows/toolExecuteStep.ts` (`{ calls }` — one step per model round; waves at `change_dir` / `meta_sandbox_switch` / `write_file` / `str_replace`; live `tool_result` on one held writer; `maxRetries = 0` so a timeout/kill cannot replay applied writes; 1-call infra throws retry in-process), `lib/workflows/toolWaves.ts`, `lib/workflows/turnLoop.ts` (persist once after the batch) |
 | Workflows step logs | `lib/workflows/turnLog.ts`, `lib/workflows/modelGenerateStep.ts`, `lib/workflows/persistStep.ts` |
 | Thinking paint | `native/harness/src/ui/thinking.zig` (protocol v8 kind) |

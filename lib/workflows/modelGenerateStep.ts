@@ -165,6 +165,19 @@ export interface ModelGenerateStepArgs {
    * `generateOneRound` as `request`. Never fetched in-step.
    */
   reasoning?: string;
+  /**
+   * Per-turn freshness-reminder pointer (plan #941, source #693) — present
+   * ONLY on the first non-wrap-up round (the loop guarantees this; the
+   * `disableTools` wrap-up branch never receives it). When present: resolve
+   * the session envelope store + key via the same in-step seam as
+   * `resolveInStepPreambles`, enforce `isObjectIdBoundTo` (confused-deputy,
+   * fail-closed), read the bound `{paths}` Blob object, render, and append
+   * the volatile reminder as the trailing `{role:'error'}` row BEFORE
+   * `toModelMessages` (the shipped wrap-up fold idiom → trailing user
+   * message). ANY failure at any step → no row, turn proceeds (fail-open;
+   * advisory memory, never a 5xx).
+   */
+  freshnessReminderPointer?: string;
 }
 
 /** Fail-closed step result (same shape as the B9 core). */
@@ -353,6 +366,29 @@ export async function modelGenerateStep(
       tenantId: args.scope.tenantId,
       services,
     });
+  // Plan #941: the first non-wrap-up round may carry the prior turn's
+  // freshness-reminder pointer. Resolve the volatile reminder IN-STEP
+  // (fail-open) and fold it as the trailing `{role:'error'}` row BEFORE
+  // `toModelMessages` (the wrap-up fold idiom → trailing user message below
+  // the entire history — cache-stable prefix untouched). Never fires on
+  // `disableTools` wrap-up rounds (the model is answering, not editing).
+  let roundMessages: ReadonlyArray<unknown> = args.messages;
+  if (args.freshnessReminderPointer !== undefined) {
+    try {
+      const { resolveInStepFreshnessReminder } = await import(
+        './inStepPreambles'
+      );
+      const reminder = await resolveInStepFreshnessReminder({
+        pointer: args.freshnessReminderPointer,
+        scope: args.scope,
+      });
+      if (reminder) {
+        roundMessages = [...args.messages, { role: 'error', content: reminder }];
+      }
+    } catch {
+      // Fail-open: reminder resolution must never fail the round.
+    }
+  }
   const system = resolveSystem(
     {
       extraTools: world.registry,
@@ -381,7 +417,7 @@ export async function modelGenerateStep(
         ...(providerHint ? { providerHint } : {}),
       },
       {
-        messages: toModelMessages(args.messages),
+        messages: toModelMessages(roundMessages),
         tools: toolSchemas,
         onEvent: async (ev) => {
           const line = formatLiveModelSse(ev);

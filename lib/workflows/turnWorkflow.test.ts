@@ -16,7 +16,7 @@
  * file would load `modelGenerateStep` and break the sibling mocks.
  */
 
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -105,6 +105,13 @@ import { createTurnPersistSeam } from '../agent/turnPersistSeam';
 import { MemoryBlobTranscriptStore } from '../sessions/blobStores';
 import { MemorySessionStore } from '../sessions/memorySessionStore';
 import type { ObjectScope } from '../sessions/blobStore';
+import { setSessionStoreForTests } from '../tenancy/harnessSessionsRedis';
+import { setBlobStoreForTests } from '../tenancy/harnessSessionsRedis';
+
+afterEach(() => {
+  setSessionStoreForTests(null);
+  setBlobStoreForTests(null);
+});
 
 describe('turnWorkflow entry (backend-agents B13)', () => {
   it('forward the loop-derived fold to the real seam: usage + checkpoint + run-bind all reach envelope meta', async () => {
@@ -248,6 +255,152 @@ describe('turnWorkflow entry (backend-agents B13)', () => {
     const resultPart = toolMsg!.content.find((p) => p.type === 'tool-result');
     expect(resultPart?.toolCallId).toBe('c1');
     expect(resultPart?.output?.value).toBe('turn-1 file body');
+  });
+
+  it('plan #941 row 9 — two turns with a freshness reminder: turn 1 persists {paths}; turn 2 with the pointer folds the reminder as the trailing user row', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const scope: ObjectScope = { tenantId: 't', userId: 'u', sessionId: 's941' };
+    setPersistSeamResolver(() => createTurnPersistSeam({ blobStore, envelopeStore, scope }));
+    setToolWorldResolver(() => ({
+      registry: { read_file: { execute: async () => 'turn-1 file body' } },
+      secrets: [],
+      signal: new AbortController().signal,
+      freshness: createRunFileFreshness(),
+    }));
+    // The in-step reminder read resolves the global test seams
+    // (`setSessionStoreForTests` / `setBlobStoreForTests`) — point them at
+    // THIS test's in-memory stores.
+    setSessionStoreForTests(envelopeStore);
+    setBlobStoreForTests(blobStore);
+
+    // --- Turn 1: reads a file → volatile {paths} persisted. ---
+    let turn1Round = 0;
+    generateImpl.fn = async () => {
+      turn1Round += 1;
+      if (turn1Round === 1) {
+        return {
+          ok: true as const,
+          delta: {
+            text: 'reading',
+            toolCalls: [{ toolName: 'read_file', toolCallId: 'c1', args: { path: 'src/foo.ts' } }],
+          },
+        };
+      }
+      return { ok: true as const, delta: { text: 'turn-1 done', toolCalls: [] } };
+    };
+    const r1 = await turnWorkflow({ userMessage: 'read it', modelId: 'mock-model', scope });
+    expect(r1.status).toBe('completed');
+    const env1 = await envelopeStore.readEnvelope(scope);
+    const frPointer = env1?.meta?.freshnessReminderPointer;
+    expect(typeof frPointer).toBe('string');
+    const frBody1 = JSON.parse((await blobStore.read(frPointer as string)) ?? 'null') as {
+      paths: string[];
+    };
+    expect(frBody1).toEqual({ paths: ['src/foo.ts'] });
+
+    // --- Turn 2: the pointer rides in; the model step sees the trailing
+    // reminder user row (below the whole seeded history). ---
+    let turn2Messages: Array<Record<string, unknown>> | undefined;
+    let turn2Call = 0;
+    generateImpl.fn = async (_deps: unknown, input: unknown) => {
+      turn2Call += 1;
+      if (turn2Call === 1) {
+        turn2Messages = (input as { messages: Array<Record<string, unknown>> }).messages;
+      }
+      return { ok: true as const, delta: { text: 'turn-2 answer', toolCalls: [] } };
+    };
+    const r2 = await turnWorkflow({
+      userMessage: 'now edit it',
+      modelId: 'mock-model',
+      scope,
+      priorMessages: [
+        { role: 'user', content: 'read the file' },
+        {
+          role: 'assistant',
+          delta: { text: 'reading', toolCalls: [{ toolName: 'read_file', toolCallId: 'c1', args: { path: 'src/foo.ts' } }] },
+        },
+        { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'turn-1 file body' },
+      ],
+      freshnessReminderPointer: frPointer as string,
+    });
+    expect(r2.status).toBe('completed');
+    expect(turn2Messages).toBeDefined();
+    const m = turn2Messages!;
+    // The reminder is the LAST row (trailing fold), a `user` message starting
+    // with the `Error:` prefix; the raw prompt sits directly before it.
+    const last = m.at(-1) as { role: string; content?: unknown };
+    expect(last.role).toBe('user');
+    expect(String(last.content).startsWith('Error: File-freshness law for this session')).toBe(
+      true,
+    );
+    expect(String(last.content)).toContain('- src/foo.ts');
+    expect(String(last.content)).toContain('a FULL read');
+    expect((m.at(-2) as { role: string; content?: unknown }).content).toBe('now edit it');
+
+    // Turn 3 (zero-read) WITH the production `#936` seed still in
+    // priorMessages (the bound model-messages pointer path). Volatility
+    // must still persist {paths:[]} — the seeded read_file pair must not
+    // leak into this run's reminder (adversarial-review #943 Major).
+    generateImpl.fn = async () => ({
+      ok: true as const,
+      delta: { text: 'no tools', toolCalls: [] },
+    });
+    const r3 = await turnWorkflow({
+      userMessage: 'nothing to read',
+      modelId: 'mock-model',
+      scope,
+      priorMessages: [
+        { role: 'user', content: 'read the file' },
+        {
+          role: 'assistant',
+          delta: {
+            text: 'reading',
+            toolCalls: [{ toolName: 'read_file', toolCallId: 'c1', args: { path: 'src/foo.ts' } }],
+          },
+        },
+        { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'turn-1 file body' },
+        { role: 'user', content: 'now edit it' },
+        { role: 'assistant', delta: { text: 'turn-2 answer', toolCalls: [] } },
+      ],
+    });
+    expect(r3.status).toBe('completed');
+    const env3 = await envelopeStore.readEnvelope(scope);
+    const newPtr = env3?.meta?.freshnessReminderPointer;
+    expect(typeof newPtr).toBe('string');
+    const parsed3 = JSON.parse((await blobStore.read(newPtr as string)) ?? 'null') as {
+      paths: string[];
+    };
+    expect(parsed3).toEqual({ paths: [] });
+  });
+
+  it('plan #941 — zero-read turn persists {paths:[]} and ADVANCES the pointer (clears a stale list)', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const scope: ObjectScope = { tenantId: 't', userId: 'u', sessionId: 's941b' };
+    setPersistSeamResolver(() => createTurnPersistSeam({ blobStore, envelopeStore, scope }));
+    // Seed a stale pointer from a prior turn.
+    await envelopeStore.upsertEnvelope(scope, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 10,
+      meta: { freshnessReminderPointer: 't_fr_stale_ptr_0000' },
+    });
+    generateImpl.fn = async () => ({
+      ok: true as const,
+      delta: { text: 'no tools', toolCalls: [] },
+    });
+    const r = await turnWorkflow({ userMessage: 'hi', modelId: 'mock-model', scope });
+    expect(r.status).toBe('completed');
+    const env = await envelopeStore.readEnvelope(scope);
+    const ptr = env?.meta?.freshnessReminderPointer;
+    expect(typeof ptr).toBe('string');
+    expect(ptr).not.toBe('t_fr_stale_ptr_0000');
+    const parsed = JSON.parse((await blobStore.read(ptr as string)) ?? 'null') as {
+      paths: string[];
+    };
+    expect(parsed.paths).toEqual([]);
   });
 
   it('turnWorkflow.ts source does not call getWriter (plan #842 — I/O is step-only)', () => {

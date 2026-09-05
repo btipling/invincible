@@ -195,3 +195,67 @@ export async function resolveInStepPreambles(args: {
     ...(notesPreamble ? { notesPreamble } : {}),
   };
 }
+
+/**
+ * In-step read of the per-turn freshness reminder (plan #941, source #693).
+ *
+ * Lives here (NOT `modelGenerateStep.ts`) for the same #940 reason as
+ * `resolveInStepPreambles`: workflow-mode SWC keeps exported non-step
+ * functions in the canvas bundle, and this helper reaches
+ * `harnessSessionsRedis` / `blobStore` — a graph illegal in the workflow VM.
+ * The step file dynamically imports THIS module from inside the `'use step'`
+ * body; tests import it directly.
+ *
+ * Given the sanitized pointer (the route passed it through `start()` args —
+ * never the text, never a Blob read in the route): resolve the session
+ * envelope store + key (same seam as the persona/notes preambles), enforce
+ * `isObjectIdBoundTo` (confused-deputy, fail-closed), read the bound Blob
+ * object, parse the `{paths}` shape, and render the volatile reminder copy.
+ * ANY failure at any step → `undefined` (no row; the turn proceeds fail-open
+ * — the reminder is advisory memory, never a 5xx). Never throws.
+ */
+export async function resolveInStepFreshnessReminder(args: {
+  pointer: string;
+  scope: { tenantId: string; userId: string; sessionId: string };
+}): Promise<string | undefined> {
+  try {
+    const { resolveSessionStore, sessionKeyFor, resolveBlobStore } = await import(
+      '../tenancy/harnessSessionsRedis'
+    );
+    const { isEnvelopeStore } = await import('../sessions/sessionStore');
+    const { isObjectIdBoundTo } = await import('../sessions/blobStore');
+    const { renderFreshnessReminder } = await import('../agent/freshnessReminder');
+    const storeRes = await resolveSessionStore();
+    if (!storeRes.ok || !isEnvelopeStore(storeRes.value)) return undefined;
+    void sessionKeyFor; // key derivation is scope-equality via isObjectIdBoundTo
+    // Confused-deputy guard (fail-closed): the pointer must re-bind to THIS
+    // session scope — a planted/foreign id renders nothing, never a 5xx.
+    if (!isObjectIdBoundTo(args.pointer, args.scope)) return undefined;
+    const blobRes = await resolveBlobStore();
+    if (!blobRes.ok) return undefined;
+    const raw = await blobRes.value.read(args.pointer);
+    if (raw === null) return undefined; // missing object → fail-open
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return undefined; // not the `{paths}` shape → no row
+    }
+    const rawPaths = (parsed as { paths?: unknown }).paths;
+    if (!Array.isArray(rawPaths)) return undefined;
+    const paths: string[] = [];
+    for (const p of rawPaths) {
+      if (typeof p === 'string' && p) paths.push(p);
+    }
+    const rawOmitted = (parsed as { omitted?: unknown }).omitted;
+    const persistedOmitted =
+      typeof rawOmitted === 'number' &&
+      Number.isFinite(rawOmitted) &&
+      rawOmitted > 0
+        ? Math.floor(rawOmitted)
+        : 0;
+    if (paths.length === 0 && persistedOmitted === 0) return undefined; // zero-read prior turn → no fold
+    return renderFreshnessReminder(paths, persistedOmitted);
+  } catch {
+    // Fail-open: any read/parse problem → no reminder row, turn unaffected.
+    return undefined;
+  }
+}

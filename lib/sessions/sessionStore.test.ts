@@ -13,6 +13,7 @@ import {
   sessionKeyString,
   sessionPrefix,
   copyForwardModelMessagesPointer,
+  copyForwardFreshnessReminderPointer,
   copyForwardWorkingNotes,
 } from './sessionStore';
 import {
@@ -183,6 +184,7 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
       'turnStatus',
       'turnStreamCursor',
       'workingNotes',
+      'freshnessReminderPointer',
     ]);
     for (const k of RESERVED_META_KEYS) {
       // `attachedSkills` is a JSON-encoded string; `usage` is a JSON UsageSummary
@@ -1284,6 +1286,149 @@ describe('envelope carrier (phase 0 #515)', () => {
     expect(explicit.status).toBe('stored');
     if (explicit.status === 'stored') {
       expect(explicit.envelope.meta.modelMessagesPointer).toBe('t_mm_host');
+    }
+  });
+
+  it('plan #941 — accepts a valid Redis-safe meta.freshnessReminderPointer and DROPS a poisoned one to unset (never 400)', () => {
+    // The freshness-reminder pointer is the sibling of `modelMessagesPointer`
+    // (same Redis-safe opaque rule) but a DISTINCT reserved key — the volatile
+    // `{paths}` projection is its own Blob surface. The BODY never rides in
+    // meta; only the object id does.
+    const ok = validateSessionRecord(
+      makeRecord({ meta: { freshnessReminderPointer: 'fr_abc-123DEF' } as HarnessSessionRecord['meta'] }),
+    );
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.value.meta.freshnessReminderPointer).toBe('fr_abc-123DEF');
+    expect(validateMeta({ freshnessReminderPointer: 'fr_abc123' }).ok).toBe(true);
+
+    // Poisoned / null / non-opaque (glob, `:`, space, `.`, `/`, over-length,
+    // non-string) are DROPPED to unset — never a 400 (same drop-to-unset
+    // decision as the other pointer carriers).
+    for (const bad of [
+      'fr a:b',
+      '*',
+      'a?b',
+      'has space',
+      'a.b',
+      'fr/abc',
+      'x'.repeat(513),
+      42 as unknown,
+      undefined as unknown,
+      null as unknown,
+    ]) {
+      const res = validateSessionRecord(
+        makeRecord({ meta: { freshnessReminderPointer: bad } as HarnessSessionRecord['meta'] }),
+      );
+      expect(res.ok).toBe(true); // drop-to-unset, not a 400
+      if (res.ok) {
+        expect('freshnessReminderPointer' in res.value.meta).toBe(false);
+        expect(res.value.meta.freshnessReminderPointer).toBeUndefined();
+      }
+    }
+
+    // The reserved-key contract is intact: unknown keys are STILL rejected.
+    expect(
+      validateSessionRecord(makeRecord({ meta: { notReserved: 1 } as HarnessSessionRecord['meta'] })).ok,
+    ).toBe(false);
+  });
+
+  it('plan #941 — validateMeta round-trips freshnessReminderPointer and omits poison; distinct siblings coexist', () => {
+    const ok = validateMeta({ freshnessReminderPointer: 'fr_abc123-def' });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.value.freshnessReminderPointer).toBe('fr_abc123-def');
+
+    const poison = validateMeta({ freshnessReminderPointer: 'x'.repeat(513) });
+    expect(poison.ok).toBe(true);
+    if (poison.ok) expect('freshnessReminderPointer' in poison.value).toBe(false);
+    const nonOpaque = validateMeta({ freshnessReminderPointer: 'a:b' });
+    expect(nonOpaque.ok).toBe(true);
+    if (nonOpaque.ok) expect('freshnessReminderPointer' in nonOpaque.value).toBe(false);
+
+    // Envelope path shares the same drop-to-unset, never a 400.
+    const env = validateSessionEnvelope({ ...makeRecord(), meta: { freshnessReminderPointer: 'a b' } });
+    expect(env.ok).toBe(true);
+    if (env.ok) expect('freshnessReminderPointer' in env.value.meta).toBe(false);
+
+    // Sibling keys coexist independently.
+    const all = validateSessionRecord(
+      makeRecord({
+        meta: {
+          modelMessagesPointer: 'mm_1',
+          freshnessReminderPointer: 'fr_1',
+          workingNotes: 'note',
+        } as HarnessSessionRecord['meta'],
+      }),
+    );
+    expect(all.ok).toBe(true);
+    if (all.ok) {
+      expect(all.value.meta.modelMessagesPointer).toBe('mm_1');
+      expect(all.value.meta.freshnessReminderPointer).toBe('fr_1');
+      expect(all.value.meta.workingNotes).toBe('note');
+    }
+  });
+
+  it('plan #941 — copyForwardFreshnessReminderPointer keeps stored pointer when incoming omits; explicit incoming wins', () => {
+    const stored = { freshnessReminderPointer: 't_fr_keep', modelMessagesPointer: 't_mm_keep' };
+    const omitted = copyForwardFreshnessReminderPointer({ turnStatus: 'completed' }, stored);
+    expect(omitted.freshnessReminderPointer).toBe('t_fr_keep');
+    expect(omitted.turnStatus).toBe('completed');
+    const explicit = copyForwardFreshnessReminderPointer(
+      { freshnessReminderPointer: 't_fr_host' },
+      stored,
+    );
+    expect(explicit.freshnessReminderPointer).toBe('t_fr_host');
+    const emptyStored = copyForwardFreshnessReminderPointer({ turnStatus: 'completed' }, {});
+    expect('freshnessReminderPointer' in emptyStored).toBe(false);
+    // Host-shaped PUT (cloudMetaFor never emits the key) must keep the worker's
+    // latest volatile pointer, not clear it.
+    const hostOmit = copyForwardFreshnessReminderPointer(
+      { turnStatus: 'completed' },
+      { freshnessReminderPointer: 't_fr_P2' },
+    );
+    expect(hostOmit.freshnessReminderPointer).toBe('t_fr_P2');
+    // Poisoned stored value is NOT copy-forwarded.
+    const poisonedStored = copyForwardFreshnessReminderPointer(
+      { turnStatus: 'completed' },
+      { freshnessReminderPointer: 'a:b' },
+    );
+    expect('freshnessReminderPointer' in poisonedStored).toBe(false);
+  });
+
+  it('plan #941 — upsertEnvelope copy-forwards freshnessReminderPointer from LWW existing when incoming omits', async () => {
+    const s = new MemorySessionStore();
+    const k = { tenantId: 'tenant-1', userId: 'user-1', sessionId: 's1' };
+    await s.upsertEnvelope(k, {
+      id: 's1',
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      updatedAt: 10,
+      meta: { freshnessReminderPointer: 't_fr_keep', turnStatus: 'running' },
+    });
+    // A host flatten omit (cloudMetaFor never emits the key) keeps the worker's
+    // latest pointer — a stale snapshot cannot VOLATILE-CLEAR the reminder.
+    const hostOmit = await s.upsertEnvelope(k, {
+      id: 's1',
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      updatedAt: 20,
+      meta: { turnStatus: 'completed' },
+    });
+    expect(hostOmit.status).toBe('stored');
+    if (hostOmit.status === 'stored') {
+      expect(hostOmit.envelope.meta.freshnessReminderPointer).toBe('t_fr_keep');
+      expect(hostOmit.envelope.meta.turnStatus).toBe('completed');
+    }
+    // The worker overlay's explicit value wins (next turn's pointer).
+    const explicit = await s.upsertEnvelope(k, {
+      id: 's1',
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      updatedAt: 30,
+      meta: { freshnessReminderPointer: 't_fr_new' },
+    });
+    expect(explicit.status).toBe('stored');
+    if (explicit.status === 'stored') {
+      expect(explicit.envelope.meta.freshnessReminderPointer).toBe('t_fr_new');
     }
   });
 

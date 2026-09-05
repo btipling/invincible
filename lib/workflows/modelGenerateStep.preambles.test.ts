@@ -4,13 +4,18 @@
  * persona/skills stores are ABSENT (the retired `return {}` guard).
  * In-memory envelope fake — no Redis / PGlite / Gateway.
  *
- * Imports the helper from `inStepPreambles.ts` (not the `'use step'` file) so
+ * Also pins plan #941 / adversarial-review #943 Minor: in-step freshness
+ * reminder fail-open (unbound pointer, missing blob, non-`{paths}` JSON).
+ *
+ * Imports the helpers from `inStepPreambles.ts` (not the `'use step'` file) so
  * the unit pin does not re-export a store graph into the workflow VM bundle.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WORKING_NOTES_MAX_BYTES } from '../sessionCloudCaps';
+import { newBlobObjectId } from '../sessions/blobStore';
 
 const readEnvelope = vi.fn();
+const blobRead = vi.fn();
 
 vi.mock('../tenancy/harnessSessionsRedis', () => ({
   resolveSessionStore: async () => ({
@@ -29,6 +34,10 @@ vi.mock('../tenancy/harnessSessionsRedis', () => ({
     userId,
     sessionId,
   }),
+  resolveBlobStore: async () => ({
+    ok: true as const,
+    value: { read: blobRead },
+  }),
 }));
 
 vi.mock('../tenancy/personaInject', () => ({
@@ -43,7 +52,7 @@ vi.mock('../tenancy/skillInject', () => ({
   }),
 }));
 
-import { resolveInStepPreambles } from './inStepPreambles';
+import { resolveInStepPreambles, resolveInStepFreshnessReminder } from './inStepPreambles';
 
 const SCOPE = {
   userId: 'user-1',
@@ -54,6 +63,7 @@ const SCOPE = {
 describe('resolveInStepPreambles — working-notes fold (plan #938 / adversarial #940)', () => {
   afterEach(() => {
     readEnvelope.mockReset();
+    blobRead.mockReset();
   });
 
   it('reads meta.workingNotes when persona/skills stores are absent (widened guard)', async () => {
@@ -108,5 +118,64 @@ describe('resolveInStepPreambles — working-notes fold (plan #938 / adversarial
     const out = await resolveInStepPreambles({ ...SCOPE, services: {} });
     expect(out.notesPreamble).toBeUndefined();
     expect(out).toEqual({});
+  });
+});
+
+describe('resolveInStepFreshnessReminder — fail-open (plan #941 / adversarial #943)', () => {
+  const frScope = { tenantId: SCOPE.tenantId, userId: SCOPE.userId, sessionId: SCOPE.sessionId };
+
+  afterEach(() => {
+    blobRead.mockReset();
+  });
+
+  it('bound pointer + {paths} JSON → rendered reminder', async () => {
+    const pointer = newBlobObjectId(frScope);
+    blobRead.mockResolvedValue(JSON.stringify({ paths: ['src/foo.ts'] }));
+    const text = await resolveInStepFreshnessReminder({ pointer, scope: frScope });
+    expect(text).toBeDefined();
+    expect(text).toContain('Error: File-freshness law for this session');
+    expect(text).toContain('- src/foo.ts');
+    expect(blobRead).toHaveBeenCalledWith(pointer);
+  });
+
+  it('opaque-but-unbound pointer → undefined (confused-deputy, no blob read)', async () => {
+    const text = await resolveInStepFreshnessReminder({
+      pointer: 't_ffffffffffff_abc123',
+      scope: frScope,
+    });
+    expect(text).toBeUndefined();
+    expect(blobRead).not.toHaveBeenCalled();
+  });
+
+  it('bound pointer, missing blob → undefined', async () => {
+    const pointer = newBlobObjectId(frScope);
+    blobRead.mockResolvedValue(null);
+    const text = await resolveInStepFreshnessReminder({ pointer, scope: frScope });
+    expect(text).toBeUndefined();
+  });
+
+  it('bound pointer, non-{paths} JSON (transcript-shaped) → undefined', async () => {
+    const pointer = newBlobObjectId(frScope);
+    blobRead.mockResolvedValue(JSON.stringify({ id: 's', messages: [] }));
+    const text = await resolveInStepFreshnessReminder({ pointer, scope: frScope });
+    expect(text).toBeUndefined();
+  });
+
+  it('bound pointer, {paths:[]} → undefined (zero-read prior turn, no fold)', async () => {
+    const pointer = newBlobObjectId(frScope);
+    blobRead.mockResolvedValue(JSON.stringify({ paths: [] }));
+    const text = await resolveInStepFreshnessReminder({ pointer, scope: frScope });
+    expect(text).toBeUndefined();
+  });
+
+  it('adversarial #943 — bound pointer + {paths, omitted} → rendered marker', async () => {
+    const pointer = newBlobObjectId(frScope);
+    blobRead.mockResolvedValue(
+      JSON.stringify({ paths: ['keep/me.ts'], omitted: 5 }),
+    );
+    const text = await resolveInStepFreshnessReminder({ pointer, scope: frScope });
+    expect(text).toBeDefined();
+    expect(text).toContain('- keep/me.ts');
+    expect(text).toContain('(\u2026 5 earlier paths omitted)');
   });
 });
