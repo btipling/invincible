@@ -64,7 +64,7 @@ import {
   buildModelMessages,
   trimModelMessagesToBudget,
 } from '../../../lib/agent/modelMessages';
-import { renderSummaryRow } from '../../../lib/agent/compaction';
+import { buildCheckpoint, renderSummaryRow } from '../../../lib/agent/compaction';
 import { foldBudgetTokens } from '../../../lib/agent/contextBudget';
 import { TURN_START_MIN_INTERVAL_MS, sanitizeTurnRunId, isRedisSafeOpaqueId } from '../../../lib/sessionCloudCaps';
 import { mapByokResolveFailure } from '../../../lib/chatServer';
@@ -158,8 +158,9 @@ function isHardSandboxDeny(
  * token budget (+ row/byte rails) at this boundary before `start()`.
  * Plan #949 (A4 phase 2): the seed prefers the compaction checkpoint
  * (`meta.compactionPointer` → `[renderSummaryRow(...), ...retainedTail]`,
- * re-validated + re-paired), falling back to `modelMessagesPointer`, then the
- * legacy `promptHistory` sidecar (locked fallback chain).
+ * re-validated via `buildCheckpoint` + re-paired), falling back to
+ * `modelMessagesPointer`, then the legacy `promptHistory` sidecar (locked
+ * fallback chain).
  */
 export async function POST(req: Request): Promise<Response> {
   // Auth gate FIRST (mirrors app/api/agent/route.ts POST gate) — before any
@@ -374,13 +375,14 @@ export async function POST(req: Request): Promise<Response> {
           // compactionPointer → modelMessagesPointer → legacy `promptHistory`
           // sidecar. The compaction checkpoint (`{summary, filesTouched,
           // retainedTail}`, written by the persist seam when a compaction ran)
-          // is preferred: the route re-validates the shape + re-pairs the
-          // retained tail via `buildModelMessages` and seeds
-          // `[renderSummaryRow(...), ...retainedTail]` — the honesty-labeled
-          // summary row rides FIRST (a `user` row, never live assistant
-          // prose; parent #947 Goal 4). A malformed/unbound/missing
-          // checkpoint falls through to `modelMessagesPointer` (the #936
-          // path below); when a bound pointer exists but NO seed is
+          // is preferred: the route re-validates the shape, re-runs
+          // `buildCheckpoint` (summary / filesTouched caps + omitted-count
+          // honesty), re-pairs the retained tail via `buildModelMessages`,
+          // and seeds `[renderSummaryRow(...), ...retainedTail]` — the
+          // honesty-labeled summary row rides FIRST (a `user` row, never
+          // live assistant prose; parent #947 Goal 4). A malformed/unbound/
+          // missing checkpoint falls through to `modelMessagesPointer` (the
+          // #936 path below); when a bound pointer exists but NO seed is
           // readable and the host sent no `promptHistory`, the #937
           // fail-closed 503 still applies (shared across both pointers).
           // Same DI surface — `services.createBlobTranscriptStore()` (the
@@ -415,12 +417,27 @@ export async function POST(req: Request): Promise<Response> {
                     // the checkpoint tail is already re-paired at build
                     // time — this is the read-side re-validation lock).
                     const tail = buildModelMessages(o.retainedTail).rows;
+                    // Re-run `buildCheckpoint` so a planted/stale blob
+                    // cannot bypass COMPACTION_SUMMARY_MAX_CHARS /
+                    // COMPACTION_FILES_TOUCHED_MAX (adversarial #954).
+                    // `buildCheckpoint` also re-pairs the tail (idempotent
+                    // after `buildModelMessages`) and bakes the files
+                    // omitted-count honesty marker into `summary`.
+                    const checkpoint = buildCheckpoint(
+                      {
+                        summary: o.summary,
+                        filesTouched: o.filesTouched.filter(
+                          (p): p is string => typeof p === 'string',
+                        ),
+                      },
+                      tail,
+                    );
                     const seed = [
                       renderSummaryRow(
-                        o.summary,
-                        o.filesTouched.filter((p): p is string => typeof p === 'string'),
+                        checkpoint.summary,
+                        checkpoint.filesTouched,
                       ),
-                      ...tail,
+                      ...checkpoint.retainedTail,
                     ];
                     // Plan #944 / adversarial #945: trim the seed to the
                     // model's window-derived token budget (+ row/byte
