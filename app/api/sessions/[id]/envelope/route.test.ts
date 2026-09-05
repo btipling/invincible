@@ -209,6 +209,45 @@ describe('/api/sessions/:id/envelope', () => {
     expect(body.meta.modelMessagesPointer).toBe(boundPtr);
   });
 
+  it('adversarial #954 — PUT rejects a compactionPointer NOT minted for this session', async () => {
+    const { PUT } = await mockAuthed();
+    const foreignPtr = newBlobObjectId({
+      tenantId: 'tenant-b',
+      userId: 'user-b',
+      sessionId: 'zzz',
+    });
+    const planted = await PUT(
+      putRequest('abc', {
+        id: 'abc',
+        updatedAt: 5,
+        meta: { compactionPointer: foreignPtr },
+      }),
+      ctx('abc'),
+    );
+    expect(planted.status).toBe(400);
+    expect(((await planted.json()) as { code: string }).code).toBe('INVALID_META');
+  });
+
+  it('adversarial #954 — PUT accepts a compactionPointer minted for this session', async () => {
+    const { PUT } = await mockAuthed();
+    const boundPtr = newBlobObjectId({
+      tenantId: TENANT,
+      userId: USER,
+      sessionId: 'abc',
+    });
+    const res = await PUT(
+      putRequest('abc', {
+        id: 'abc',
+        updatedAt: 5,
+        meta: { compactionPointer: boundPtr },
+      }),
+      ctx('abc'),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { meta: { compactionPointer?: string } };
+    expect(body.meta.compactionPointer).toBe(boundPtr);
+  });
+
   it('PUT LWW conflict → 409 + server envelope; equal → accepted', async () => {
     const store = new MemorySessionStore();
     setSessionStoreForTests(store);

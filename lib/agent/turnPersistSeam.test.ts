@@ -352,6 +352,15 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     const { seam, envelopeStore } = await makeSeam({
       seed: { updatedAt: 1000, meta: { freshnessReminderPointer: 't_fr_prior_0000' } },
     });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [{ d: 1 }],
+      content: '{"delta":"x"}',
+      fold: { cwd: 'docs' },
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.freshnessReminderPointer).toBeUndefined();
     const env = await envelopeStore.readEnvelope(key);
     // B8 copy-forward keeps the prior worker pointer (host flatten cannot clear).
     expect(env?.meta?.freshnessReminderPointer).toBe('t_fr_prior_0000');
@@ -414,7 +423,7 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     expect(env?.meta?.turnStatus).toBe('completed');
   });
 
-  it('plan #949 row 1b — no compactionCheckpoint fold → no pointer written; prior pointer survives (copy-forward, durable write-once/read carrier)', async () => {
+  it('plan #949 row 1b (no-fold) — no compactionCheckpoint fold → no pointer written; prior pointer survives (copy-forward, durable write-once/read carrier)', async () => {
     const { seam, envelopeStore } = await makeSeam({
       seed: { updatedAt: 1000, meta: { compactionPointer: 't_cp_prior_0000' } },
     });

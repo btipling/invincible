@@ -386,4 +386,40 @@ describe('buildCheckpoint (plan #948 row 4 — caps table enforcement)', () => {
     expect(cp.filesTouched).toEqual([]);
     expect(cp.retainedTail).toEqual([user('hi')]);
   });
+
+  it('adversarial #954 — buildCheckpoint is idempotent on its own output (read-seam re-run)', () => {
+    const paths = Array.from(
+      { length: COMPACTION_FILES_TOUCHED_MAX + 10 },
+      (_, i) => `p${i}.ts`,
+    );
+    // At-cap BMP head + files overflow: first build bakes omitted, must NOT
+    // grow a lying truncation marker on the second call.
+    const first = buildCheckpoint(
+      { summary: 'x'.repeat(COMPACTION_SUMMARY_MAX_CHARS), filesTouched: paths },
+      [user('hi')],
+    );
+    expect(first.summary).toContain('earlier paths omitted');
+    expect(first.summary).not.toContain('… [summary truncated]');
+    const second = buildCheckpoint(
+      { summary: first.summary, filesTouched: first.filesTouched },
+      first.retainedTail,
+    );
+    expect(second).toEqual(first);
+
+    // Over-cap astral head + files overflow: truncation + omitted both survive.
+    const over = buildCheckpoint(
+      {
+        summary: '🙂'.repeat(COMPACTION_SUMMARY_MAX_CHARS + 1),
+        filesTouched: paths,
+      },
+      [],
+    );
+    expect(over.summary).toContain('… [summary truncated]');
+    expect(over.summary).toContain('earlier paths omitted');
+    const over2 = buildCheckpoint(
+      { summary: over.summary, filesTouched: over.filesTouched },
+      over.retainedTail,
+    );
+    expect(over2).toEqual(over);
+  });
 });

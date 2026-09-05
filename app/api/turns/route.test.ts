@@ -4,6 +4,7 @@ import {
   COMPACTION_FILES_TOUCHED_MAX,
   COMPACTION_SUMMARY_MAX_CHARS,
 } from '../../../lib/sessionCloudCaps';
+import { buildCheckpoint } from '../../../lib/agent/compaction';
 
 /**
  * Distant-future `updatedAt` planted in the mock envelope for row 1, so the
@@ -1760,6 +1761,49 @@ describe('POST /api/turns', () => {
         '',
       );
     expect([...head].length).toBe(COMPACTION_SUMMARY_MAX_CHARS);
+    expect(startArgs.priorMessages[1]).toEqual({
+      role: 'user',
+      content: 'resume here',
+    });
+  });
+
+  it('adversarial #954 — a pre-built checkpoint round-trips honesty (no lying truncation, omitted count kept)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    const paths = Array.from(
+      { length: COMPACTION_FILES_TOUCHED_MAX + 10 },
+      (_, i) => `p${i}.ts`,
+    );
+    const built = buildCheckpoint(
+      {
+        summary: 'x'.repeat(COMPACTION_SUMMARY_MAX_CHARS),
+        filesTouched: paths,
+      },
+      [{ role: 'user', content: 'resume here' }],
+    );
+    expect(built.summary).toContain('earlier paths omitted');
+    expect(built.summary).not.toContain('… [summary truncated]');
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        compactionPointer: 't_cp_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(JSON.stringify(built));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'continue', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.priorMessages).toHaveLength(2);
+    const summaryRow = startArgs.priorMessages[0];
+    expect(summaryRow.role).toBe('user');
+    expect(summaryRow.content).toContain('earlier paths omitted');
+    expect(summaryRow.content).not.toContain('… [summary truncated]');
+    expect(summaryRow.content).toContain('p10.ts');
     expect(startArgs.priorMessages[1]).toEqual({
       role: 'user',
       content: 'resume here',

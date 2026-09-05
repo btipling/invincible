@@ -713,12 +713,13 @@ export type CloudPutBody = {
  * Reserved-meta write contract (`RESERVED_META_KEYS`): this object is the
  * **full desired set**. A key left off is a **clear**, not a hole. Returns
  * `undefined` when every carrier is unset (empty desired set).
- * Exception: `modelMessagesPointer` and `freshnessReminderPointer` are
- * worker-authored. This helper **never emits them** (adversarial-review
- * #937 Major / plan #941): a GET-overlaid snapshot id is stale the moment
- * the next worker persist writes a new Blob. Envelope PUT copy-forwards
- * the stored worker pointer when the host omits the key. `workingNotes`
- * is the same never-emit class (adversarial-review #940).
+ * Exception: `modelMessagesPointer`, `freshnessReminderPointer`, and
+ * `compactionPointer` are worker-authored. This helper **never emits them**
+ * (adversarial-review #937 Major / plans #941 / #949): a GET-overlaid
+ * snapshot id is stale the moment the next worker persist writes a new Blob.
+ * Envelope PUT copy-forwards the stored worker pointer when the host omits
+ * the key. `workingNotes` is the same never-emit class (adversarial-review
+ * #940).
  */
 export function cloudMetaFor(
   snapshot: SessionSnapshot,
@@ -790,6 +791,8 @@ export function cloudMetaFor(
   // Worker-authored; GET overlay is local (sidecar-stop). Host PUT omit
   // lets upsertEnvelope copy-forward the stored worker id. Emitting the
   // snapshot's (stale) id LWW-stomps P_n with P_{n-1}.
+  // Plan #941 / #949: same never-emit class for freshnessReminderPointer
+  // and compactionPointer (durable checkpoint pointer).
   return meta.logicalCwd === undefined &&
     meta.activeSandboxId === undefined &&
     meta.personaId === undefined &&

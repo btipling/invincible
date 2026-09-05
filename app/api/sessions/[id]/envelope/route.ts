@@ -238,6 +238,29 @@ export async function PUT(req: Request, ctx: Ctx): Promise<Response> {
     );
   }
 
+  // Plan #949 / adversarial-review #954: compactionPointer is a seed pointer
+  // of the same class as modelMessagesPointer. Seed still bind-checks, but a
+  // planted unbound id must not land on the envelope.
+  const cpPointer = validated.value.meta?.compactionPointer;
+  if (
+    typeof cpPointer === 'string' &&
+    cpPointer &&
+    !isObjectIdBoundTo(cpPointer, {
+      tenantId: scope.tenantId,
+      userId: gate.userId,
+      sessionId: id,
+    })
+  ) {
+    return Response.json(
+      {
+        error:
+          'meta.compactionPointer must reference an object minted for this session.',
+        code: 'INVALID_META',
+      },
+      { status: 400 },
+    );
+  }
+
   const input: SessionEnvelopeInput = {
     id: validated.value.id,
     userId: validated.value.userId,

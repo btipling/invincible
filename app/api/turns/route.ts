@@ -420,9 +420,13 @@ export async function POST(req: Request): Promise<Response> {
                     // Re-run `buildCheckpoint` so a planted/stale blob
                     // cannot bypass COMPACTION_SUMMARY_MAX_CHARS /
                     // COMPACTION_FILES_TOUCHED_MAX (adversarial #954).
-                    // `buildCheckpoint` also re-pairs the tail (idempotent
-                    // after `buildModelMessages`) and bakes the files
-                    // omitted-count honesty marker into `summary`.
+                    // `buildCheckpoint` peels any previously baked
+                    // truncation / omitted-count suffixes, re-caps the
+                    // head, re-pairs the tail (idempotent after
+                    // `buildModelMessages`), and re-bakes files omitted-
+                    // count honesty into `summary` — a well-formed
+                    // persist Blob round-trips without a lying
+                    // truncation marker.
                     const checkpoint = buildCheckpoint(
                       {
                         summary: o.summary,
