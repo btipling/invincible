@@ -8,7 +8,9 @@
  * The same two sources also publish a per-model **context window** (plan
  * #944): Gateway `context_length`, models.dev `limit.context` — parsed into
  * parallel window maps (`getJoinedWindowMap`) with the same TTL / fail-open /
- * negative-cache discipline. Unknown id → the caller applies the documented
+ * negative-cache discipline. **One GET per source** parses both the effort
+ * list and the window (adversarial #945) — `/api/models` must not hit each
+ * URL twice. Unknown id → the caller applies the documented
  * conservative default (`lib/agent/contextWindow.ts`), never a fabricated
  * window.
  *
@@ -86,31 +88,27 @@ export type FetchImpl = (
   body?: ReadableStream<Uint8Array> | null;
 }>;
 
-type CacheEntry = { fetchedAt: number; map: Map<string, string[]> };
-
 /** Model id → published context window in tokens (plan #944). */
 export type WindowMap = Map<string, number>;
 
-let cache: CacheEntry | null = null;
-let inflight: Promise<Map<string, string[]>> | null = null;
-let overlayCache: CacheEntry | null = null;
-let overlayInflight: Promise<Map<string, string[]>> | null = null;
+/** One Gateway / models.dev GET parses both effort and window maps. */
+type SourceBundle = {
+  fetchedAt: number;
+  effort: Map<string, string[]>;
+  windows: WindowMap;
+};
 
-let windowCache: { fetchedAt: number; map: WindowMap } | null = null;
-let windowInflight: Promise<WindowMap> | null = null;
-let overlayWindowCache: { fetchedAt: number; map: WindowMap } | null = null;
-let overlayWindowInflight: Promise<WindowMap> | null = null;
+let gatewayBundle: SourceBundle | null = null;
+let gatewayBundleInflight: Promise<SourceBundle> | null = null;
+let overlayBundle: SourceBundle | null = null;
+let overlayBundleInflight: Promise<SourceBundle> | null = null;
 
 /** Test-only: drop Gateway + overlay caches and in-flight GETs. */
 export function resetGatewayModelsCache(): void {
-  cache = null;
-  inflight = null;
-  overlayCache = null;
-  overlayInflight = null;
-  windowCache = null;
-  windowInflight = null;
-  overlayWindowCache = null;
-  overlayWindowInflight = null;
+  gatewayBundle = null;
+  gatewayBundleInflight = null;
+  overlayBundle = null;
+  overlayBundleInflight = null;
 }
 
 /**
@@ -265,17 +263,16 @@ function effortValuesFromRow(row: object): string[] {
   return values;
 }
 
-async function fetchGatewayEffortMap(
+async function fetchGatewayPayload(
   fetchImpl: FetchImpl,
-): Promise<Map<string, string[]>> {
+): Promise<unknown> {
   const res = await fetchImpl(GATEWAY_MODELS_URL, {
     signal: AbortSignal.timeout(GATEWAY_MODELS_FETCH_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(`gateway models HTTP ${res.status ?? 'error'}`);
   }
-  const payload = await res.json();
-  return parseGatewayEffortMap(payload);
+  return res.json();
 }
 
 async function readCappedUtf8(stream: ReadableStream<Uint8Array>): Promise<string> {
@@ -336,9 +333,9 @@ async function payloadFromModelsDevResponse(res: {
   return res.json();
 }
 
-async function fetchModelsDevEffortMap(
+async function fetchModelsDevPayload(
   fetchImpl: FetchImpl,
-): Promise<Map<string, string[]>> {
+): Promise<unknown> {
   const res = await fetchImpl(MODELS_DEV_URL, {
     signal: AbortSignal.timeout(GATEWAY_MODELS_FETCH_TIMEOUT_MS),
     redirect: 'error',
@@ -346,77 +343,102 @@ async function fetchModelsDevEffortMap(
   if (!res.ok) {
     throw new Error(`models.dev HTTP ${res.status ?? 'error'}`);
   }
-  const payload = await payloadFromModelsDevResponse(res);
-  return parseModelsDevEffortMap(payload);
+  return payloadFromModelsDevResponse(res);
 }
 
-function loadCachedMap(
-  entry: CacheEntry | null,
-  now: number,
-): Map<string, string[]> | null {
+function loadBundle(entry: SourceBundle | null, now: number): SourceBundle | null {
   if (entry && now - entry.fetchedAt < GATEWAY_MODELS_CACHE_TTL_MS) {
-    return entry.map;
+    return entry;
   }
   return null;
 }
 
+function emptyBundle(now: number): SourceBundle {
+  return { fetchedAt: now, effort: new Map(), windows: new Map() };
+}
+
 /**
  * Best-effort per-instance catalog. TTL `GATEWAY_MODELS_CACHE_TTL_MS`.
- * Fetch/parse/timeout failure → last good map, else empty (never throws).
+ * Fetch/parse/timeout failure → last good bundle, else empty (never throws).
  * Failed fetches write that fallback into cache so the next caller within
  * TTL does not retry the GET (adversarial-review #899 L5).
+ * One GET parses effort + window (adversarial #945).
  */
+async function getGatewayBundle(opts?: {
+  fetchImpl?: FetchImpl;
+  now?: () => number;
+}): Promise<SourceBundle> {
+  const now = (opts?.now ?? Date.now)();
+  const hit = loadBundle(gatewayBundle, now);
+  if (hit) return hit;
+  if (gatewayBundleInflight) return gatewayBundleInflight;
+
+  const fetchImpl = opts?.fetchImpl ?? (globalThis.fetch as FetchImpl);
+  gatewayBundleInflight = (async () => {
+    try {
+      const payload = await fetchGatewayPayload(fetchImpl);
+      const bundle: SourceBundle = {
+        fetchedAt: now,
+        effort: parseGatewayEffortMap(payload),
+        windows: parseGatewayWindowMap(payload),
+      };
+      gatewayBundle = bundle;
+      return bundle;
+    } catch {
+      const fallback = gatewayBundle ?? emptyBundle(now);
+      gatewayBundle = { ...fallback, fetchedAt: now };
+      return gatewayBundle;
+    } finally {
+      gatewayBundleInflight = null;
+    }
+  })();
+  return gatewayBundleInflight;
+}
+
 export async function getGatewayEffortMap(opts?: {
   fetchImpl?: FetchImpl;
   now?: () => number;
 }): Promise<Map<string, string[]>> {
-  const now = (opts?.now ?? Date.now)();
-  const hit = loadCachedMap(cache, now);
-  if (hit) return hit;
-  if (inflight) return inflight;
-
-  const fetchImpl = opts?.fetchImpl ?? (globalThis.fetch as FetchImpl);
-  inflight = (async () => {
-    try {
-      const map = await fetchGatewayEffortMap(fetchImpl);
-      cache = { fetchedAt: now, map };
-      return map;
-    } catch {
-      const fallback = cache?.map ?? new Map();
-      cache = { fetchedAt: now, map: fallback };
-      return fallback;
-    } finally {
-      inflight = null;
-    }
-  })();
-  return inflight;
+  return (await getGatewayBundle(opts)).effort;
 }
 
 /** models.dev `vercel.models` overlay — same TTL / fail-open / negative-cache. */
+async function getModelsDevBundle(opts?: {
+  fetchImpl?: FetchImpl;
+  now?: () => number;
+}): Promise<SourceBundle> {
+  const now = (opts?.now ?? Date.now)();
+  const hit = loadBundle(overlayBundle, now);
+  if (hit) return hit;
+  if (overlayBundleInflight) return overlayBundleInflight;
+
+  const fetchImpl = opts?.fetchImpl ?? (globalThis.fetch as FetchImpl);
+  overlayBundleInflight = (async () => {
+    try {
+      const payload = await fetchModelsDevPayload(fetchImpl);
+      const bundle: SourceBundle = {
+        fetchedAt: now,
+        effort: parseModelsDevEffortMap(payload),
+        windows: parseModelsDevWindowMap(payload),
+      };
+      overlayBundle = bundle;
+      return bundle;
+    } catch {
+      const fallback = overlayBundle ?? emptyBundle(now);
+      overlayBundle = { ...fallback, fetchedAt: now };
+      return overlayBundle;
+    } finally {
+      overlayBundleInflight = null;
+    }
+  })();
+  return overlayBundleInflight;
+}
+
 export async function getModelsDevEffortMap(opts?: {
   fetchImpl?: FetchImpl;
   now?: () => number;
 }): Promise<Map<string, string[]>> {
-  const now = (opts?.now ?? Date.now)();
-  const hit = loadCachedMap(overlayCache, now);
-  if (hit) return hit;
-  if (overlayInflight) return overlayInflight;
-
-  const fetchImpl = opts?.fetchImpl ?? (globalThis.fetch as FetchImpl);
-  overlayInflight = (async () => {
-    try {
-      const map = await fetchModelsDevEffortMap(fetchImpl);
-      overlayCache = { fetchedAt: now, map };
-      return map;
-    } catch {
-      const fallback = overlayCache?.map ?? new Map();
-      overlayCache = { fetchedAt: now, map: fallback };
-      return fallback;
-    } finally {
-      overlayInflight = null;
-    }
-  })();
-  return overlayInflight;
+  return (await getModelsDevBundle(opts)).effort;
 }
 
 /** Overlay fills Gateway holes. Each source fail-opens independently. */
@@ -445,34 +467,7 @@ export async function getGatewayWindowMap(opts?: {
   fetchImpl?: FetchImpl;
   now?: () => number;
 }): Promise<WindowMap> {
-  const now = (opts?.now ?? Date.now)();
-  if (windowCache && now - windowCache.fetchedAt < GATEWAY_MODELS_CACHE_TTL_MS) {
-    return windowCache.map;
-  }
-  if (windowInflight) return windowInflight;
-
-  const fetchImpl = opts?.fetchImpl ?? (globalThis.fetch as FetchImpl);
-  windowInflight = (async () => {
-    try {
-      const res = await fetchImpl(GATEWAY_MODELS_URL, {
-        signal: AbortSignal.timeout(GATEWAY_MODELS_FETCH_TIMEOUT_MS),
-      });
-      if (!res.ok) {
-        throw new Error(`gateway models HTTP ${res.status ?? 'error'}`);
-      }
-      const payload = await res.json();
-      const map = parseGatewayWindowMap(payload);
-      windowCache = { fetchedAt: now, map };
-      return map;
-    } catch {
-      const fallback = windowCache?.map ?? new Map();
-      windowCache = { fetchedAt: now, map: fallback };
-      return fallback;
-    } finally {
-      windowInflight = null;
-    }
-  })();
-  return windowInflight;
+  return (await getGatewayBundle(opts)).windows;
 }
 
 /** Load the models.dev overlay window map — same shape, streaming-capped body. */
@@ -480,38 +475,7 @@ export async function getModelsDevWindowMap(opts?: {
   fetchImpl?: FetchImpl;
   now?: () => number;
 }): Promise<WindowMap> {
-  const now = (opts?.now ?? Date.now)();
-  if (
-    overlayWindowCache &&
-    now - overlayWindowCache.fetchedAt < GATEWAY_MODELS_CACHE_TTL_MS
-  ) {
-    return overlayWindowCache.map;
-  }
-  if (overlayWindowInflight) return overlayWindowInflight;
-
-  const fetchImpl = opts?.fetchImpl ?? (globalThis.fetch as FetchImpl);
-  overlayWindowInflight = (async () => {
-    try {
-      const res = await fetchImpl(MODELS_DEV_URL, {
-        signal: AbortSignal.timeout(GATEWAY_MODELS_FETCH_TIMEOUT_MS),
-        redirect: 'error',
-      });
-      if (!res.ok) {
-        throw new Error(`models.dev HTTP ${res.status ?? 'error'}`);
-      }
-      const payload = await payloadFromModelsDevResponse(res);
-      const map = parseModelsDevWindowMap(payload);
-      overlayWindowCache = { fetchedAt: now, map };
-      return map;
-    } catch {
-      const fallback = overlayWindowCache?.map ?? new Map();
-      overlayWindowCache = { fetchedAt: now, map: fallback };
-      return fallback;
-    } finally {
-      overlayWindowInflight = null;
-    }
-  })();
-  return overlayWindowInflight;
+  return (await getModelsDevBundle(opts)).windows;
 }
 
 /**

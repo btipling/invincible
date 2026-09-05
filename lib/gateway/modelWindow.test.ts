@@ -101,6 +101,41 @@ describe('gateway window map (plan #944)', () => {
     expect(map.size).toBe(0);
   });
 
+  it('adversarial #945 — effort + window share one GET per source', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async (input) => {
+      if (input === MODELS_DEV_URL) {
+        return {
+          ok: true,
+          json: async () => ({
+            vercel: {
+              models: {
+                'zai/glm-5.3-flash': {
+                  limit: { context: 128_000 },
+                  reasoning_options: [{ type: 'effort', values: ['low'] }],
+                },
+              },
+            },
+          }),
+        };
+      }
+      if (input === GATEWAY_MODELS_URL) {
+        return {
+          ok: true,
+          json: async () => ({
+            data: [{ id: 'openai/gpt-5.6', context_length: 400_000 }],
+          }),
+        };
+      }
+      throw new Error(`unexpected ${input}`);
+    });
+    const { getJoinedWindowMap, getJoinedEffortMap } = await import('./modelCatalog');
+    await getJoinedEffortMap({ fetchImpl, now: () => 0 });
+    await getJoinedWindowMap({ fetchImpl, now: () => 0 });
+    const urls = vi.mocked(fetchImpl).mock.calls.map((c) => c[0]);
+    expect(urls.filter((u) => u === GATEWAY_MODELS_URL)).toHaveLength(1);
+    expect(urls.filter((u) => u === MODELS_DEV_URL)).toHaveLength(1);
+  });
+
   it('the conservative default stays locked', () => {
     expect(CONTEXT_WINDOW_DEFAULT_TOKENS).toBe(200_000);
   });

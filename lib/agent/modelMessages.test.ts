@@ -284,9 +284,9 @@ describe('trimModelMessagesToBudget (plan #944, testing rows 4–6 + 14)', () =>
       user('old-3'),
       user('newest ask'),
     ];
-    // chars/4: total 25 chars → 7 tokens. Budget 3 (12 chars): dropping
-    // old-1 → 20 (5 tok), dropping assistant → 15 (4 tok), dropping old-3 →
-    // 10 chars (3 tok ≤ 3) → only the newest survives.
+    // Serialized seed is larger than raw text; budget 3 still forces
+    // drop-oldest until only the newest seed row remains (no-ask path
+    // keeps at least one row).
     const { rows: out, truncated } = trimModelMessagesToBudget(rows, 3, {
       charsPerToken: 4,
     });
@@ -335,12 +335,42 @@ describe('trimModelMessagesToBudget (plan #944, testing rows 4–6 + 14)', () =>
     expect(out[out.length - 1]).toEqual(user('newest'));
   });
 
-  it('row 14 — a single oversized newest row is sent as-is (the budget trims history, never the current ask)', () => {
+  it('row 14 — a single oversized newest seed row is sent as-is when no current ask is in the estimate', () => {
     const giant = user('z'.repeat(64 * 1024));
     const { rows: out } = trimModelMessagesToBudget([giant], 10, {
       charsPerToken: 4,
     });
     expect(out).toEqual([giant]);
+  });
+
+  it('adversarial #945 — currentUserContent is in the token rail; history may trim to []', () => {
+    const rows = [user('old-1'), user('old-2'), user('newest seed')];
+    const ask = 'a'.repeat(40); // 10 tokens at ratio 4
+    const { rows: out, truncated } = trimModelMessagesToBudget(rows, 10, {
+      charsPerToken: 4,
+      currentUserContent: ask,
+    });
+    expect(truncated).toBe(true);
+    expect(out).toEqual([]);
+  });
+
+  it('adversarial #945 — toolCalls.args count toward the token rail (serialized seed)', () => {
+    const fatArgs = { old_string: 'x'.repeat(4_000), new_string: 'y'.repeat(4_000) };
+    const rows = [
+      user('old'),
+      assistant('editing', [
+        { toolName: 'str_replace', toolCallId: 'c1', args: fatArgs },
+      ]),
+      toolOk('str_replace', 'c1', 'ok'),
+      user('newest seed'),
+    ];
+    // Tiny budget: args-heavy assistant must not hide behind a short delta.text.
+    const { rows: out, truncated } = trimModelMessagesToBudget(rows, 20, {
+      charsPerToken: 4,
+    });
+    expect(truncated).toBe(true);
+    expect(out.some((r) => r.role === 'assistant')).toBe(false);
+    expect(out[out.length - 1]).toEqual(user('newest seed'));
   });
 
   it('locked seed caps stay pinned', () => {

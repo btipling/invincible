@@ -1445,9 +1445,10 @@ describe('POST /api/turns', () => {
     const res = await postJson({ prompt: 'continue', sessionId: 's1' });
     expect(res.status).toBe(200);
     const startArgs = startMock.mock.calls[0][1][0];
-    // Budget = 800 − max(16384, 120) → floored ≥ 1 token: all history trims
-    // away except the newest row; the current ask rides userMessage.
-    expect(startArgs.priorMessages).toEqual([{ role: 'user', content: 'newest ask' }]);
+    // Budget = 800 − max(16384, 120) → floored to 1 token. Adversarial #945:
+    // the current ask rides userMessage and is counted in the token rail, so
+    // last-turn seed history yields to it (may trim to []).
+    expect(startArgs.priorMessages).toEqual([]);
     expect(startArgs.userMessage).toBe('continue');
   });
 

@@ -369,15 +369,17 @@ export async function POST(req: Request): Promise<Response> {
                   // seed an unpaired tool-result at a strict provider
                   // (adversarial-review #937).
                   const built = buildModelMessages(parsedProjection).rows;
-                  // Plan #944: trim the seed to the model's window-derived
-                  // token budget (+ row/byte safety rails) at the route
-                  // boundary — drop oldest, re-pair, never drop the newest
-                  // row (the current ask). The window resolves from the
-                  // joined catalog (conservative default when unpublished).
+                  // Plan #944 / adversarial #945: trim the seed to the
+                  // model's window-derived token budget (+ row/byte rails)
+                  // at the route boundary — drop oldest, re-pair. The
+                  // current ask is `parsed.prompt` (appended after the
+                  // seed as userMessage), not the newest seed row; it is
+                  // counted in the token rail so history yields to it.
                   const windowMap = await windowPromise;
                   priorMessages = trimModelMessagesToBudget(
                     built,
                     foldBudgetTokens(windowMap, byok.modelId),
+                    { currentUserContent: parsed.prompt },
                   ).rows;
                 }
               }

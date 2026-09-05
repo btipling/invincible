@@ -47,7 +47,8 @@
  *
  * Plan #944: the durable-turn SEED additionally trims to the model's
  * window-derived token budget (`trimModelMessagesToBudget`) at the route
- * boundary, under the same drop-oldest/re-pair invariants.
+ * boundary, under the same drop-oldest/re-pair invariants. The current
+ * ask is the turn's `userMessage`, not the newest seed row (adversarial #945).
  *
  * Pure, server/client-safe, never throws — malformed rows fail closed to a
  * dropped/truncated projection. No I/O, no store, no secrets. Byte-length uses
@@ -263,20 +264,23 @@ export function buildModelMessages(
 
 /**
  * Token-budget trim of the durable-turn seed (plan #944, source #551 — A3
- * fold budget). Given an already-projected `ModelMessageRow[]`, drop OLDEST
- * rows until the serialized seed satisfies ALL THREE rails:
+ * fold budget; adversarial #945). Given an already-projected `ModelMessageRow[]`,
+ * drop OLDEST rows until the serialized seed satisfies ALL THREE rails:
  *  - the **token budget** (`budgetTokens`, = window − reserve, estimated via
- *    the documented chars-per-token ratio),
+ *    the documented chars-per-token ratio over the **serialized seed** plus
+ *    the current `userMessage` that the loop appends after the seed),
  *  - the **row rail** (`maxRows` — pathological count bound, not the payload
  *    mechanism), and
  *  - the **byte rail** (`maxBytes` — the Workflow run-arg carrier bound).
  *
- * Never drops the NEWEST row (the current ask must always survive — the
- * budget trims history, not the current turn; a single oversized newest row
- * is sent as-is). After the trim, re-pair (orphan tool-results dropped,
- * assistant `toolCalls` with no remaining result stripped) so a strict
- * provider never sees an open call — the locked `rePairModelMessages`
- * invariant. Pure, never throws.
+ * The current ask is `userMessage`, NOT the newest seed row. When
+ * `currentUserContent` is provided, history may trim to `[]` so the ask
+ * still fits (the host fold already drops every history row to keep the
+ * ask). Without it, keep at least the newest seed row (unit fixtures /
+ * no-ask callers). A single oversized ask is still sent — it is not in
+ * `rows` and is never dropped here. After the trim, re-pair (orphan
+ * tool-results dropped, assistant `toolCalls` with no remaining result
+ * stripped) so a strict provider never sees an open call. Pure, never throws.
  */
 export function trimModelMessagesToBudget(
   rows: ReadonlyArray<ModelMessageRow>,
@@ -286,6 +290,12 @@ export function trimModelMessagesToBudget(
     maxBytes?: number;
     /** Override the estimator ratio (tests). Defaults to CONTEXT_CHARS_PER_TOKEN. */
     charsPerToken?: number;
+    /**
+     * Current turn's user message (appended after the seed as `userMessage`).
+     * Counted in the token rail; never part of `rows`. Presence allows the
+     * seed to trim to [] so history yields to the ask (adversarial #945).
+     */
+    currentUserContent?: string;
   },
 ): { rows: ModelMessageRow[]; truncated: boolean } {
   const maxRows = opts?.maxRows ?? MODEL_MSG_SEED_MAX_ROWS;
@@ -294,25 +304,22 @@ export function trimModelMessagesToBudget(
     opts?.charsPerToken && opts.charsPerToken > 0
       ? opts.charsPerToken
       : CONTEXT_CHARS_PER_TOKEN;
+  const askChars =
+    typeof opts?.currentUserContent === 'string' ? opts.currentUserContent.length : 0;
+  // When the current ask is in the estimate, history may go to zero (host
+  // fold already does this). No-ask callers keep at least the newest seed row.
+  const minKeep = typeof opts?.currentUserContent === 'string' ? 0 : 1;
 
   let out = [...rows];
   let truncated = false;
-  let tokens = -1;
 
   const overBudget = (): boolean => {
-    if (out.length === 0) return false;
-    let chars = 0;
-    for (const r of out) {
-      if (r.role === 'user') chars += r.content.length;
-      else if (r.role === 'assistant') chars += r.delta.text.length;
-      else if (r.role === 'tool') chars += r.role.length + r.toolName.length + r.toolCallId.length + ('result' in r ? r.result.length : r.error.length);
-    }
-    tokens = Math.ceil(chars / ratio);
-    return tokens > budgetTokens;
+    const seedChars = out.length === 0 ? 0 : JSON.stringify(out).length;
+    return Math.ceil((seedChars + askChars) / ratio) > budgetTokens;
   };
 
-  // Drop OLDEST rows until under the token budget (keep at least the newest).
-  while (out.length > 1 && overBudget()) {
+  // Drop OLDEST rows until under the token budget.
+  while (out.length > minKeep && overBudget()) {
     out.shift();
     truncated = true;
   }
@@ -323,11 +330,13 @@ export function trimModelMessagesToBudget(
     truncated = true;
   }
 
-  // Byte rail (Workflow-arg carrier bound) — drop oldest, keep the newest.
-  while (out.length > 1 && utf8Bytes(JSON.stringify(out)) > maxBytes) {
+  // Byte rail (Workflow-arg carrier bound) — drop oldest, keep the newest
+  // unless the ask-aware path is allowed to empty the seed.
+  while (out.length > minKeep && utf8Bytes(JSON.stringify(out)) > maxBytes) {
     out.shift();
     truncated = true;
   }
 
   return { rows: rePairModelMessages(out), truncated };
 }
+
