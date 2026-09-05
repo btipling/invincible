@@ -80,13 +80,27 @@ const FILES_TOUCHED_PREFIX = 'Files read/modified:';
 
 /**
  * Bound the summary to `COMPACTION_SUMMARY_MAX_CHARS` by whole code points
- * (never split a surrogate pair), appending an explicit marker when
- * truncated. Trim, don't omit — truncate, never drop. Pure, never throws.
+ * (never split a surrogate pair), appending an explicit marker when a
+ * code point was actually dropped. Trim, don't omit — truncate, never drop.
+ * UTF-16 `.length <= cap` is a valid fast path (code-point count cannot
+ * exceed UTF-16 length). The overflow path walks code points so an
+ * astral-heavy summary whose code-point count is still ≤ cap is not
+ * stamped with a lying truncation marker (adversarial #953). Pure, never
+ * throws.
  */
 function boundSummary(summary: string): string {
-  if (summary.length <= COMPACTION_SUMMARY_MAX_CHARS) return summary;
-  const head = [...summary].slice(0, COMPACTION_SUMMARY_MAX_CHARS).join('');
-  return `${head}\n${SUMMARY_TRUNCATION_MARKER}`;
+  const max = COMPACTION_SUMMARY_MAX_CHARS;
+  if (summary.length <= max) return summary;
+  let units = 0;
+  let cps = 0;
+  for (const ch of summary) {
+    if (cps === max) {
+      return `${summary.slice(0, units)}\n${SUMMARY_TRUNCATION_MARKER}`;
+    }
+    units += ch.length;
+    cps += 1;
+  }
+  return summary;
 }
 
 /**

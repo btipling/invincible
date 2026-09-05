@@ -276,11 +276,37 @@ describe('buildCheckpoint (plan #948 row 4 — caps table enforcement)', () => {
     const cp = buildCheckpoint({ summary: fat, filesTouched: [] }, []);
     expect(cp.summary.length).toBeLessThanOrEqual(COMPACTION_SUMMARY_MAX_CHARS + 40);
     expect(cp.summary).toContain('… [summary truncated]');
-    // Surrogate pairs never split: an emoji-heavy fat summary stays valid.
-    const emojiFat = '🙂'.repeat(COMPACTION_SUMMARY_MAX_CHARS);
-    const cp2 = buildCheckpoint({ summary: emojiFat, filesTouched: [] }, []);
-    expect(cp2.summary).toContain('🙂');
-    expect(cp2.summary).toContain('… [summary truncated]');
+    const head = cp.summary.split('\n')[0]!;
+    expect([...head].length).toBe(COMPACTION_SUMMARY_MAX_CHARS);
+  });
+
+  it('adversarial #953 — truncation marker fires only when a code point was dropped', () => {
+    // Exactly the cap in code points, even when UTF-16 length is 2× the cap:
+    // must NOT stamp a lying "truncated" marker.
+    const atCap = '🙂'.repeat(COMPACTION_SUMMARY_MAX_CHARS);
+    expect(atCap.length).toBeGreaterThan(COMPACTION_SUMMARY_MAX_CHARS);
+    const cpAt = buildCheckpoint({ summary: atCap, filesTouched: [] }, []);
+    expect(cpAt.summary).toBe(atCap);
+    expect(cpAt.summary).not.toContain('… [summary truncated]');
+
+    // One over the code-point cap: drop the extra rune, keep a whole
+    // surrogate pair, append the honest marker.
+    const over = '🙂'.repeat(COMPACTION_SUMMARY_MAX_CHARS + 1);
+    const cpOver = buildCheckpoint({ summary: over, filesTouched: [] }, []);
+    expect(cpOver.summary).toContain('… [summary truncated]');
+    expect(cpOver.summary).not.toContain('�');
+    const overHead = cpOver.summary.split('\n')[0]!;
+    expect([...overHead].length).toBe(COMPACTION_SUMMARY_MAX_CHARS);
+    expect(overHead).toBe('🙂'.repeat(COMPACTION_SUMMARY_MAX_CHARS));
+
+    // UTF-16 overflow with code-point count still under the cap (BMP + a
+    // few astral): no marker, no drop.
+    const mixed = 'a'.repeat(7_990) + '🙂'.repeat(6);
+    expect(mixed.length).toBeGreaterThan(COMPACTION_SUMMARY_MAX_CHARS);
+    expect([...mixed].length).toBeLessThanOrEqual(COMPACTION_SUMMARY_MAX_CHARS);
+    const cpMixed = buildCheckpoint({ summary: mixed, filesTouched: [] }, []);
+    expect(cpMixed.summary).toBe(mixed);
+    expect(cpMixed.summary).not.toContain('… [summary truncated]');
   });
 
   it('filesTouched over COMPACTION_FILES_TOUCHED_MAX keeps the NEWEST + honest omitted marker', () => {
