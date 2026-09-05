@@ -173,6 +173,35 @@ describe('findCompactionCut (plan #948 row 1 + 2)', () => {
     expect(findCompactionCut(rows, 10_000, { maxBytes: 1 })).toBeNull();
   });
 
+  it('adversarial #953 — newest-tail miss is O(1) serializations, not one stringify per older suffix', () => {
+    // 200 user turns; newest tail already over budget. Monotonic rails mean
+    // no earlier tail can fit — stringify once (the newest suffix) and stop.
+    const rows: ModelMessageRow[] = [];
+    for (let i = 0; i < 200; i++) {
+      rows.push(user(`ask ${i}`), assistant(`reply ${i}`));
+    }
+    const orig = JSON.stringify;
+    let calls = 0;
+    JSON.stringify = ((...args: Parameters<typeof JSON.stringify>) => {
+      calls += 1;
+      return orig(...args);
+    }) as typeof JSON.stringify;
+    try {
+      expect(findCompactionCut(rows, 1)).toBeNull();
+      expect(calls).toBeLessThan(5);
+    } finally {
+      JSON.stringify = orig;
+    }
+  });
+
+  it('non-finite / non-positive budget → null (fail-open, never compact on a lie)', () => {
+    const rows: ModelMessageRow[] = [user('one'), assistant('a'), user('two'), assistant('b')];
+    expect(findCompactionCut(rows, Number.NaN)).toBeNull();
+    expect(findCompactionCut(rows, Number.POSITIVE_INFINITY)).toBeNull();
+    expect(findCompactionCut(rows, 0)).toBeNull();
+    expect(findCompactionCut(rows, -1)).toBeNull();
+  });
+
   it('newest fitting boundary wins (largest compactable span at the budget)', () => {
     const rows: ModelMessageRow[] = [
       user('t1'),
@@ -262,6 +291,16 @@ describe('buildCheckpoint (plan #948 row 4 — caps table enforcement)', () => {
     expect(cp.filesTouched[0]).toBe(`p10.ts`); // oldest dropped
     expect(cp.filesTouched.at(-1)).toBe(`p${paths.length - 1}.ts`); // newest kept
     expect(cp.summary).toContain('earlier paths omitted');
+  });
+
+  it('adversarial #953 — a path re-read last is kept (last occurrence, not first-seen)', () => {
+    const unique = Array.from({ length: COMPACTION_FILES_TOUCHED_MAX + 1 }, (_, i) => `p${i}.ts`);
+    // p0.ts is both the oldest unique path and the newest read.
+    const paths = [...unique, 'p0.ts'];
+    const cp = buildCheckpoint({ summary: 's', filesTouched: paths }, []);
+    expect(cp.filesTouched.length).toBe(COMPACTION_FILES_TOUCHED_MAX);
+    expect(cp.filesTouched.at(-1)).toBe('p0.ts');
+    expect(cp.filesTouched).not.toContain('p1.ts'); // oldest unique last-occ dropped
   });
 
   it('non-string / duplicate / empty paths are dropped (dedupe, first-seen order)', () => {

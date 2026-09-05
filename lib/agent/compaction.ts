@@ -30,6 +30,7 @@
 import {
   COMPACTION_FILES_TOUCHED_MAX,
   COMPACTION_SUMMARY_MAX_CHARS,
+  CONTEXT_CHARS_PER_TOKEN,
   MODEL_MSG_SEED_MAX_BYTES,
   MODEL_MSG_SEED_MAX_ROWS,
 } from '../sessionCloudCaps';
@@ -70,9 +71,6 @@ const utf8Bytes = (s: string): number => encoder.encode(s).length;
 /** Explicit truncation marker appended after a bounded summary (never silent). */
 const SUMMARY_TRUNCATION_MARKER = '… [summary truncated]';
 
-/** Explicit marker line rendered when `filesTouched` overflows its cap. */
-const FILES_TOUCHED_OMITTED_MARKER = '… (N earlier paths omitted)';
-
 /** The honesty label (parent #947 Goal 4 — locked copy, phase 1 renders it). */
 export const COMPACTION_SUMMARY_LABEL =
   'Summary of earlier session (compacted, not live assistant prose):';
@@ -93,22 +91,25 @@ function boundSummary(summary: string): string {
 
 /**
  * Bound the files-touched list to `COMPACTION_FILES_TOUCHED_MAX` entries —
- * keep the NEWEST paths (drop the oldest; the reads the model is most likely
- * to edit), dedupe preserving first-seen order, and drop non-string entries.
+ * keep the NEWEST paths (last occurrence wins so a re-read is not dropped;
+ * adversarial #953), drop the oldest, skip non-string / empty entries.
  * Returns the bound list + the omitted count for the honest marker. Pure.
  */
 function boundFilesTouched(paths: readonly unknown[]): {
   paths: string[];
   omitted: number;
 } {
+  // Unique by last occurrence, preserving last-seen order.
   const clean: string[] = [];
   const seen = new Set<string>();
-  for (const p of paths) {
+  for (let i = paths.length - 1; i >= 0; i--) {
+    const p = paths[i];
     if (typeof p !== 'string' || p.length === 0) continue;
     if (seen.has(p)) continue;
     seen.add(p);
     clean.push(p);
   }
+  clean.reverse();
   if (clean.length <= COMPACTION_FILES_TOUCHED_MAX) {
     return { paths: clean, omitted: 0 };
   }
@@ -120,9 +121,10 @@ function boundFilesTouched(paths: readonly unknown[]): {
  * Build the typed compaction checkpoint (plan #948). Enforces the caps table:
  *  - `summary` → `COMPACTION_SUMMARY_MAX_CHARS` (code-point-safe head +
  *    explicit `… [summary truncated]` marker),
- *  - `filesTouched` → `COMPACTION_FILES_TOUCHED_MAX` entries (keep NEWEST,
- *    dedupe, non-strings dropped) — the omitted count is rendered by
- *    `renderSummaryRow`'s marker line, never a silent drop,
+ *  - `filesTouched` → `COMPACTION_FILES_TOUCHED_MAX` entries (keep NEWEST
+ *    by last occurrence, non-strings dropped) — the omitted count is stored
+ *    on `summary` (checkpoint shape has no `omitted` field) so it survives
+ *    a seed that does not go through `renderSummaryRow`,
  *  - `retainedTail` → re-paired with `rePairModelMessages` (the cut never
  *    leaves an orphan tool-result / open call on the tail either).
  * Pure, never throws. A planted/hostile tail is still row-typed here; the
@@ -133,7 +135,6 @@ export function buildCheckpoint(
   tail: ReadonlyArray<ModelMessageRow>,
 ): CompactionCheckpoint {
   const { paths, omitted } = boundFilesTouched(input.filesTouched);
-  void omitted; // rendered by renderSummaryRow via the marker line below
   const summary = boundSummary(input.summary);
   const retainedTail = rePairModelMessages([...tail]);
   // Carry the omitted count INSIDE the summary when files overflowed, so the
@@ -150,11 +151,12 @@ export function buildCheckpoint(
  * Render the labeled model-facing summary row (parent #947 Goal 4 honesty
  * lock, plan #948): a `user`-role row whose content is
  * `Summary of earlier session (compacted, not live assistant prose):
- * <summary>` followed by a `Files read/modified:` line. NEVER an assistant
- * row; the canvas paints nothing new (server-only row). The files line lists
- * the (already-bounded) paths, with the explicit
- * `… (N earlier paths omitted)` marker when the cap dropped paths. Empty
- * summary still renders the label (an honest empty summary, never prose).
+ * <summary>` followed by a `Files read/modified:` line listing
+ * `filesTouched`. NEVER an assistant row; the canvas paints nothing new
+ * (server-only row). The overflow marker `… (N earlier paths omitted)` is
+ * NOT computed here — `buildCheckpoint` bakes it into `checkpoint.summary`
+ * because the locked checkpoint shape has no omitted field. Empty summary
+ * still renders the label (an honest empty summary, never prose).
  * Pure, never throws.
  */
 export function renderSummaryRow(
@@ -173,10 +175,17 @@ export function renderSummaryRow(
  * then re-pair). Walk back from the newest row to the newest `user` boundary
  * whose retained tail (that user row → end) fits ALL the rails:
  *  - the **token budget** (`budgetTokens`, the #944 `foldBudgetTokens`
- *    result — estimated over the serialized tail via `estimateTokens`),
+ *    result — estimated over the serialized tail),
  *  - the **row rail** (`maxRows`, default `MODEL_MSG_SEED_MAX_ROWS`),
  *  - the **byte rail** (`maxBytes`, default `MODEL_MSG_SEED_MAX_BYTES` —
  *    the Workflow run-arg carrier bound).
+ *
+ * Tail size is monotonic on every rail as the boundary moves earlier
+ * (adversarial #953): if the newest (smallest) tail misses, no earlier tail
+ * can fit — return `null` immediately; do not stringify older suffixes
+ * (the #945 17s linear-drop class). A future `COMPACTION_SPAN_MAX_BYTES`
+ * (phase 3) may `continue` past a *fitting* newest tail to grow the
+ * retained tail; a miss still ends the walk.
  *
  * The tail must contain at least one row (the boundary `user` row itself)
  * and the span must be non-empty for a cut to exist: a cut whose span would
@@ -187,9 +196,8 @@ export function renderSummaryRow(
  *
  * BOTH sides are re-paired with `rePairModelMessages` so the cut never
  * leaves an orphan tool-result / open assistant call on either side
- * (parent Goal 3). `estimateTokens` is REUSED from `lib/agent/
- * contextBudget.ts` (the #944 estimator — never a second estimator).
- * Pure, never throws.
+ * (parent Goal 3). Token estimate uses `CONTEXT_CHARS_PER_TOKEN` (the #944
+ * ratio — never a second estimator). Pure, never throws.
  */
 export function findCompactionCut(
   rows: ReadonlyArray<ModelMessageRow>,
@@ -201,10 +209,13 @@ export function findCompactionCut(
     charsPerToken?: number;
   },
 ): CompactionCut | null {
+  if (!Number.isFinite(budgetTokens) || budgetTokens <= 0) return null;
   const maxRows = opts?.maxRows ?? MODEL_MSG_SEED_MAX_ROWS;
   const maxBytes = opts?.maxBytes ?? MODEL_MSG_SEED_MAX_BYTES;
   const ratio =
-    opts?.charsPerToken && opts.charsPerToken > 0 ? opts.charsPerToken : 4;
+    opts?.charsPerToken && opts.charsPerToken > 0
+      ? opts.charsPerToken
+      : CONTEXT_CHARS_PER_TOKEN;
 
   const n = rows.length;
   if (n === 0) return null;
@@ -217,18 +228,15 @@ export function findCompactionCut(
   }
   if (boundaries.length === 0) return null;
 
-  // Newest boundary whose tail fits every rail. A tail that fits a LATER
-  // (smaller) boundary also fits an EARLIER one only if it is smaller — the
-  // tail grows monotonically as the boundary moves earlier, so walk the
-  // boundaries from newest to oldest and stop at the first fit: that is the
-  // LARGEST compactable span at this budget.
+  // Newest boundary whose tail fits every rail. Stop at the first fit
+  // (largest compactable span). First miss → null (monotonic rails).
   for (let b = boundaries.length - 1; b >= 0; b--) {
     const cutIndex = boundaries[b];
     const tail = rows.slice(cutIndex);
-    if (tail.length > maxRows) continue;
+    if (tail.length > maxRows) return null;
     const json = JSON.stringify(tail);
-    if (Math.ceil(json.length / ratio) > budgetTokens) continue;
-    if (utf8Bytes(json) > maxBytes) continue;
+    if (Math.ceil(json.length / ratio) > budgetTokens) return null;
+    if (utf8Bytes(json) > maxBytes) return null;
     return {
       cutIndex,
       span: rePairModelMessages(rows.slice(0, cutIndex)),
@@ -242,6 +250,7 @@ export function findCompactionCut(
  * The compaction-trigger helper module lives in `lib/agent/compactionBudget.ts`
  * (`shouldCompact`) — phase 1 ships it as its own unit (the plan's
  * implementation order step 3); it imports `estimateTokens` from #944's
- * `contextBudget` and `COMPACTION_RESERVE_TOKENS` from the caps module.
+ * `contextBudget`. `COMPACTION_RESERVE_TOKENS` is the Pi name for the
+ * reserve already inside `foldBudgetTokens` — not subtracted again.
  */
 export const __compactionModuleMarker = true;

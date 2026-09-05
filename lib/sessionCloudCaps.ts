@@ -618,12 +618,14 @@ export const MODEL_MSG_SEED_MAX_BYTES = 2 * 1024 * 1024;
 export const CONTEXT_CHARS_PER_TOKEN = 4;
 
 /**
- * Pi-style completion-reserve for the **compaction trigger** (plan #948,
- * source #552 — A4 compaction phase 1). Gates `shouldCompact`
- * (`lib/agent/compactionBudget.ts`) only: the trigger fires when the seeded
- * projection's estimated prompt tokens exceed the #944 fold budget MINUS this
- * extra reserve, so a turn compacts before the send would crowd out the
- * completion. Pi default 16 384 tokens. **NEW generous cap**; no existing cap
+ * Pi-style completion-reserve **name** for the compaction trigger (plan #948,
+ * source #552 — A4 compaction phase 1). Same value as
+ * `CONTEXT_RESERVE_MIN_TOKENS` (16 384). `foldBudgetTokens` already subtracts
+ * this reserve; `shouldCompact` (`lib/agent/compactionBudget.ts`) compares
+ * the pre-trim estimate to that fold budget and must **not** subtract it
+ * again (adversarial #953: doing so zeroed the trigger on every ~32k-or-
+ * smaller window). Exported so phase 3 / docs can name the Pi default
+ * without forking a second literal. **NEW generous cap**; no existing cap
  * value changed → no human gate.
  */
 export const COMPACTION_RESERVE_TOKENS = 16_384;
