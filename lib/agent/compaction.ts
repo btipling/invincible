@@ -370,6 +370,26 @@ export function compactStartPayloadFits(
 }
 
 /**
+ * Live post-compact retained tail (adversarial #955 follow-up 3). Drop the
+ * honesty-labeled summary row by Goal 4 label, **not** `slice(1)`.
+ *
+ * `trimModelMessagesToBudget(..., pinnedCount: 1)` yields `[]` when the
+ * pinned summary itself misses a rail with the ask (`modelMessages.ts`
+ * pin-miss, `minKeep === 0`). The live `messages` array then starts at this
+ * turn's user — `slice(1)` would drop that user from the replacement seed
+ * (Goal 2 miss on prefer-checkpoint). When the label is absent, the tail
+ * **is** the full live projection. Pure, never throws.
+ */
+export function livePostCompactTail(
+  rows: ReadonlyArray<ModelMessageRow>,
+): ModelMessageRow[] {
+  const i = rows.findIndex(
+    (r) => r.role === 'user' && r.content.startsWith(COMPACTION_SUMMARY_LABEL),
+  );
+  return i >= 0 ? rows.slice(i + 1) : [...rows];
+}
+
+/**
  * Re-rail a live post-compact checkpoint so its JSON fits
  * `COMPACTION_CHECKPOINT_MAX_BYTES` (adversarial #955 follow-up). Drop-oldest
  * on `retainedTail` (keep newest = this turn) so the persist write succeeds

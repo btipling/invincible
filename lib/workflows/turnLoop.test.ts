@@ -5907,4 +5907,59 @@ describe('runTurnLoop compaction (plan #950, source #552)', () => {
       { role: 'assistant', delta: { text: 'hi', toolCalls: [] } },
     ]);
   });
+
+  it('pin-miss success seed (summary+ask miss the budget) still persists this turn user (adversarial #955 follow-up 3)', async () => {
+    const { deps } = wiredDeps();
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+    }));
+    const fatSummary = 'S'.repeat(8_000);
+    const compactionStep = vi.fn(async () => ({
+      ok: true as const,
+      summary: fatSummary,
+    }));
+    const persistSpy = vi.fn(deps.persistStep);
+    const ask = 'this turn must survive pin-miss';
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        persistStep: persistSpy,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionFilesTouched: ['lib/a.ts'],
+        compactionRetainedTail: [{ role: 'user', content: 'tail row' }],
+      },
+      {
+        userMessage: ask,
+        // Budget too small for the pinned 8k-char summary + ask → seed [].
+        compact: { span: [{ role: 'user', content: 'old' }], budgetTokens: 100 },
+      },
+    );
+    expect(result.status).toBe('completed');
+    const folds = persistSpy.mock.calls
+      .map((c) => c[0].fold)
+      .filter((f) => f?.compactionCheckpoint !== undefined);
+    expect(folds.length).toBeGreaterThan(0);
+    const ck = folds[0]!.compactionCheckpoint as {
+      summary: string;
+      filesTouched: string[];
+      retainedTail: Array<{ role: string; content?: string }>;
+    };
+    expect(ck.summary).toContain(fatSummary);
+    // slice(1) would have dropped this turn's user because messages[0] is
+    // the ask, not the honesty row. Label-based drop keeps the user.
+    expect(ck.retainedTail.some((r) => r.role === 'user' && r.content === ask)).toBe(
+      true,
+    );
+    expect(
+      ck.retainedTail.some(
+        (r) =>
+          r.role === 'user' &&
+          typeof r.content === 'string' &&
+          r.content.startsWith('Summary of earlier session'),
+      ),
+    ).toBe(false);
+  });
 });

@@ -24,7 +24,9 @@ import {
   buildCheckpoint,
   compactStartPayloadFits,
   findCompactionCut,
+  livePostCompactTail,
   renderSummaryRow,
+  COMPACTION_SUMMARY_LABEL,
 } from './compaction';
 import { rePairModelMessages, type ModelMessageRow } from './modelMessages';
 
@@ -488,5 +490,22 @@ describe('boundCheckpointForPersist (adversarial #955 follow-up)', () => {
     expect(JSON.stringify(bound.retainedTail)).toContain(newestContent);
     // Oldest fat rows are the ones that yield.
     expect(bound.retainedTail.length).toBeLessThan(3);
+  });
+});
+
+describe('livePostCompactTail (adversarial #955 follow-up 3)', () => {
+  it('drops the honesty-labeled summary row; keeps the live tail including this turn', () => {
+    const summary = renderSummaryRow('earlier work', ['src/a.ts']);
+    const tail = [user('resume'), user('this turn'), assistant('ok')];
+    const out = livePostCompactTail([summary, ...tail]);
+    expect(out).toEqual(tail);
+    expect(out.some((r) => r.role === 'user' && r.content.startsWith(COMPACTION_SUMMARY_LABEL))).toBe(
+      false,
+    );
+  });
+
+  it('pin-miss (no honesty row in the live projection) keeps the full this-turn view', () => {
+    const thisTurn = [user('the ask that did not fit with the summary'), assistant('ok')];
+    expect(livePostCompactTail(thisTurn)).toEqual(thisTurn);
   });
 });

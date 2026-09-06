@@ -53,7 +53,7 @@ import {
 } from '../agent/modelFinish';
 import { TURN_WALL_CLOCK_MAX_MS } from '../sessionCloudCaps';
 import { buildModelMessages, trimModelMessagesToBudget } from '../agent/modelMessages';
-import { boundCheckpointForPersist, buildCheckpoint, renderSummaryRow } from '../agent/compaction';
+import { boundCheckpointForPersist, buildCheckpoint, livePostCompactTail, renderSummaryRow } from '../agent/compaction';
 import { buildFreshnessReminder } from '../agent/freshnessReminder';
 import { logTurnLoop } from './turnLog';
 
@@ -875,13 +875,13 @@ export async function runTurnLoop(
         : boundCheckpointForPersist({
             summary: compactedCheckpoint.summary,
             filesTouched: compactedCheckpoint.filesTouched,
-            // Live post-compact view (Goal 2): everything after the summary
-            // row, including this turn. Cut-time tail would drop this turn
-            // from the next prefer-checkpoint seed (adversarial #955).
-            // Re-railed to COMPACTION_CHECKPOINT_MAX_BYTES so a byte-rail
-            // seed + this turn cannot fail-close the write (adversarial
-            // #955 follow-up).
-            retainedTail: buildModelMessages(messages).rows.slice(1),
+            // Live post-compact view (Goal 2): everything after the honesty
+            // row, including this turn. Identify the summary by Goal 4
+            // label, not `slice(1)` — a pin-miss seed is `[]` and
+            // `messages[0]` is this turn's user (adversarial #955
+            // follow-up 3). Re-railed to COMPACTION_CHECKPOINT_MAX_BYTES
+            // so a byte-rail seed + this turn cannot fail-close the write.
+            retainedTail: livePostCompactTail(buildModelMessages(messages).rows),
           }),
     );
     return deps.persistStep({
