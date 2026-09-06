@@ -676,6 +676,20 @@ export const COMPACTION_CHECKPOINT_MAX_BYTES =
   MODEL_MSG_SEED_MAX_BYTES + 256 * 1024;
 
 /**
+ * Max serialized byte size of the compaction SPAN handed to the pre-loop
+ * summarizer (plan #950, source #552 — A4 compaction phase 3, parent #947).
+ * The span is the rows BEFORE the cut boundary — the text the summarizer
+ * reads — and unlike the retained tail it has no phase-1 rail (the tail is
+ * bounded by `MODEL_MSG_SEED_MAX_BYTES` inside `findCompactionCut`). Set at
+ * ~2 MiB (the same bound class as `MODEL_MSG_SEED_MAX_BYTES` / the Workflow
+ * run-arg carrier) so the summarizer prompt stays bounded; a span over the
+ * cap yields NO compact (the route falls back to the #944 trim — the turn is
+ * never blocked). **NEW generous cap**; no existing cap value changed → no
+ * human gate. Enforced at the route trigger (`app/api/turns/route.ts`).
+ */
+export const COMPACTION_SPAN_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
  * Path cap for the per-turn freshness reminder (plan #941, source #693). The
  * reminder names exactly what the #277 `RunFileFreshness` gate will demand
  * (a `read_file` before edit); 64 workspace-relative paths (~4–8 KiB

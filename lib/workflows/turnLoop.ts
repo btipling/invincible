@@ -53,6 +53,7 @@ import {
 } from '../agent/modelFinish';
 import { TURN_WALL_CLOCK_MAX_MS } from '../sessionCloudCaps';
 import { buildModelMessages } from '../agent/modelMessages';
+import { buildCheckpoint, renderSummaryRow } from '../agent/compaction';
 import { buildFreshnessReminder } from '../agent/freshnessReminder';
 import { logTurnLoop } from './turnLog';
 
@@ -276,6 +277,38 @@ export interface TurnLoopDeps {
    * Optional for tests/in-memory seams.
    */
   persistRunBind?: PersistRunBind;
+  /**
+   * Pre-loop compaction summarizer step (plan #950 — A4 phase 3). Optional:
+   * absent in unit fixtures / legacy callers, wired by `turnWorkflow` in
+   * production. Serializable args only (span rows + scope + deadline);
+   * the result is a plain value. Fail-open upstream.
+   */
+  compactionStep?: (args: {
+    span: ReadonlyArray<unknown>;
+    scope: { tenantId: string; userId: string; sessionId: string };
+    deadlineAt?: number;
+  }) => Promise<
+    | { ok: true; summary: string }
+    | { ok: false; code: string; error: string }
+  >;
+  /**
+   * Serializable session scope for the compaction step's in-step BYOK
+   * re-resolution (plan #950). Required only when `compactionStep` is set.
+   */
+  compactionScope?: { tenantId: string; userId: string; sessionId: string };
+  /**
+   * Route-side `filesTouched` from the compaction cut walk (plan #950) —
+   * the paths the checkpoint summary row lists. Derived by the loop from
+   * THIS run's tool rows would miss the span's pre-turn reads, so the route
+   * forwards what the cut saw. Plain serializable string list.
+   */
+  compactionFilesTouched?: ReadonlyArray<unknown>;
+  /**
+   * Route-side retained tail from the compaction cut walk (plan #950) —
+   * the re-paired rows from the cut boundary to the end. Seeded after the
+   * summary row when compaction ran.
+   */
+  compactionRetainedTail?: ReadonlyArray<unknown>;
 }
 
 /** B13 run-bind state the engine knows at `start()` (serializable values only).
@@ -308,6 +341,20 @@ export interface TurnLoopInput {
    * prior reminder (first turn / zero-read prior turn / degraded mode).
    */
   freshnessReminderPointer?: string;
+  /**
+   * Compaction trigger (plan #950, source #552 — A4 phase 3, parent #947
+   * Goal 1): when present, the workflow runs the pre-loop summarizer step
+   * over `span` and the loop seeds `[summaryRow, ...retainedTail, user]`
+   * instead of `[...priorMessages, user]`. Plain serializable values only —
+   * the span rows are the route-side `findCompactionCut().span` (already
+   * re-paired). A summarizer failure is FAIL-OPEN (parent edge-case lock:
+   * compaction never blocks the turn) — the turn proceeds seeded from the
+   * un-compacted projection with the #944 trim rails still applied.
+   */
+  compact?: {
+    /** Compaction SPAN rows to summarize (route-side cut, re-paired). */
+    span: ReadonlyArray<unknown>;
+  };
 }
 
 /** Terminal result + the delta log for replay reconstruction (roundtrip). */
@@ -551,6 +598,20 @@ export function derivePersistFold(
    * this-run-only array.
    */
   thisRunStart = 0,
+  /**
+   * Fresh compaction checkpoint (plan #950 — A4 phase 3, parent review-note 2
+   * lock: phase 3 wires the producer). When the pre-loop summarizer ran, the
+   * loop carries the built `{summary, filesTouched, retainedTail}` here so
+   * the terminal fold includes `compactionCheckpoint` and the persist seam
+   * writes it as its OWN Blob object (`meta.compactionPointer`). Absent =
+   * no compaction ran (no pointer written; the prior pointer survives via
+   * copy-forward).
+   */
+  compactionCheckpoint?: {
+    summary: string;
+    filesTouched: string[];
+    retainedTail: unknown[];
+  },
 ): PersistStepFold | undefined {
   const checkpoint: Array<{ role: string; content: string }> = [];
   let cwd: string | undefined = runBind?.cwd;
@@ -584,7 +645,8 @@ export function derivePersistFold(
     activeSandboxId === undefined &&
     resolvedProvider === undefined &&
     modelMessages.length === 0 &&
-    freshnessReminderPaths.length === 0
+    freshnessReminderPaths.length === 0 &&
+    compactionCheckpoint === undefined
   ) {
     return undefined;
   }
@@ -601,6 +663,9 @@ export function derivePersistFold(
     // no-tool turn (user+assistant only, no other fold fields) still emits a
     // fold with just the empty reminder so the clear advances the pointer.
     freshnessReminder: freshnessReminderPaths,
+    // Plan #950: the fresh compaction checkpoint (see param doc). Present
+    // only when the pre-loop summarizer produced a summary this run.
+    ...(compactionCheckpoint !== undefined ? { compactionCheckpoint } : {}),
   };
 }
 
@@ -623,11 +688,67 @@ export async function runTurnLoop(
   const cap = Math.max(0, Math.floor(deps.maxSteps ?? MAX_WORKFLOW_STEPS));
   const writable = onceWritable(deps.writable);
   const deltas: unknown[] = [];
+
+  // Compaction seed (plan #950, parent #947 Goal 1): the pre-loop summarizer
+  // runs ONCE here, before the first model round, over the route-side span.
+  // Fail-open — ANY summarizer failure (step throw, `{ok:false}`, empty
+  // summary, past-deadline) proceeds UNCOMPACTED: the seed falls back to the
+  // plain `[...priorMessages, user]` projection (the #944 trim rails at the
+  // route boundary still bound it). The summary row is a labeled `user` row
+  // (renderSummaryRow) — never live assistant prose (parent Goal 4) — and the
+  // retained tail is re-paired by the phase-1 cut itself.
+  let compactedSeed: unknown[] | undefined;
+  let compactedCheckpoint:
+    | { summary: string; filesTouched: string[]; retainedTail: unknown[] }
+    | undefined;
+  if (input.compact !== undefined && deps.compactionStep !== undefined) {
+    try {
+      const c = await deps.compactionStep({
+        span: input.compact.span,
+        ...(deps.compactionScope !== undefined
+          ? { scope: deps.compactionScope }
+          : { scope: { tenantId: '', userId: '', sessionId: '' } }),
+        ...(deps.deadlineAt !== undefined ? { deadlineAt: deps.deadlineAt } : {}),
+      });
+      if (c.ok && typeof c.summary === 'string' && c.summary.trim().length > 0) {
+        const checkpoint = buildCheckpoint(
+          {
+            summary: c.summary,
+            filesTouched: (deps.compactionFilesTouched ?? []).filter(
+              (p): p is string => typeof p === 'string',
+            ),
+          },
+          [],
+        );
+        compactedSeed = [
+          renderSummaryRow(checkpoint.summary, checkpoint.filesTouched),
+          ...(deps.compactionRetainedTail ?? []),
+        ];
+        // Plan #950 checkpoint writer (parent #947 review-note 2 lock: phase
+        // 3 wires `derivePersistFold` → checkpoint write): carry the fresh
+        // checkpoint so the terminal persist seam writes it as its OWN Blob
+        // object and advances `meta.compactionPointer`. The tail is re-paired
+        // route-side by the phase-1 cut; `derivePersistFold` re-pairs again
+        // via `buildCheckpoint` at fold time (idempotent).
+        compactedCheckpoint = {
+          summary: checkpoint.summary,
+          filesTouched: checkpoint.filesTouched,
+          retainedTail: deps.compactionRetainedTail
+            ? [...deps.compactionRetainedTail]
+            : [],
+        };
+      }
+    } catch {
+      // Fail-open: compaction never blocks the turn (parent edge-case lock).
+    }
+  }
+
   // Seed from the persisted model-messages projection when present (plan #936):
   // `[...priorMessages, {role:'user'}]` so the model sees prior typed
-  // assistant/tool rows; otherwise the legacy singleton.
+  // assistant/tool rows; otherwise the legacy singleton. Compacted turns seed
+  // `[summaryRow, ...retainedTail, user]` (plan #950) instead.
   const messages: unknown[] = [
-    ...(input.priorMessages ?? []),
+    ...(compactedSeed ?? input.priorMessages ?? []),
     { role: 'user', content: input.userMessage },
   ];
 
@@ -703,6 +824,7 @@ export async function runTurnLoop(
       deps.persistRunBind,
       resolvedProvider,
       thisRunStart,
+      compactedCheckpoint,
     );
     return deps.persistStep({
       turnRunId: deps.turnRunId,

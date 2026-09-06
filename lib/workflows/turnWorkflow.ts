@@ -47,6 +47,7 @@ import {
   type PersistRunBind,
 } from './turnLoop';
 import { modelGenerateStep } from './modelGenerateStep';
+import { compactionStep } from './compactionStep';
 import { toolExecuteStep } from './toolExecuteStep';
 import { persistStep } from './persistStep';
 import { writeTurnSse, closeTurnSse } from './turnSseStep';
@@ -98,6 +99,21 @@ export interface TurnWorkflowArgs {
    * no prior reminder.
    */
   freshnessReminderPointer?: string;
+  /**
+   * Compaction trigger (plan #950, source #552 — A4 phase 3, parent #947):
+   * the route-side decision + cut walk. `span` is summarized by the pre-loop
+   * `'use step'` (`compactionStep`); the summary row + retained tail seed the
+   * loop. Plain serializable values only (adversarial L1 — no closures, no
+   * functions). Absent = no compaction this turn (unchanged default path).
+   */
+  compact?: {
+    /** Route-side `findCompactionCut().span` — the rows to summarize. */
+    span: ReadonlyArray<unknown>;
+    /** Route-side cut-span file paths (checkpoint `filesTouched`). */
+    filesTouched?: ReadonlyArray<unknown>;
+    /** Route-side `findCompactionCut().tail` — re-paired retained rows. */
+    retainedTail?: ReadonlyArray<unknown>;
+  };
 }
 
 /**
@@ -190,6 +206,31 @@ export async function turnWorkflow(
         turnRunId: workflowRunId,
         deadlineAt,
         ...(args.persistRunBind !== undefined ? { persistRunBind: args.persistRunBind } : {}),
+        // Plan #950: the pre-loop summarizer step + its route-side cut data.
+        // The workflow entry composes the `'use step'` wrapper (the loop core
+        // stays directive-free); the span/tail/files ride as plain values.
+        ...(args.compact !== undefined
+          ? {
+              compactionStep: (cargs: {
+                span: ReadonlyArray<unknown>;
+                scope: { tenantId: string; userId: string; sessionId: string };
+                deadlineAt?: number;
+              }) =>
+                compactionStep({
+                  span: cargs.span,
+                  modelId: args.modelId,
+                  scope: args.scope,
+                  deadlineAt,
+                }),
+              compactionScope: args.scope,
+              ...(args.compact.filesTouched !== undefined
+                ? { compactionFilesTouched: args.compact.filesTouched }
+                : {}),
+              ...(args.compact.retainedTail !== undefined
+                ? { compactionRetainedTail: args.compact.retainedTail }
+                : {}),
+            }
+          : {}),
       },
       {
         userMessage: args.userMessage,
@@ -199,6 +240,7 @@ export async function turnWorkflow(
         ...(args.freshnessReminderPointer !== undefined
           ? { freshnessReminderPointer: args.freshnessReminderPointer }
           : {}),
+        ...(args.compact !== undefined ? { compact: { span: args.compact.span } } : {}),
       },
     );
   } finally {

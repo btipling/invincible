@@ -1859,4 +1859,84 @@ describe('POST /api/turns', () => {
       content: 'resume here',
     });
   });
+
+  // --- Plan #950 (source #552 — A4 compaction phase 3) route-trigger rows ---
+
+  it('plan #950 row 1 — overflowing PRE-TRIM projection + clean cut → start() args carry compact {span, filesTouched, retainedTail}', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    // A projection that overflows the #944 fold budget (window 20 000 →
+    // budget = 20 000 − 16 384 = 3 616 tokens ≈ 14.4k chars at chars/4),
+    // ending in a user boundary so the cut walk finds a clean split: the
+    // span (rows before the boundary, ~20k chars) overflows; the newest
+    // boundary row + retained tail fit.
+    const fat = 'b'.repeat(10_000);
+    const projection = [
+      { role: 'user', content: fat },
+      { role: 'user', content: 'middle turn ' + fat },
+      { role: 'assistant', delta: { text: 'worked', toolCalls: [{ toolName: 'read_file', toolCallId: 'c1', args: { path: 'src/a.ts' } }] } },
+      { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'bytes' },
+      { role: 'user', content: 'old turn two (newest boundary)' },
+    ];
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(JSON.stringify(projection));
+    // Window 20 000 → budget 3 616 tokens: the ~20k-char pre-trim projection
+    // (~5k tokens) overflows → shouldCompact true.
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      effortValuesForModel: async () => [],
+      getJoinedWindowMap: async () => new Map([['anthropic/claude-a', 20_000]]),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'continue', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.compact).toBeDefined();
+    expect(Array.isArray(startArgs.compact.span)).toBe(true);
+    // Span = the rows before the newest user boundary.
+    expect(startArgs.compact.span.length).toBeGreaterThan(0);
+    expect(startArgs.compact.span.length).toBeLessThan(projection.length + 1);
+    expect(Array.isArray(startArgs.compact.filesTouched)).toBe(true);
+    expect(startArgs.compact.filesTouched).toContain('src/a.ts');
+    expect(Array.isArray(startArgs.compact.retainedTail)).toBe(true);
+  });
+
+  it('plan #950 row 2 — under-budget projection → NO compact arg (default #944 path unchanged)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(
+      JSON.stringify([{ role: 'user', content: 'tiny history' }]),
+    );
+    // Generous published window → shouldCompact false.
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      effortValuesForModel: async () => [],
+      getJoinedWindowMap: async () =>
+        new Map([['anthropic/claude-a', 2_000_000]]),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'go', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.compact).toBeUndefined();
+    expect(startArgs.priorMessages).toBeDefined();
+  });
+
 });

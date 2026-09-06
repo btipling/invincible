@@ -64,9 +64,15 @@ import {
   buildModelMessages,
   trimModelMessagesToBudget,
 } from '../../../lib/agent/modelMessages';
-import { buildCheckpoint, renderSummaryRow } from '../../../lib/agent/compaction';
+import { buildCheckpoint, findCompactionCut, renderSummaryRow } from '../../../lib/agent/compaction';
+import { shouldCompact } from '../../../lib/agent/compactionBudget';
 import { foldBudgetTokens } from '../../../lib/agent/contextBudget';
-import { TURN_START_MIN_INTERVAL_MS, sanitizeTurnRunId, isRedisSafeOpaqueId } from '../../../lib/sessionCloudCaps';
+import {
+  COMPACTION_SPAN_MAX_BYTES,
+  TURN_START_MIN_INTERVAL_MS,
+  sanitizeTurnRunId,
+  isRedisSafeOpaqueId,
+} from '../../../lib/sessionCloudCaps';
 import { mapByokResolveFailure } from '../../../lib/chatServer';
 import { createProdServices } from '../../../lib/di';
 import { requireSessionUser } from '../../../lib/tenancy/session';
@@ -315,6 +321,23 @@ export async function POST(req: Request): Promise<Response> {
     // Fail-closed: an unreadable / unbound / missing / malformed projection is
     // treated as "no pointer" (legacy roll-forward turn), never a 5xx.
     let priorMessages: unknown[] | undefined;
+    // Plan #950 (A4 compaction phase 3, parent #947 Goal 1): the route-side
+    // trigger + cut. When the PRE-TRIM seeded projection overflows the #944
+    // fold budget (`shouldCompact`) AND a clean user-boundary cut exists
+    // (`findCompactionCut` — the trigger is evaluated on the pre-trim
+    // projection per the parent review-note 1 lock), the route passes
+    // `compact: {span, filesTouched, retainedTail}` into `start()`; the
+    // workflow runs the pre-loop summarizer step and the loop seeds
+    // `[summaryRow, ...retainedTail, user]`. Compaction is preferred OVER the
+    // #944 trim only when a clean cut exists — otherwise today's trim behavior
+    // is preserved (the turn is never blocked; parent correction-row lock).
+    let compactArgs:
+      | {
+          span: ReadonlyArray<unknown>;
+          filesTouched: ReadonlyArray<unknown>;
+          retainedTail: ReadonlyArray<unknown>;
+        }
+      | undefined;
     try {
       const storeRes = await resolveSessionStore();
       if (storeRes.ok && isEnvelopeStore(storeRes.value)) {
@@ -479,18 +502,95 @@ export async function POST(req: Request): Promise<Response> {
                   // seed an unpaired tool-result at a strict provider
                   // (adversarial-review #937).
                   const built = buildModelMessages(parsedProjection).rows;
+                  // Plan #950 (A4 phase 3, parent review-note 1 lock): the
+                  // trigger is evaluated on the PRE-TRIM projection — a
+                  // trimmed seed always fits and would mask the overflow
+                  // compaction resolves. `shouldCompact` consumes the #944
+                  // fold budget (the reserve is already subtracted; never
+                  // subtracted again — adversarial #953).
+                  const windowMap = await windowPromise;
+                  const budget = foldBudgetTokens(windowMap, byok.modelId);
+                  const cut = shouldCompact(built, budget)
+                    ? findCompactionCut(built, budget)
+                    : null;
+                  if (cut) {
+                    // A clean user-boundary cut exists → compact. The span
+                    // (summarizer input) is byte-railed by
+                    // `COMPACTION_SPAN_MAX_BYTES` — over it, yield to the
+                    // #944 trim (never a huge summarizer prompt).
+                    const spanJson = JSON.stringify(cut.span);
+                    if (
+                      new TextEncoder().encode(spanJson).length <=
+                      COMPACTION_SPAN_MAX_BYTES
+                    ) {
+                      // `filesTouched` for the checkpoint summary row:
+                      // derive from the span's `read_file` / edit tool rows
+                      // (phase-1 `boundFilesTouched` caps + sanitizes in
+                      // `buildCheckpoint` — pass the raw paths through).
+                      const filesTouched: string[] = [];
+                      for (const row of cut.span) {
+                        if (!row || typeof row !== 'object') continue;
+                        const o = row as {
+                          role?: unknown;
+                          toolName?: unknown;
+                          delta?: { toolCalls?: Array<{ toolName?: unknown; args?: { path?: unknown } }> };
+                        };
+                        if (o.role === 'tool' && typeof o.toolName === 'string') {
+                          // Tool RESULT rows carry the toolName; the path
+                          // lives on the paired assistant call — collect
+                          // from the assistant delta calls instead (below).
+                        }
+                        if (o.role === 'assistant' && o.delta?.toolCalls) {
+                          for (const call of o.delta.toolCalls) {
+                            if (typeof call.toolName !== 'string') continue;
+                            const path = call.args?.path;
+                            if (
+                              (call.toolName === 'read_file' ||
+                                call.toolName === 'str_replace' ||
+                                call.toolName === 'write_file') &&
+                              typeof path === 'string'
+                            ) {
+                              filesTouched.push(path);
+                            }
+                          }
+                        }
+                      }
+                      compactArgs = {
+                        span: cut.span,
+                        filesTouched,
+                        retainedTail: cut.tail,
+                      };
+                    }
+                  }
                   // Plan #944 / adversarial #945: trim the seed to the
                   // model's window-derived token budget (+ row/byte rails)
                   // at the route boundary — drop oldest, re-pair. The
                   // current ask is `parsed.prompt` (appended after the
                   // seed as userMessage), not the newest seed row; it is
                   // counted in the token rail so history yields to it.
-                  const windowMap = await windowPromise;
-                  priorMessages = trimModelMessagesToBudget(
-                    built,
-                    foldBudgetTokens(windowMap, byok.modelId),
-                    { currentUserContent: parsed.prompt },
-                  ).rows;
+                  // When compacting, the seed the loop will use is
+                  // `[summaryRow, ...retainedTail]` — trim THAT shape so
+                  // the same rails bound the compacted seed too (the
+                  // loop replaces `priorMessages` with it).
+                  if (compactArgs) {
+                    const compactedSeedShape = trimModelMessagesToBudget(
+                      [
+                        renderSummaryRow('', []),
+                        ...buildModelMessages(compactArgs.retainedTail).rows,
+                      ],
+                      budget,
+                      { currentUserContent: parsed.prompt, pinnedCount: 1 },
+                    ).rows;
+                    if (compactedSeedShape.length > 0) {
+                      priorMessages = compactedSeedShape;
+                    }
+                  } else {
+                    priorMessages = trimModelMessagesToBudget(
+                      built,
+                      budget,
+                      { currentUserContent: parsed.prompt },
+                    ).rows;
+                  }
                 }
               }
             } catch {
@@ -618,6 +718,17 @@ export async function POST(req: Request): Promise<Response> {
         ...(priorMessages !== undefined ? { priorMessages } : {}),
         ...(freshnessReminderPointer !== undefined
           ? { freshnessReminderPointer }
+          : {}),
+        // Plan #950 (A4 phase 3): the route-side trigger + cut. Plain
+        // serializable values only (span rows / path strings / tail rows).
+        ...(compactArgs !== undefined
+          ? {
+              compact: {
+                span: compactArgs.span,
+                filesTouched: compactArgs.filesTouched,
+                retainedTail: compactArgs.retainedTail,
+              },
+            }
           : {}),
       },
     ]);
