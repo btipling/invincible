@@ -431,6 +431,42 @@ describe('findCompactionCut (plan #948 row 1 + 2)', () => {
     );
     expect(cut!.tail[0]).toEqual(rows[4]);
   });
+
+  it('adversarial #955 follow-up 13 — pin-only clip yields null (do not rewrite honesty)', () => {
+    // 20k-window fold budget (~3616 tokens → ~14.4k span chars). A near-cap
+    // Goal 4 row plus a fat first-unpinned user misses the remaining rail;
+    // clip would return the pin only. Summarizing that rewrites honesty and
+    // drops overflow `#944` would have kept the pin through. Yield instead.
+    const budget = 3_616;
+    const rails = compactionCutRails(budget);
+    const honesty = renderSummaryRow('S'.repeat(COMPACTION_SUMMARY_MAX_CHARS), [
+      'lib/auth.ts',
+    ]);
+    const fat = `FAT_OVERFLOW ${'x'.repeat(7_000)}`;
+    const rows: ModelMessageRow[] = [
+      honesty,
+      user(fat),
+      assistant('old'),
+      user('newest boundary'),
+      assistant('new'),
+    ];
+    const newestTailJson = JSON.stringify(rows.slice(3));
+    expect(Math.ceil(newestTailJson.length / 4)).toBeLessThan(rails.budgetTokens);
+    const encoder = new TextEncoder();
+    expect(encoder.encode(JSON.stringify([honesty])).length).toBeLessThanOrEqual(
+      rails.maxSpanBytes,
+    );
+    expect(
+      encoder.encode(JSON.stringify([honesty, rows[1]])).length,
+    ).toBeGreaterThan(rails.maxSpanBytes);
+    const cut = findCompactionCut(rows, rails.budgetTokens, {
+      maxSpanBytes: rails.maxSpanBytes,
+      maxBytes: rails.maxBytes,
+      maxRows: rails.maxRows,
+      pinnedCount: 1,
+    });
+    expect(cut).toBeNull();
+  });
 });
 
 describe('compactionCutRails (adversarial #955 follow-up 6 / 12)', () => {

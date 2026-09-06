@@ -2221,4 +2221,52 @@ describe('POST /api/turns', () => {
     expect(blobReadMock).toHaveBeenCalledWith('t_mm_s1_abc');
   });
 
+  it('adversarial #955 follow-up 13 — pin-only clip yields to #944 (no compact)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    // 20k window → fold budget 3616 → span rail ~14.4k. Near-cap honesty
+    // plus a 7k first-unpinned user cannot share that rail; clip would
+    // be pin-only. Route must NOT start() compact (rewriting honesty and
+    // wiping filesTouched is worse than the #944 pin-trim).
+    const honesty = {
+      role: 'user',
+      content: `${COMPACTION_SUMMARY_LABEL} ${'S'.repeat(COMPACTION_SUMMARY_MAX_CHARS)}\n\nFiles read/modified: lib/auth.ts`,
+    };
+    const fat = `FAT_OVERFLOW ${'x'.repeat(7_000)}`;
+    const liveMm = [
+      honesty,
+      { role: 'user', content: fat },
+      { role: 'assistant', delta: { text: 'old' } },
+      { role: 'user', content: 'newest boundary' },
+      { role: 'assistant', delta: { text: 'new' } },
+    ];
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(JSON.stringify(liveMm));
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      effortValuesForModel: async () => [],
+      getJoinedWindowMap: async () => new Map([['anthropic/claude-a', 20_000]]),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'continue', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.compact).toBeUndefined();
+    expect(startArgs.priorMessages).toBeDefined();
+    expect(startArgs.priorMessages[0].content.startsWith(COMPACTION_SUMMARY_LABEL)).toBe(
+      true,
+    );
+    expect(
+      startArgs.priorMessages[0].content.includes('Files read/modified: lib/auth.ts'),
+    ).toBe(true);
+  });
+
 });

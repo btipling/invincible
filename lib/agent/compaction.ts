@@ -326,11 +326,14 @@ export function renderSummaryRow(
  *    longest **prefix** `≤ maxSpanBytes` (oldest overflow — parent Goal 1
  *    / “summarizes the oldest rows”). Suffix-clip (follow-up 8) summarized
  *    bytes already adjacent to the tail and dropped the user goal; prefix
- *    clip restores Goal 1 (adversarial #955 follow-up 10). Yield-to-trim
- *    would discard the fitting tail AND the overflow with no summary; a
- *    clipped span summarizes the oldest overflow and keeps the newest
- *    tail (middle dropped — `#944` would drop it too, without a summary
- *    of the start).
+ *    clip restores Goal 1 (adversarial #955 follow-up 10). A clip that
+ *    shrinks to the honesty pin only (follow-up 12's fold-budget rail on
+ *    a small window) yields to `#944` — rewriting the existing honesty
+ *    is worse than drop-oldest (adversarial #955 follow-up 13). Yield-to-trim
+ *    of an empty / pin-only clip discards no summary we could have produced;
+ *    a clipped span that still holds unpinned overflow summarizes the
+ *    oldest prefix and keeps the newest tail (middle dropped — `#944`
+ *    would drop it too, without a summary of the start).
  *
  * Tail size is monotonic on every rail as the boundary moves earlier
  * (adversarial #953): if the newest (smallest) tail misses, no earlier tail
@@ -421,6 +424,16 @@ export function findCompactionCut(
     // entirely on orphan tool-results re-pairs to [] — yield to `#944`
     // rather than summarize nothing (adversarial #955 follow-up 10).
     if (span.length === 0) return null;
+    // Pin-only clip (adversarial #955 follow-up 13): follow-up 12's
+    // fold-budget span rail on a 20k window is ~14.4k chars. A near-cap
+    // Goal 4 honesty row can consume most of that; `clipSpanToMaxBytes`
+    // then returns the pin and no new overflow. Summarizing that would
+    // rewrite the existing honesty, wipe `filesTouched`, and drop the
+    // middle `#944` would have drop-oldest'd while **keeping** the pin.
+    // Same class as empty re-pair — yield. Complete-partition
+    // honesty-only (cutIndex === pin, not clipped) is different: the
+    // overflow IS the fat honesty, and compressing it is useful.
+    if (pinnedCount > 0 && span.length <= pinnedCount) return null;
     return {
       cutIndex: spanOverFit.cutIndex,
       span,
