@@ -717,7 +717,7 @@ export async function runTurnLoop(
   // Compaction seed (plan #950, parent #947 Goal 1): the pre-loop summarizer
   // runs ONCE here, before the first model round, over the route-side span.
   // Fail-open — ANY summarizer failure (step throw, `{ok:false}`, empty
-  // summary, past-deadline) proceeds UNCOMPACTED. Production omits
+  // summary, past-deadline, **pin-miss empty seed**) proceeds UNCOMPACTED. Production omits
   // `priorMessages` on the compact path (adversarial #955 — do not ship
   // three seed-sized arrays into `start()`, and do not overwrite the
   // fail-open seed with an empty Goal 4 row): reconstruct from span+tail
@@ -755,23 +755,31 @@ export async function runTurnLoop(
         // summary pinned (adversarial #955 / #954 Goal 4). The route's dummy
         // empty-summary pin is not this shape.
         const budget = input.compact.budgetTokens;
-        compactedSeed =
+        const trimmedSeed =
           typeof budget === 'number'
             ? trimModelMessagesToBudget(seedRows, budget, {
                 currentUserContent: input.userMessage,
                 pinnedCount: 1,
               }).rows
             : seedRows;
-        // Plan #950 checkpoint writer (parent #947 review-note 2 lock).
-        // `retainedTail` is filled at persist time from the live
-        // post-compact messages (adversarial #955 Goal 2) — not the
-        // frozen cut-time tail, which would drop this turn on the next
-        // prefer-checkpoint seed.
-        compactedCheckpoint = {
-          summary: checkpoint.summary,
-          filesTouched: checkpoint.filesTouched,
-          retainedTail: [],
-        };
+        // Pin-miss (adversarial #955 follow-up 5): pinned summary + ask
+        // miss a rail → `[]`. `[]` is NOT a compact success — the first
+        // model round would see only the ask (mm-seed `#944` would have
+        // kept the newest tail) and persist would rewrite mm to this-
+        // turn-only. Fail-open: no compactedSeed, no checkpoint writer.
+        if (trimmedSeed.length > 0) {
+          compactedSeed = trimmedSeed;
+          // Plan #950 checkpoint writer (parent #947 review-note 2 lock).
+          // `retainedTail` is filled at persist time from the live
+          // post-compact messages (adversarial #955 Goal 2) — not the
+          // frozen cut-time tail, which would drop this turn on the next
+          // prefer-checkpoint seed.
+          compactedCheckpoint = {
+            summary: checkpoint.summary,
+            filesTouched: checkpoint.filesTouched,
+            retainedTail: [],
+          };
+        }
       }
     } catch {
       // Fail-open: compaction never blocks the turn (parent edge-case lock).

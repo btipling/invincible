@@ -683,9 +683,14 @@ export const COMPACTION_CHECKPOINT_MAX_BYTES =
  * bounded by `MODEL_MSG_SEED_MAX_BYTES` inside `findCompactionCut`). Set at
  * ~2 MiB (the same bound class as `MODEL_MSG_SEED_MAX_BYTES` / the Workflow
  * run-arg carrier) so the summarizer prompt stays bounded; a span over the
- * cap yields NO compact (the route falls back to the #944 trim — the turn is
- * never blocked). **NEW generous cap**; no existing cap value changed → no
- * human gate. Enforced at the route trigger (`app/api/turns/route.ts`).
+ * cap is not a yield-to-trim by itself — `findCompactionCut` **continues**
+ * to an older user boundary (larger retained tail, shorter span) until a
+ * legal cut exists or the tail misses a rail (plan #950 Caps / adversarial
+ * #955 follow-up 5). Combined `start()` over `COMPACTION_START_MAX_BYTES`
+ * still yields to the #944 trim (the turn is never blocked). **NEW generous
+ * cap**; no existing cap value changed → no human gate. Enforced in the
+ * cut walk (`lib/agent/compaction.ts` `maxSpanBytes`, passed from
+ * `app/api/turns/route.ts`).
  */
 export const COMPACTION_SPAN_MAX_BYTES = 2 * 1024 * 1024;
 

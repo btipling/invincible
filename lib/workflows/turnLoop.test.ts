@@ -5981,12 +5981,16 @@ describe('runTurnLoop compaction (plan #950, source #552)', () => {
     ]);
   });
 
-  it('pin-miss success seed (summary+ask miss the budget) still persists this turn user (adversarial #955 follow-up 3)', async () => {
+  it('pin-miss empty seed fail-opens: first model sees reconstructed tail, no checkpoint (adversarial #955 follow-up 5)', async () => {
     const { deps } = wiredDeps();
-    const modelStep = vi.fn(async () => ({
-      ok: true as const,
-      delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
-    }));
+    let firstRoundMessages: unknown[] | undefined;
+    const modelStep = vi.fn(async (args: { messages: ReadonlyArray<unknown> }) => {
+      if (!firstRoundMessages) firstRoundMessages = [...args.messages];
+      return {
+        ok: true as const,
+        delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+      };
+    });
     const fatSummary = 'S'.repeat(8_000);
     const compactionStep = vi.fn(async () => ({
       ok: true as const,
@@ -6011,28 +6015,22 @@ describe('runTurnLoop compaction (plan #950, source #552)', () => {
       },
     );
     expect(result.status).toBe('completed');
-    const folds = persistSpy.mock.calls
-      .map((c) => c[0].fold)
-      .filter((f) => f?.compactionCheckpoint !== undefined);
-    expect(folds.length).toBeGreaterThan(0);
-    const ck = folds[0]!.compactionCheckpoint as {
-      summary: string;
-      filesTouched: string[];
-      retainedTail: Array<{ role: string; content?: string }>;
-    };
-    expect(ck.summary).toContain(fatSummary);
-    // slice(1) would have dropped this turn's user because messages[0] is
-    // the ask, not the honesty row. Label-based drop keeps the user.
-    expect(ck.retainedTail.some((r) => r.role === 'user' && r.content === ask)).toBe(
-      true,
-    );
+    expect(firstRoundMessages).toBeDefined();
+    const rows = firstRoundMessages as Array<{ role: string; content?: string }>;
+    // Fail-open reconstructed span+tail (not `[]` / not the too-fat summary).
+    expect(rows.some((r) => r.content === 'old')).toBe(true);
+    expect(rows.some((r) => r.content === 'tail row')).toBe(true);
+    expect(rows[rows.length - 1]).toEqual({ role: 'user', content: ask });
     expect(
-      ck.retainedTail.some(
+      rows.some(
         (r) =>
-          r.role === 'user' &&
           typeof r.content === 'string' &&
           r.content.startsWith('Summary of earlier session'),
       ),
     ).toBe(false);
+    const folds = persistSpy.mock.calls
+      .map((c) => c[0].fold)
+      .filter((f) => f?.compactionCheckpoint !== undefined);
+    expect(folds).toHaveLength(0);
   });
 });

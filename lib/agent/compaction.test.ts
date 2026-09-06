@@ -245,6 +245,48 @@ describe('findCompactionCut (plan #948 row 1 + 2)', () => {
     const budget = tailJson.length + 1;
     expect(findCompactionCut(rows, budget, { charsPerToken: 1 })?.cutIndex).toBe(2);
   });
+
+  it('adversarial #955 follow-up 5 — over-cap newest span continues to a shorter-span cut', () => {
+    // Three user turns. Newest tail (t3) fits; span t1+t2 is over a tiny
+    // maxSpanBytes. Walk continues to t2 — span is only t1, under the cap.
+    const rows: ModelMessageRow[] = [
+      user('t1-span-head'),
+      assistant('a'.repeat(40)),
+      user('t2-next-boundary'),
+      assistant('b'.repeat(8)),
+      user('t3-newest'),
+      assistant('c'),
+    ];
+    const newestSpan = JSON.stringify(rows.slice(0, 4));
+    const nextSpan = JSON.stringify(rows.slice(0, 2));
+    expect(newestSpan.length).toBeGreaterThan(nextSpan.length);
+    const cap = nextSpan.length + 8; // fits next span, not newest span
+    expect(new TextEncoder().encode(newestSpan).length).toBeGreaterThan(cap);
+    const budget = Math.ceil(JSON.stringify(rows.slice(2)).length / 4) + 50;
+    const cut = findCompactionCut(rows, budget, { maxSpanBytes: cap });
+    expect(cut).not.toBeNull();
+    expect(cut!.cutIndex).toBe(2);
+    expect(cut!.span).toEqual(rows.slice(0, 2));
+    expect(cut!.tail[0]).toEqual(rows[2]);
+  });
+
+  it('adversarial #955 follow-up 5 — span-over-cap with no later legal cut → null', () => {
+    // Two user turns. Newest tail fits; its span is over cap. Older
+    // boundary would be index 0 (empty span — not a candidate). No legal
+    // shorter-span cut → null (yield to trim), never return the oversize span.
+    const rows: ModelMessageRow[] = [
+      user('only-span'),
+      assistant('x'.repeat(80)),
+      user('newest'),
+      assistant('y'),
+    ];
+    const spanBytes = new TextEncoder().encode(JSON.stringify(rows.slice(0, 2))).length;
+    const budget = Math.ceil(JSON.stringify(rows.slice(2)).length / 4) + 50;
+    expect(findCompactionCut(rows, budget)?.cutIndex).toBe(2);
+    expect(
+      findCompactionCut(rows, budget, { maxSpanBytes: Math.max(1, spanBytes - 1) }),
+    ).toBeNull();
+  });
 });
 
 describe('renderSummaryRow (plan #948 row 3 — honesty lock)', () => {
@@ -507,5 +549,14 @@ describe('livePostCompactTail (adversarial #955 follow-up 3)', () => {
   it('pin-miss (no honesty row in the live projection) keeps the full this-turn view', () => {
     const thisTurn = [user('the ask that did not fit with the summary'), assistant('ok')];
     expect(livePostCompactTail(thisTurn)).toEqual(thisTurn);
+  });
+
+  it('adversarial #955 follow-up 5 — a later user starting with the honesty label is not dropped', () => {
+    const summary = renderSummaryRow('earlier work', []);
+    const collidingAsk = user(
+      `${COMPACTION_SUMMARY_LABEL} this is the live ask, not a summary`,
+    );
+    const out = livePostCompactTail([summary, collidingAsk, assistant('ok')]);
+    expect(out).toEqual([collidingAsk, assistant('ok')]);
   });
 });

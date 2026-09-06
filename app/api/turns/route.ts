@@ -510,66 +510,61 @@ export async function POST(req: Request): Promise<Response> {
             // consumes the #944 fold budget (reserve already subtracted;
             // never subtracted again — adversarial #953).
             const cut = shouldCompact(preTrimSeed, budget)
-              ? findCompactionCut(preTrimSeed, budget)
+              ? findCompactionCut(preTrimSeed, budget, {
+                  // Plan #950 Caps / adversarial #955 follow-up 5: over-cap
+                  // span continues the walk to a larger tail (shorter span).
+                  // Do not yield to `#944` trim while a legal cut exists.
+                  maxSpanBytes: COMPACTION_SPAN_MAX_BYTES,
+                })
               : null;
             if (cut) {
-              // A clean user-boundary cut exists → compact. The span
-              // (summarizer input) is byte-railed by
-              // `COMPACTION_SPAN_MAX_BYTES` — over it, yield to the
-              // #944 trim (never a huge summarizer prompt).
-              const spanJson = JSON.stringify(cut.span);
-              if (
-                new TextEncoder().encode(spanJson).length <=
-                COMPACTION_SPAN_MAX_BYTES
-              ) {
-                // `filesTouched` for the checkpoint summary row: derive
-                // from the span's `read_file` / edit tool rows (phase-1
-                // `boundFilesTouched` caps + sanitizes in `buildCheckpoint`
-                // — pass the raw paths through). Paths live on the
-                // assistant call, not the tool-result row.
-                const filesTouched: string[] = [];
-                for (const row of cut.span) {
-                  if (!row || typeof row !== 'object') continue;
-                  const o = row as {
-                    role?: unknown;
-                    delta?: {
-                      toolCalls?: Array<{
-                        toolName?: unknown;
-                        args?: { path?: unknown };
-                      }>;
-                    };
+              // `filesTouched` for the checkpoint summary row: derive
+              // from the span's `read_file` / edit tool rows (phase-1
+              // `boundFilesTouched` caps + sanitizes in `buildCheckpoint`
+              // — pass the raw paths through). Paths live on the
+              // assistant call, not the tool-result row.
+              const filesTouched: string[] = [];
+              for (const row of cut.span) {
+                if (!row || typeof row !== 'object') continue;
+                const o = row as {
+                  role?: unknown;
+                  delta?: {
+                    toolCalls?: Array<{
+                      toolName?: unknown;
+                      args?: { path?: unknown };
+                    }>;
                   };
-                  if (o.role === 'assistant' && o.delta?.toolCalls) {
-                    for (const call of o.delta.toolCalls) {
-                      if (typeof call.toolName !== 'string') continue;
-                      const path = call.args?.path;
-                      if (
-                        (call.toolName === 'read_file' ||
-                          call.toolName === 'str_replace' ||
-                          call.toolName === 'write_file') &&
-                        typeof path === 'string'
-                      ) {
-                        filesTouched.push(path);
-                      }
+                };
+                if (o.role === 'assistant' && o.delta?.toolCalls) {
+                  for (const call of o.delta.toolCalls) {
+                    if (typeof call.toolName !== 'string') continue;
+                    const path = call.args?.path;
+                    if (
+                      (call.toolName === 'read_file' ||
+                        call.toolName === 'str_replace' ||
+                        call.toolName === 'write_file') &&
+                      typeof path === 'string'
+                    ) {
+                      filesTouched.push(path);
                     }
                   }
                 }
-                // Combined start() payload rail (adversarial #955 follow-up):
-                // span + tail is the full pre-trim seed. Independently 2 MiB
-                // rails compose to 4 MiB; over COMPACTION_START_MAX_BYTES
-                // yield to the #944 trim (never a 413 that blocks the turn).
-                const candidate = {
-                  span: cut.span,
-                  filesTouched,
-                  retainedTail: cut.tail,
-                  budgetTokens: budget,
+              }
+              // Combined start() payload rail (adversarial #955 follow-up):
+              // span + tail is the full pre-trim seed. Independently 2 MiB
+              // rails compose to 4 MiB; over COMPACTION_START_MAX_BYTES
+              // yield to the #944 trim (never a 413 that blocks the turn).
+              const candidate = {
+                span: cut.span,
+                filesTouched,
+                retainedTail: cut.tail,
+                budgetTokens: budget,
+              };
+              if (compactStartPayloadFits(candidate)) {
+                compactArgs = {
+                  ...candidate,
+                  ...(pinSummaryRow ? { pinSummaryRow: true } : {}),
                 };
-                if (compactStartPayloadFits(candidate)) {
-                  compactArgs = {
-                    ...candidate,
-                    ...(pinSummaryRow ? { pinSummaryRow: true } : {}),
-                  };
-                }
               }
             }
             if (compactArgs === undefined) {

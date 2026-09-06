@@ -278,14 +278,20 @@ export function renderSummaryRow(
  *    result — estimated over the serialized tail),
  *  - the **row rail** (`maxRows`, default `MODEL_MSG_SEED_MAX_ROWS`),
  *  - the **byte rail** (`maxBytes`, default `MODEL_MSG_SEED_MAX_BYTES` —
- *    the Workflow run-arg carrier bound).
+ *    the Workflow run-arg carrier bound),
+ *  - optionally the **span byte rail** (`maxSpanBytes` — phase 3
+ *    `COMPACTION_SPAN_MAX_BYTES`): a tail that fits every other rail whose
+ *    span is over the cap is **skipped**, not returned. The walk continues
+ *    to an older user boundary (smaller span, larger tail). Plan #950 Caps:
+ *    over-cap span → keep a larger retained tail, never feed the summarizer
+ *    an unbounded prompt and never yield to `#944` trim while a legal
+ *    shorter-span cut still exists (adversarial #955 follow-up 5).
  *
  * Tail size is monotonic on every rail as the boundary moves earlier
  * (adversarial #953): if the newest (smallest) tail misses, no earlier tail
  * can fit — return `null` immediately; do not stringify older suffixes
- * (the #945 17s linear-drop class). A future `COMPACTION_SPAN_MAX_BYTES`
- * (phase 3) may `continue` past a *fitting* newest tail to grow the
- * retained tail; a miss still ends the walk.
+ * (the #945 17s linear-drop class). A span-over-cap on a *fitting* tail
+ * is not a miss — `continue`. A later tail miss still ends the walk.
  *
  * The tail must contain at least one row (the boundary `user` row itself)
  * and the span must be non-empty for a cut to exist: a cut whose span would
@@ -307,6 +313,11 @@ export function findCompactionCut(
     maxBytes?: number;
     /** Override the estimator ratio (tests). Defaults to CONTEXT_CHARS_PER_TOKEN. */
     charsPerToken?: number;
+    /**
+     * Summarizer-input ceiling (plan #950 `COMPACTION_SPAN_MAX_BYTES`).
+     * Absent / non-positive → no span rail (phase-1 tests unchanged).
+     */
+    maxSpanBytes?: number;
   },
 ): CompactionCut | null {
   if (!Number.isFinite(budgetTokens) || budgetTokens <= 0) return null;
@@ -316,6 +327,12 @@ export function findCompactionCut(
     opts?.charsPerToken && opts.charsPerToken > 0
       ? opts.charsPerToken
       : CONTEXT_CHARS_PER_TOKEN;
+  const maxSpanBytes =
+    opts?.maxSpanBytes !== undefined &&
+    Number.isFinite(opts.maxSpanBytes) &&
+    opts.maxSpanBytes > 0
+      ? opts.maxSpanBytes
+      : undefined;
 
   const n = rows.length;
   if (n === 0) return null;
@@ -328,8 +345,9 @@ export function findCompactionCut(
   }
   if (boundaries.length === 0) return null;
 
-  // Newest boundary whose tail fits every rail. Stop at the first fit
-  // (largest compactable span). First miss → null (monotonic rails).
+  // Newest boundary whose tail fits every rail AND whose span fits the
+  // optional span ceiling. Tail miss → null (monotonic). Span-over-cap on
+  // a fitting tail → continue (older boundary, smaller span).
   for (let b = boundaries.length - 1; b >= 0; b--) {
     const cutIndex = boundaries[b];
     const tail = rows.slice(cutIndex);
@@ -337,14 +355,22 @@ export function findCompactionCut(
     const json = JSON.stringify(tail);
     if (Math.ceil(json.length / ratio) > budgetTokens) return null;
     if (utf8Bytes(json) > maxBytes) return null;
+    const span = rePairModelMessages(rows.slice(0, cutIndex));
+    if (
+      maxSpanBytes !== undefined &&
+      utf8Bytes(JSON.stringify(span)) > maxSpanBytes
+    ) {
+      continue;
+    }
     return {
       cutIndex,
-      span: rePairModelMessages(rows.slice(0, cutIndex)),
+      span,
       tail: rePairModelMessages(tail),
     };
   }
   return null;
 }
+
 
 /**
  * Combined `start()` compact-args payload rail (adversarial #955 follow-up).
@@ -370,23 +396,28 @@ export function compactStartPayloadFits(
 }
 
 /**
- * Live post-compact retained tail (adversarial #955 follow-up 3). Drop the
- * honesty-labeled summary row by Goal 4 label, **not** `slice(1)`.
+ * Live post-compact retained tail (adversarial #955 follow-up 3 / 5). Drop
+ * the honesty-labeled summary row as the **leading** seed row, **not**
+ * `findIndex` over the full live projection and not `slice(1)`.
  *
- * `trimModelMessagesToBudget(..., pinnedCount: 1)` yields `[]` when the
- * pinned summary itself misses a rail with the ask (`modelMessages.ts`
- * pin-miss, `minKeep === 0`). The live `messages` array then starts at this
- * turn's user — `slice(1)` would drop that user from the replacement seed
- * (Goal 2 miss on prefer-checkpoint). When the label is absent, the tail
- * **is** the full live projection. Pure, never throws.
+ * Compact success always pins the Goal 4 row at index 0. A this-turn user
+ * whose prompt starts with `COMPACTION_SUMMARY_LABEL` is not the summary —
+ * scanning the full array would drop that ask on a pin-miss projection
+ * (adversarial #955 follow-up 5 Minor). When the label is absent from
+ * `rows[0]`, the tail **is** the full live projection. Pure, never throws.
  */
 export function livePostCompactTail(
   rows: ReadonlyArray<ModelMessageRow>,
 ): ModelMessageRow[] {
-  const i = rows.findIndex(
-    (r) => r.role === 'user' && r.content.startsWith(COMPACTION_SUMMARY_LABEL),
-  );
-  return i >= 0 ? rows.slice(i + 1) : [...rows];
+  const first = rows[0];
+  if (
+    first &&
+    first.role === 'user' &&
+    first.content.startsWith(COMPACTION_SUMMARY_LABEL)
+  ) {
+    return rows.slice(1);
+  }
+  return [...rows];
 }
 
 /**
