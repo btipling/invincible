@@ -13,8 +13,10 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  COMPACTION_CHECKPOINT_MAX_BYTES,
   COMPACTION_FILES_TOUCHED_MAX,
   COMPACTION_SUMMARY_MAX_CHARS,
+  MODEL_MSG_SEED_MAX_BYTES,
 } from '../sessionCloudCaps';
 import {
   buildCheckpoint,
@@ -385,5 +387,50 @@ describe('buildCheckpoint (plan #948 row 4 — caps table enforcement)', () => {
     expect(cp.summary).toBe('');
     expect(cp.filesTouched).toEqual([]);
     expect(cp.retainedTail).toEqual([user('hi')]);
+  });
+
+  it('adversarial #954 — buildCheckpoint is idempotent on its own output (read-seam re-run)', () => {
+    const paths = Array.from(
+      { length: COMPACTION_FILES_TOUCHED_MAX + 10 },
+      (_, i) => `p${i}.ts`,
+    );
+    // At-cap BMP head + files overflow: first build bakes omitted, must NOT
+    // grow a lying truncation marker on the second call.
+    const first = buildCheckpoint(
+      { summary: 'x'.repeat(COMPACTION_SUMMARY_MAX_CHARS), filesTouched: paths },
+      [user('hi')],
+    );
+    expect(first.summary).toContain('earlier paths omitted');
+    expect(first.summary).not.toContain('… [summary truncated]');
+    const second = buildCheckpoint(
+      { summary: first.summary, filesTouched: first.filesTouched },
+      first.retainedTail,
+    );
+    expect(second).toEqual(first);
+
+    // Over-cap astral head + files overflow: truncation + omitted both survive.
+    const over = buildCheckpoint(
+      {
+        summary: '🙂'.repeat(COMPACTION_SUMMARY_MAX_CHARS + 1),
+        filesTouched: paths,
+      },
+      [],
+    );
+    expect(over.summary).toContain('… [summary truncated]');
+    expect(over.summary).toContain('earlier paths omitted');
+    const over2 = buildCheckpoint(
+      { summary: over.summary, filesTouched: over.filesTouched },
+      over.retainedTail,
+    );
+    expect(over2).toEqual(over);
+  });
+});
+
+describe('compaction checkpoint persist cap (plan #949 / adversarial #954)', () => {
+  it('COMPACTION_CHECKPOINT_MAX_BYTES composes with the Phase-1 tail / seed byte rail', () => {
+    // A legal findCompactionCut tail may serialize to MODEL_MSG_SEED_MAX_BYTES;
+    // the checkpoint object adds summary/files/keys. Slack is 256 KiB.
+    expect(COMPACTION_CHECKPOINT_MAX_BYTES).toBe(MODEL_MSG_SEED_MAX_BYTES + 256 * 1024);
+    expect(COMPACTION_CHECKPOINT_MAX_BYTES).toBeGreaterThan(MODEL_MSG_SEED_MAX_BYTES);
   });
 });

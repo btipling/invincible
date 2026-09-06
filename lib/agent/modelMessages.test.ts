@@ -404,4 +404,60 @@ describe('trimModelMessagesToBudget (plan #944, testing rows 4–6 + 14)', () =>
     expect(MODEL_MSG_SEED_MAX_ROWS).toBe(4_096);
     expect(MODEL_MSG_SEED_MAX_BYTES).toBe(2 * 1024 * 1024);
   });
+
+  it('adversarial #954 — pinnedCount keeps the prefix; all three rails see the combined seed', () => {
+    const prefix = user('PINNED_SUMMARY');
+    const old = user('OLD_TAIL ' + 'x'.repeat(400));
+    const newest = user('newest ask in tail');
+    const rows = [prefix, old, newest];
+
+    // Token rail: combined prefix+all misses; prefix+newest fits; drop OLD_TAIL.
+    const byToken = trimModelMessagesToBudget(rows, 30, {
+      charsPerToken: 4,
+      currentUserContent: 'ask',
+      pinnedCount: 1,
+    });
+    expect(byToken.truncated).toBe(true);
+    expect(byToken.rows[0]).toEqual(prefix);
+    expect(byToken.rows.some((r) => r.role === 'user' && r.content.startsWith('OLD_TAIL'))).toBe(
+      false,
+    );
+    expect(byToken.rows.at(-1)).toEqual(newest);
+
+    // Row rail: maxRows=2 on [prefix, old, newest] → drop oldest rest, keep prefix+newest.
+    const byRows = trimModelMessagesToBudget(rows, 1_000_000, {
+      maxRows: 2,
+      charsPerToken: 4,
+      currentUserContent: 'ask',
+      pinnedCount: 1,
+    });
+    expect(byRows.rows).toEqual([prefix, newest]);
+
+    // Byte rail: maxBytes sized so prefix+old+newest misses but prefix+newest fits.
+    const prefixNewest = JSON.stringify([prefix, newest]);
+    const byBytes = trimModelMessagesToBudget(rows, 1_000_000, {
+      maxBytes: prefixNewest.length + 10,
+      charsPerToken: 4,
+      currentUserContent: 'ask',
+      pinnedCount: 1,
+    });
+    expect(JSON.stringify(byBytes.rows).length).toBeLessThanOrEqual(prefixNewest.length + 10);
+    expect(byBytes.rows[0]).toEqual(prefix);
+    expect(byBytes.rows.at(-1)).toEqual(newest);
+    expect(byBytes.rows.some((r) => r.role === 'user' && r.content.startsWith('OLD_TAIL'))).toBe(
+      false,
+    );
+  });
+
+  it('adversarial #954 — pinned prefix that itself cannot fit yields to the ask', () => {
+    const prefix = user('PINNED ' + 'z'.repeat(400));
+    const newest = user('newest');
+    const { rows: out, truncated } = trimModelMessagesToBudget([prefix, newest], 10, {
+      charsPerToken: 4,
+      currentUserContent: 'ask',
+      pinnedCount: 1,
+    });
+    expect(truncated).toBe(true);
+    expect(out).toEqual([]);
+  });
 });

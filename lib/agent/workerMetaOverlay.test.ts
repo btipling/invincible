@@ -107,6 +107,19 @@ describe('patchWorkerMeta (pure copy-forward)', () => {
     expect(out.personaId).toBe('p_1');
   });
 
+  it('plan #949 — Redis-safe compactionPointer accepted; poison dropped; DISTINCT from the B6 checkpointPointer sibling', () => {
+    expect(patchWorkerMeta({}, { compactionPointer: 't_cp_s1_abc' }).compactionPointer).toBe(
+      't_cp_s1_abc',
+    );
+    const out = patchWorkerMeta(
+      { personaId: 'p_1', checkpointPointer: 'b6_ckpt_1' },
+      { compactionPointer: 'bad pointer' },
+    );
+    expect(out.compactionPointer).toBeUndefined(); // poison dropped to unset
+    expect(out.checkpointPointer).toBe('b6_ckpt_1'); // B6 sibling preserved
+    expect(out.personaId).toBe('p_1'); // host preserved
+  });
+
   it('plan #938 — workingNotes PATCH accepted (freeform text); poison drops only this key; host preserved', () => {
     // Freeform agent-authored text — length-only cap, no charset restriction.
     expect(

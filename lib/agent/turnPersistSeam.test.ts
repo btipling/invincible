@@ -23,7 +23,7 @@ import type { PersistStepSeam } from '../workflows/persistStep';
 import { reachableImports } from '../workflows/staticGraph';
 import { parseCloudSessionSnapshot } from '../sessionRepository';
 import { reconstructTranscriptChain } from '../sessions/transcriptChunks';
-import { HARNESS_SESSION_MAX_BODY_BYTES, TRANSCRIPT_CHUNK_WALK_MAX } from '../sessionCloudCaps';
+import { HARNESS_SESSION_MAX_BODY_BYTES, TRANSCRIPT_CHUNK_WALK_MAX, COMPACTION_CHECKPOINT_MAX_BYTES } from '../sessionCloudCaps';
 import { formatPromptWithHistory, makeMessage } from '../sessionStore';
 
 const scope: ObjectScope = {
@@ -364,6 +364,152 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     const env = await envelopeStore.readEnvelope(key);
     // B8 copy-forward keeps the prior worker pointer (host flatten cannot clear).
     expect(env?.meta?.freshnessReminderPointer).toBe('t_fr_prior_0000');
+  });
+
+  // ── Plan #949 (source #552 — A4 compaction phase 2): the compaction
+  // checkpoint rides its OWN Blob object; only the object id is carried in
+  // `meta.compactionPointer`. Same carrier pattern as the #936 / #941
+  // projections.
+
+  it('plan #949 row 1a — compaction checkpoint written as its OWN Blob object; meta.compactionPointer set; body never in meta; distinct from checkpointPointer', async () => {
+    const { seam, blobStore, envelopeStore } = await makeSeam();
+    const checkpoint = {
+      summary: 'earlier session summarized',
+      filesTouched: ['src/a.ts', 'lib/bar.ts'],
+      retainedTail: [{ role: 'user', content: 'resume here' }],
+    };
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [{ d: 1 }],
+      content: '{"delta":"x"}',
+      fold: { ...fold, compactionCheckpoint: checkpoint },
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.compactionPointer).toBeDefined();
+    // Distinct object from the B6 checkpoint / model-messages / transcript pointers.
+    expect(res.compactionPointer).not.toBe(res.checkpointPointer);
+    expect(res.compactionPointer).not.toBe(res.modelMessagesPointer);
+    expect(res.compactionPointer).not.toBe(res.objectId);
+    const env = await envelopeStore.readEnvelope(key);
+    expect(env?.meta?.compactionPointer).toBe(res.compactionPointer);
+    // The checkpoint BODY is its own Blob object — never a meta key.
+    const cpBody = res.compactionPointer
+      ? await blobStore.read(res.compactionPointer)
+      : null;
+    expect(JSON.parse(cpBody ?? 'null')).toEqual(checkpoint);
+    expect(Object.keys(env?.meta ?? {})).not.toContain('compactionCheckpoint');
+    expect(Object.keys(env?.meta ?? {})).not.toContain('compaction');
+    // Bound + Redis-safe (same mint discipline as the sibling pointers).
+    expect(res.compactionPointer).toMatch(/^t_[A-Za-z0-9_-]{1,512}$/);
+  });
+
+  it('plan #949 row 1b — compaction-checkpoint blob write fails → {ok:false, code:compaction_write_failed}; no pointer advance; terminal overlay still completed', async () => {
+    const { seam, envelopeStore } = await makeSeam({ blobStore: new ThrowingBlobStore() });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: '{"delta":"x"}',
+      fold: {
+        compactionCheckpoint: { summary: 's', filesTouched: [], retainedTail: [] },
+      },
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('compaction_write_failed');
+    const env = await envelopeStore.readEnvelope(key);
+    expect(env?.meta?.transcriptPointer).toBeUndefined();
+    expect(env?.meta?.compactionPointer).toBeUndefined();
+    expect(env?.meta?.turnStatus).toBe('completed');
+  });
+
+  it('plan #949 row 1b (no-fold) — no compactionCheckpoint fold → no pointer written; prior pointer survives (copy-forward, durable write-once/read carrier)', async () => {
+    const { seam, envelopeStore } = await makeSeam({
+      seed: { updatedAt: 1000, meta: { compactionPointer: 't_cp_prior_0000' } },
+    });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [{ d: 1 }],
+      content: '{"delta":"x"}',
+      fold: { cwd: 'docs' },
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.compactionPointer).toBeUndefined();
+    const env = await envelopeStore.readEnvelope(key);
+    // Durable carrier (NO #941-style volatility): B8 copy-forward keeps the
+    // prior compaction pointer when no compaction ran this turn.
+    expect(env?.meta?.compactionPointer).toBe('t_cp_prior_0000');
+  });
+
+  it('plan #949 row 1c — a new compaction ADVANCES the pointer (replaces the prior checkpoint, never appends)', async () => {
+    const { seam, envelopeStore, blobStore } = await makeSeam({
+      seed: { updatedAt: 1000, meta: { compactionPointer: 't_cp_stale_0000' } },
+    });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [{ d: 1 }],
+      content: '{"delta":"x"}',
+      fold: {
+        compactionCheckpoint: {
+          summary: 'newer summary',
+          filesTouched: [],
+          retainedTail: [],
+        },
+      },
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.compactionPointer).toBeDefined();
+    expect(res.compactionPointer).not.toBe('t_cp_stale_0000');
+    const env = await envelopeStore.readEnvelope(key);
+    expect(env?.meta?.compactionPointer).toBe(res.compactionPointer);
+    const body = res.compactionPointer
+      ? await blobStore.read(res.compactionPointer)
+      : null;
+    expect(JSON.parse(body ?? 'null')).toEqual({
+      summary: 'newer summary',
+      filesTouched: [],
+      retainedTail: [],
+    });
+  });
+
+  it('adversarial #954 — a Phase-1-legal ~1.2 MiB tail checkpoint persists (cap composes with seed byte rail)', async () => {
+    const { seam, blobStore } = await makeSeam();
+    const tail = [{ role: 'user', content: 'x'.repeat(Math.floor(1.2 * 1024 * 1024)) }];
+    const checkpoint = { summary: 's', filesTouched: [], retainedTail: tail };
+    const raw = JSON.stringify(checkpoint);
+    expect(raw.length).toBeGreaterThan(1024 * 1024);
+    expect(raw.length).toBeLessThanOrEqual(COMPACTION_CHECKPOINT_MAX_BYTES);
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [{ d: 1 }],
+      content: '{"delta":"x"}',
+      fold: { ...fold, compactionCheckpoint: checkpoint },
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const body = res.compactionPointer ? await blobStore.read(res.compactionPointer) : null;
+    expect(JSON.parse(body ?? 'null')).toEqual(checkpoint);
+  });
+
+  it('adversarial #954 — checkpoint over COMPACTION_CHECKPOINT_MAX_BYTES → compaction_write_failed', async () => {
+    const { seam } = await makeSeam();
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: '{"delta":"x"}',
+      fold: {
+        compactionCheckpoint: {
+          summary: 'x'.repeat(COMPACTION_CHECKPOINT_MAX_BYTES),
+          filesTouched: [],
+          retainedTail: [],
+        },
+      },
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('compaction_write_failed');
   });
 
   it('matrix 5 — cwd/usage/activeSandboxId folded from the final-state fold; host keys preserved byte-for-byte (B8 copy-forward)', async () => {

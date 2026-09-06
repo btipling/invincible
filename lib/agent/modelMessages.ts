@@ -288,10 +288,17 @@ export function buildModelMessages(
  * tool-results dropped, assistant `toolCalls` with no remaining result
  * stripped) so a strict provider never sees an open call. Pure, never throws.
  *
- * Cut is a binary search over the suffix start (adversarial #945): `allowed(i)`
- * for `rows[i:]` is monotonic, so this is O(log n) serializations, never one
- * `JSON.stringify` per dropped row (a 4096 × 2k-char seed was 17s on the
- * `POST /api/turns` start path with the linear shift).
+ * Cut is a binary search over the suffix start (adversarial #945): `allowed(k)`
+ * for the candidate slice is monotonic, so this is O(log n) serializations,
+ * never one `JSON.stringify` per dropped row (a 4096 × 2k-char seed was 17s
+ * on the `POST /api/turns` start path with the linear shift).
+ *
+ * `pinnedCount` (adversarial #954): keep `rows[0..pinnedCount)` as a prefix
+ * that is **not** oldest-disposable context (Goal 4 compaction summary). All
+ * three rails are measured on the **combined** `[...prefix, ...restSlice]` —
+ * never a token-only fake `currentUserContent` reservation. If the prefix
+ * itself cannot fit with the ask, yield to `[]` (same as an unpinned seed
+ * that cannot keep any history).
  */
 export function trimModelMessagesToBudget(
   rows: ReadonlyArray<ModelMessageRow>,
@@ -307,6 +314,11 @@ export function trimModelMessagesToBudget(
      * seed to trim to [] so history yields to the ask (adversarial #945).
      */
     currentUserContent?: string;
+    /**
+     * Keep the first N rows as a pinned prefix (adversarial #954 Goal 4).
+     * Trim only the unpinned suffix; every rail sees the combined seed.
+     */
+    pinnedCount?: number;
   },
 ): { rows: ModelMessageRow[]; truncated: boolean } {
   const maxRows = opts?.maxRows ?? MODEL_MSG_SEED_MAX_ROWS;
@@ -323,13 +335,15 @@ export function trimModelMessagesToBudget(
 
   const n = rows.length;
   if (n === 0) return { rows: [], truncated: false };
-  const maxStart = Math.max(0, n - minKeep);
+  const pinnedCount = Math.max(
+    0,
+    Math.min(
+      Number.isFinite(opts?.pinnedCount) ? Math.floor(opts!.pinnedCount as number) : 0,
+      n,
+    ),
+  );
 
-  const allowed = (i: number): boolean => {
-    // Forced keep / empty: the newest minKeep rows (or []) always survive,
-    // even when a single leftover row still exceeds a rail (row 14).
-    if (i >= maxStart) return true;
-    const slice = rows.slice(i);
+  const sliceFits = (slice: ReadonlyArray<ModelMessageRow>): boolean => {
     if (slice.length > maxRows) return false;
     const json = JSON.stringify(slice);
     if (Math.ceil((json.length + askChars) / ratio) > budgetTokens) return false;
@@ -337,19 +351,46 @@ export function trimModelMessagesToBudget(
     return true;
   };
 
-  let start = 0;
+  if (pinnedCount > 0 && !sliceFits(rows.slice(0, pinnedCount))) {
+    // Prefix itself misses a rail. Yield to the ask when history may go to
+    // zero; no-ask callers keep the prefix as the forced newest block.
+    if (minKeep === 0) return { rows: [], truncated: true };
+    return { rows: rePairModelMessages(rows.slice(0, pinnedCount)), truncated: pinnedCount < n };
+  }
+
+  const restN = n - pinnedCount;
+  // k = how many unpinned prefix-of-rest rows to drop. k=0 keeps everything.
+  // Forced keep: the newest minKeep rows of the *whole* array survive, so we
+  // cannot drop so much rest that fewer than minKeep rows remain (when the
+  // pin already satisfies minKeep, we may drop all rest).
+  const maxK = Math.max(0, Math.min(restN, n - Math.max(minKeep, pinnedCount)));
+
+  const candidate = (k: number): ModelMessageRow[] =>
+    pinnedCount === 0
+      ? rows.slice(k)
+      : [...rows.slice(0, pinnedCount), ...rows.slice(pinnedCount + k)];
+
+  const allowed = (k: number): boolean => {
+    // Forced keep / empty: dropping maxK (newest minKeep, or prefix-only)
+    // always survives, even when a single leftover row still exceeds a rail
+    // (row 14).
+    if (k >= maxK) return true;
+    return sliceFits(candidate(k));
+  };
+
+  let k = 0;
   if (!allowed(0)) {
     let lo = 0;
-    let hi = maxStart;
+    let hi = maxK;
     while (lo < hi) {
       const mid = lo + ((hi - lo) >> 1);
       if (allowed(mid)) hi = mid;
       else lo = mid + 1;
     }
-    start = lo;
+    k = lo;
   }
 
-  const out = start === 0 ? [...rows] : rows.slice(start);
-  return { rows: rePairModelMessages(out), truncated: start > 0 };
+  const out = k === 0 ? [...rows] : candidate(k);
+  return { rows: rePairModelMessages(out), truncated: k > 0 };
 }
 

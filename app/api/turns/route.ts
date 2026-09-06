@@ -64,6 +64,7 @@ import {
   buildModelMessages,
   trimModelMessagesToBudget,
 } from '../../../lib/agent/modelMessages';
+import { buildCheckpoint, renderSummaryRow } from '../../../lib/agent/compaction';
 import { foldBudgetTokens } from '../../../lib/agent/contextBudget';
 import { TURN_START_MIN_INTERVAL_MS, sanitizeTurnRunId, isRedisSafeOpaqueId } from '../../../lib/sessionCloudCaps';
 import { mapByokResolveFailure } from '../../../lib/chatServer';
@@ -155,6 +156,11 @@ function isHardSandboxDeny(
  * are assembled in-step via the shared `assembleDurableToolWorld` helper.
  * Plan #944: a seeded `priorMessages` is trimmed to the model's window-derived
  * token budget (+ row/byte rails) at this boundary before `start()`.
+ * Plan #949 (A4 phase 2): the seed prefers the compaction checkpoint
+ * (`meta.compactionPointer` → `[renderSummaryRow(...), ...retainedTail]`,
+ * re-validated via `buildCheckpoint` + re-paired), falling back to
+ * `modelMessagesPointer`, then the legacy `promptHistory` sidecar (locked
+ * fallback chain).
  */
 export async function POST(req: Request): Promise<Response> {
   // Auth gate FIRST (mirrors app/api/agent/route.ts POST gate) — before any
@@ -249,6 +255,17 @@ export async function POST(req: Request): Promise<Response> {
       );
     }
     const scope = { tenantId: tenantRes.value, userId, sessionId };
+
+    // Confused-deputy guard for a seed pointer (plan #949 / #936 rule): a
+    // seed pointer is usable only when it is a non-empty string re-bound to
+    // THIS session scope. Returns the pointer or `undefined` — the narrow
+    // form the seed block branches on (a truthy return IS the bound pointer).
+    const boundSeedPointer = (pointer: unknown): string | undefined =>
+      typeof pointer === 'string' &&
+      pointer &&
+      isObjectIdBoundTo(pointer, scope)
+        ? pointer
+        : undefined;
 
     // 1. BYOK resolve — fail closed BEFORE start (never enqueue a doomed run).
     const byok = await services.resolveInferenceForRequest.resolveByokForRequest(
@@ -353,12 +370,105 @@ export async function POST(req: Request): Promise<Response> {
           // IFF the host still sent `promptHistory`). Adversarial-review #937
           // Major: GET overlay sidecar-stops without reading this sibling Blob,
           // so a bound miss + no sidecar must not start a history-less turn.
-          const mmPointer = envelope.meta?.modelMessagesPointer;
-          if (
-            typeof mmPointer === 'string' &&
-            mmPointer &&
-            isObjectIdBoundTo(mmPointer, scope)
-          ) {
+          //
+          // Plan #949 (A4 compaction phase 2) — seed preference is LOCKED:
+          // compactionPointer → modelMessagesPointer → legacy `promptHistory`
+          // sidecar. The compaction checkpoint (`{summary, filesTouched,
+          // retainedTail}`, written by the persist seam when a compaction ran)
+          // is preferred: the route re-validates the shape, re-runs
+          // `buildCheckpoint` (summary / filesTouched caps + omitted-count
+          // honesty), re-pairs the retained tail via `buildModelMessages`,
+          // and seeds `[renderSummaryRow(...), ...retainedTail]` — the
+          // honesty-labeled summary row rides FIRST (a `user` row, never
+          // live assistant prose; parent #947 Goal 4). A malformed/unbound/
+          // missing checkpoint falls through to `modelMessagesPointer` (the
+          // #936 path below); when a bound pointer exists but NO seed is
+          // readable and the host sent no `promptHistory`, the #937
+          // fail-closed 503 still applies (shared across both pointers).
+          // Same DI surface — `services.createBlobTranscriptStore()` (the
+          // #936 read), never a new seam.
+          const cpPointer = boundSeedPointer(envelope.meta?.compactionPointer);
+          const mmPointer = boundSeedPointer(envelope.meta?.modelMessagesPointer);
+          if (cpPointer) {
+            try {
+              const blobStore = services.createBlobTranscriptStore();
+              const raw = await blobStore.read(cpPointer);
+              if (raw !== null) {
+                const parsedCheckpoint: unknown = JSON.parse(raw);
+                // Checkpoint shape lock (#948 `CompactionCheckpoint`): a
+                // planted/hostile body that is not `{summary: string,
+                // filesTouched: string[], retainedTail: unknown[]}` is not a
+                // checkpoint — fall through to the model-messages seed
+                // (plan fallback chain), never a partial/honesty-less seed.
+                if (
+                  parsedCheckpoint !== null &&
+                  typeof parsedCheckpoint === 'object' &&
+                  !Array.isArray(parsedCheckpoint)
+                ) {
+                  const o = parsedCheckpoint as Record<string, unknown>;
+                  if (
+                    typeof o.summary === 'string' &&
+                    Array.isArray(o.filesTouched) &&
+                    Array.isArray(o.retainedTail)
+                  ) {
+                    // Rebuild (re-pair + caps) the retained tail so a
+                    // planted/stale blob cannot seed an unpaired
+                    // tool-result at a strict provider (adversarial #937;
+                    // the checkpoint tail is already re-paired at build
+                    // time — this is the read-side re-validation lock).
+                    const tail = buildModelMessages(o.retainedTail).rows;
+                    // Re-run `buildCheckpoint` so a planted/stale blob
+                    // cannot bypass COMPACTION_SUMMARY_MAX_CHARS /
+                    // COMPACTION_FILES_TOUCHED_MAX (adversarial #954).
+                    // `buildCheckpoint` peels any previously baked
+                    // truncation / omitted-count suffixes, re-caps the
+                    // head, re-pairs the tail (idempotent after
+                    // `buildModelMessages`), and re-bakes files omitted-
+                    // count honesty into `summary` — a well-formed
+                    // persist Blob round-trips without a lying
+                    // truncation marker.
+                    const checkpoint = buildCheckpoint(
+                      {
+                        summary: o.summary,
+                        filesTouched: o.filesTouched.filter(
+                          (p): p is string => typeof p === 'string',
+                        ),
+                      },
+                      tail,
+                    );
+                    const summaryRow = renderSummaryRow(
+                      checkpoint.summary,
+                      checkpoint.filesTouched,
+                    );
+                    // Plan #944 / adversarial #945 + #954: trim to the
+                    // model's window-derived token budget (+ row/byte
+                    // rails). The current ask is `parsed.prompt`
+                    // (appended after the seed as userMessage) and is
+                    // counted in the token rail so history yields to it.
+                    // Goal 4 pin (adversarial #954): the honesty-labeled
+                    // summary row is NOT oldest-disposable context. All
+                    // three rails are measured on the combined
+                    // `[summaryRow, ...tailSlice]` (`pinnedCount: 1`) —
+                    // never a token-only fake `currentUserContent`
+                    // reservation. Yield to the ask only when the
+                    // summary row itself cannot fit.
+                    const windowMap = await windowPromise;
+                    const budget = foldBudgetTokens(windowMap, byok.modelId);
+                    priorMessages = trimModelMessagesToBudget(
+                      [summaryRow, ...checkpoint.retainedTail],
+                      budget,
+                      { currentUserContent: parsed.prompt, pinnedCount: 1 },
+                    ).rows;
+                  }
+                }
+              }
+            } catch {
+              // Fail-closed: unreadable/missing/malformed checkpoint →
+              // fall back (modelMessagesPointer, then legacy sidecar).
+              priorMessages = undefined;
+            }
+          }
+          if (priorMessages === undefined && mmPointer) {
             try {
               const blobStore = services.createBlobTranscriptStore();
               const raw = await blobStore.read(mmPointer);
@@ -387,15 +497,19 @@ export async function POST(req: Request): Promise<Response> {
               // Fail-closed: unreadable/missing/malformed projection → no seed.
               priorMessages = undefined;
             }
-            if (priorMessages === undefined && parsed.promptHistory === undefined) {
-              return Response.json(
-                {
-                  error:
-                    'Unable to read the model-messages seed for this session (fail closed).',
-                },
-                { status: 503 },
-              );
-            }
+          }
+          if (
+            priorMessages === undefined &&
+            (cpPointer || mmPointer) &&
+            parsed.promptHistory === undefined
+          ) {
+            return Response.json(
+              {
+                error:
+                  'Unable to read the session seed for this session (fail closed).',
+              },
+              { status: 503 },
+            );
           }
           // Plan #941: the per-turn freshness-reminder pointer — sanitize-only
           // pass-through (Redis-safe opaque shape). The route NEVER reads the
@@ -484,12 +598,12 @@ export async function POST(req: Request): Promise<Response> {
       request: parsed.reasoning,
       options,
     });
-    // Plan #936: when a readable model-messages projection seeded
-    // `priorMessages`, the model gets structured history and `userMessage` is
-    // the RAW prompt. When there is no readable pointer (legacy session), the
-    // roll-forward turn uses the host's `promptHistory` fold (today's folded
-    // `prompt` value moved to an optional field) falling back to the raw
-    // prompt when the host didn't send one.
+    // Plan #936 / #949: when a readable seed (compaction checkpoint preferred,
+    // then model-messages projection) seeded `priorMessages`, the model gets
+    // structured history and `userMessage` is the RAW prompt. When neither
+    // pointer seeded (legacy session), the roll-forward turn uses the host's
+    // `promptHistory` fold (today's folded `prompt` value moved to an optional
+    // field) falling back to the raw prompt when the host didn't send one.
     const userMessage =
       priorMessages !== undefined
         ? parsed.prompt

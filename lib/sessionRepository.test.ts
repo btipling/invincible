@@ -787,6 +787,38 @@ describe('cloudMetaFor usage fold', () => {
     expect('freshnessReminderPointer' in (withOther ?? {})).toBe(false);
     expect(cloudMetaFor({ id: 's', updatedAt: 1, messages: [] })).toBeUndefined();
   });
+
+  it('plan #949 — never emits compactionPointer (worker-authored durable checkpoint pointer)', () => {
+    // Same class as modelMessagesPointer / freshnessReminderPointer: written by
+    // the terminal persist seam when a compaction ran; a host flatten PUT must
+    // never carry (and thereby LWW-stomp) it. upsertEnvelope copy-forwards on
+    // omit.
+    const meta = cloudMetaFor({
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      compactionPointer: 't_cp_s1_abc',
+    } as unknown as SessionSnapshot);
+    expect(meta).toBeUndefined();
+    const trimmed = trimForCloudPut({
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      compactionPointer: 't_cp_s1_abc',
+    } as unknown as SessionSnapshot);
+    expect('compactionPointer' in (trimmed.meta ?? {})).toBe(false);
+
+    const withOther = cloudMetaFor({
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      compactionPointer: 't_cp_s1_abc',
+      turnStatus: 'completed',
+    } as unknown as SessionSnapshot);
+    expect(withOther).toEqual({ turnStatus: 'completed' });
+    expect('compactionPointer' in (withOther ?? {})).toBe(false);
+    expect(cloudMetaFor({ id: 's', updatedAt: 1, messages: [] })).toBeUndefined();
+  });
 });
 
 describe('overlayEnvelopeMeta', () => {

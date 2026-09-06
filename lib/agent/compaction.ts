@@ -78,6 +78,45 @@ export const COMPACTION_SUMMARY_LABEL =
 /** The files line prefix rendered under the summary in the labeled row. */
 const FILES_TOUCHED_PREFIX = 'Files read/modified:';
 
+/** Suffix `boundSummary` appends after a dropped code point. */
+const TRUNCATION_SUFFIX = `\n${SUMMARY_TRUNCATION_MARKER}`;
+
+/**
+ * Honesty suffix `buildCheckpoint` bakes into `summary` when files overflow
+ * (checkpoint shape has no `omitted` field). `$` so only a trailing bake is
+ * peeled — a summarizer that mentioned the phrase mid-text is left alone.
+ */
+const FILES_OMITTED_SUFFIX_RE = new RegExp(
+  `\\n${FILES_TOUCHED_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} … \\((\\d+) earlier paths omitted\\)$`,
+);
+
+/**
+ * Peel decorations THIS module baked onto `summary` so a second
+ * `buildCheckpoint` (phase-2 read-seam re-validation) recaps the HEAD and
+ * re-applies honesty, instead of treating the omitted/truncation suffixes as
+ * summary overflow (adversarial #954). Suffix-only; never throws.
+ */
+function peelCheckpointDecorations(summary: string): {
+  head: string;
+  wasTruncated: boolean;
+  priorOmitted: number;
+} {
+  let s = summary;
+  let priorOmitted = 0;
+  const omittedMatch = s.match(FILES_OMITTED_SUFFIX_RE);
+  if (omittedMatch) {
+    const n = Number.parseInt(omittedMatch[1] ?? '', 10);
+    if (Number.isFinite(n) && n > 0) priorOmitted = n;
+    s = s.slice(0, s.length - omittedMatch[0].length);
+  }
+  let wasTruncated = false;
+  if (s.endsWith(TRUNCATION_SUFFIX)) {
+    wasTruncated = true;
+    s = s.slice(0, s.length - TRUNCATION_SUFFIX.length);
+  }
+  return { head: s, wasTruncated, priorOmitted };
+}
+
 /**
  * Bound the summary to `COMPACTION_SUMMARY_MAX_CHARS` by whole code points
  * (never split a surrogate pair), appending an explicit marker when a
@@ -95,7 +134,7 @@ function boundSummary(summary: string): string {
   let cps = 0;
   for (const ch of summary) {
     if (cps === max) {
-      return `${summary.slice(0, units)}\n${SUMMARY_TRUNCATION_MARKER}`;
+      return `${summary.slice(0, units)}${TRUNCATION_SUFFIX}`;
     }
     units += ch.length;
     cps += 1;
@@ -159,20 +198,34 @@ function boundFilesTouched(paths: readonly unknown[]): {
  *    leaves an orphan tool-result / open call on the tail either).
  * Pure, never throws. A planted/hostile tail is still row-typed here; the
  * phase-2 read seam re-validates + re-pairs on read (parent edge-case lock).
+ * **Idempotent on its own output** (adversarial #954): a second call peels
+ * the baked truncation / omitted-count suffixes, re-caps the head, and
+ * re-applies honesty (`omitted = filesOverflow ? n : peeledPrior`) so a
+ * persist→seed round-trip cannot drop `… (N earlier paths omitted)` or
+ * stamp a lying `… [summary truncated]` on an at-cap head whose extra
+ * bytes were the honesty suffix.
  */
 export function buildCheckpoint(
   input: CompactionSummaryInput,
   tail: ReadonlyArray<ModelMessageRow>,
 ): CompactionCheckpoint {
   const { paths, omitted } = boundFilesTouched(input.filesTouched);
-  const summary = boundSummary(input.summary);
+  const peeled = peelCheckpointDecorations(input.summary);
+  let summary = boundSummary(peeled.head);
+  // At-cap heads do not re-grow the truncation marker (`boundSummary` only
+  // stamps when a code point was dropped THIS call). Re-apply a peeled
+  // marker so a prior overflow stays honest.
+  if (peeled.wasTruncated && !summary.endsWith(TRUNCATION_SUFFIX)) {
+    summary = `${summary}${TRUNCATION_SUFFIX}`;
+  }
   const retainedTail = rePairModelMessages([...tail]);
-  // Carry the omitted count INSIDE the summary when files overflowed, so the
-  // honesty marker survives even when the tail is seeded without the row
-  // renderer (phase-2/3 read path renders the row from the checkpoint).
+  // Files already at the cap (a previous `buildCheckpoint` output) report
+  // `omitted=0`; keep the peeled count. A live overflow wins so a planted
+  // over-cap list still bakes the true drop.
+  const omitCount = omitted > 0 ? omitted : peeled.priorOmitted;
   const summaryWithFiles =
-    omitted > 0
-      ? `${summary}\n${FILES_TOUCHED_PREFIX} … (${omitted} earlier paths omitted)`
+    omitCount > 0
+      ? `${summary}\n${FILES_TOUCHED_PREFIX} … (${omitCount} earlier paths omitted)`
       : summary;
   return { summary: summaryWithFiles, filesTouched: paths, retainedTail };
 }
