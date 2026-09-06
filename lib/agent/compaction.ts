@@ -72,11 +72,13 @@ export type CompactionCut = {
   /** Rows from the boundary to the end — the retained tail. */
   tail: ModelMessageRow[];
   /**
-   * True when the span is a **prefix clip** (adversarial #955 follow-up 6 / 7).
-   * `span.concat(tail)` is then NOT the input rows — the middle
-   * `rows[span.length : cutIndex]` is on neither side. Fail-open MUST NOT
-   * reconstruct from span+tail (that hole is persisted as `modelMessages`).
-   * The route passes a `#944`-trimmed full projection as `failOpenSeed`.
+   * True when the span is a **suffix clip** of `rows[0:cutIndex]`
+   * (adversarial #955 follow-up 8). `span.concat(tail)` is then the newest
+   * contiguous suffix of the input, NOT the full rows — the oldest prefix
+   * is on neither side. mm fail-open MAY reconstruct span+tail (that suffix
+   * is the `#944` keep-window, then trim). Checkpoint-seeded clip still
+   * needs `failOpenSeed` with `pinSummaryRow`: Goal 4 honesty sits at
+   * index 0 and a suffix clip drops it.
    */
   clipped?: boolean;
 };
@@ -310,11 +312,13 @@ export function renderSummaryRow(
  *
  *    When continue cannot produce a partition (the next older tail misses
  *    a rail — monotonic), **clip** the last fitting tail's span to the
- *    longest prefix `≤ maxSpanBytes` instead of `null` (adversarial #955
- *    follow-up 6). Yield-to-trim would discard the fitting tail AND the
- *    oldest history with no summary; a clipped span summarizes the oldest
- *    cap-sized prefix and keeps the newest tail (middle between them is
- *    dropped — same region `#944` would drop, plus a summary of the head).
+ *    longest **suffix** `≤ maxSpanBytes` (newest over-cap bytes adjacent
+ *    to the tail — the region `#944` drop-oldest would delete), not the
+ *    oldest prefix (adversarial #955 follow-up 8). Yield-to-trim would
+ *    discard the fitting tail AND the overflow with no summary; a clipped
+ *    span summarizes the overflow next to the keep-window and keeps the
+ *    newest tail (oldest prefix dropped — same region `#944` would drop,
+ *    plus a summary of the overflow).
  *
  * Tail size is monotonic on every rail as the boundary moves earlier
  * (adversarial #953): if the newest (smallest) tail misses, no earlier tail
@@ -420,8 +424,10 @@ export function findCompactionCut(
 }
 
 /**
- * Longest prefix of `rows[0:cutIndex]` whose JSON is `≤ maxSpanBytes`.
- * Empty when even the first row overflows (yield to trim). Pure, never throws.
+ * Longest **suffix** of `rows[0:cutIndex]` whose JSON is `≤ maxSpanBytes`.
+ * Newest over-cap bytes adjacent to the tail (adversarial #955 follow-up 8)
+ * — the region `#944` drop-oldest would delete — not the oldest prefix.
+ * Empty when even the last span row overflows (yield to trim). Pure, never throws.
  */
 function clipSpanToMaxBytes(
   rows: ReadonlyArray<ModelMessageRow>,
@@ -429,18 +435,19 @@ function clipSpanToMaxBytes(
   maxSpanBytes: number,
 ): ModelMessageRow[] {
   if (cutIndex <= 0) return [];
-  const prefixFits = (end: number): boolean =>
-    utf8Bytes(JSON.stringify(rows.slice(0, end))) <= maxSpanBytes;
-  if (!prefixFits(1)) return [];
-  if (prefixFits(cutIndex)) return rows.slice(0, cutIndex);
-  let lo = 1;
+  const suffixFits = (start: number): boolean =>
+    utf8Bytes(JSON.stringify(rows.slice(start, cutIndex))) <= maxSpanBytes;
+  if (!suffixFits(cutIndex - 1)) return [];
+  if (suffixFits(0)) return rows.slice(0, cutIndex);
+  // Smallest start such that suffixFits(start) — longest suffix.
+  let lo = 0;
   let hi = cutIndex - 1;
   while (lo < hi) {
-    const mid = lo + ((hi - lo + 1) >> 1);
-    if (prefixFits(mid)) lo = mid;
-    else hi = mid - 1;
+    const mid = lo + ((hi - lo) >> 1);
+    if (suffixFits(mid)) hi = mid;
+    else lo = mid + 1;
   }
-  return rows.slice(0, lo);
+  return rows.slice(lo, cutIndex);
 }
 
 /**
@@ -482,9 +489,10 @@ export function compactionCutRails(budgetTokens: number): {
 
 /**
  * Combined `start()` compact-args payload rail (adversarial #955 follow-up).
- * `span` + `retainedTail` is the full pre-trim seed; independently 2 MiB
- * rails compose to 4 MiB against the 4.5 MB Function ceiling. Pure, never
- * throws. `maxBytes` override is for tests.
+ * `span` + `retainedTail` on a suffix clip is the newest contiguous suffix,
+ * not two views of the full seed. `failOpenSeed` rides only on
+ * checkpoint-seeded clip (Goal 4 honesty). Pure, never throws. `maxBytes`
+ * override is for tests.
  */
 export function compactStartPayloadFits(
   compact: {
@@ -492,7 +500,7 @@ export function compactStartPayloadFits(
     retainedTail: unknown;
     filesTouched: unknown;
     budgetTokens: number;
-    /** `#944` trim of the full pre-trim seed — clip fail-open only. */
+    /** `#944` trim of the full pre-trim seed — checkpoint clip fail-open only. */
     failOpenSeed?: unknown;
     pinSummaryRow?: boolean;
   },

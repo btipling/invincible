@@ -5853,7 +5853,7 @@ describe('runTurnLoop compaction (plan #950, source #552)', () => {
     expect(closed()).toBe(1);
   });
 
-  it('fail-open with failOpenSeed keeps the clip hole, not span+tail (adversarial #955 follow-up 7)', async () => {
+  it('fail-open with failOpenSeed keeps the clip hole, not span+tail (adversarial #955 follow-up 8 checkpoint pin)', async () => {
     const { deps, closed } = wiredDeps();
     let firstRoundMessages: unknown[] | undefined;
     const modelStep = vi.fn(async (args: { messages: ReadonlyArray<unknown> }) => {

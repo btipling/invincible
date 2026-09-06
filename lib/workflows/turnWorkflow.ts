@@ -128,8 +128,8 @@ export interface TurnWorkflowArgs {
      */
     pinSummaryRow?: boolean;
     /**
-     * `#944`-trimmed full pre-trim projection (adversarial #955 follow-up 7).
-     * Clip fail-open only — see `TurnLoopInput.compact.failOpenSeed`.
+     * `#944`-trimmed full pre-trim projection (adversarial #955 follow-up 8).
+     * Checkpoint suffix-clip fail-open only — see `TurnLoopInput.compact.failOpenSeed`.
      */
     failOpenSeed?: ReadonlyArray<unknown>;
   };

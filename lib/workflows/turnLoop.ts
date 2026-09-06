@@ -369,11 +369,11 @@ export interface TurnLoopInput {
      */
     pinSummaryRow?: boolean;
     /**
-     * `#944`-trimmed full pre-trim projection (adversarial #955 follow-up 7).
-     * Present when the route-side cut was a **clip** (`span.concat(tail)` is
-     * not the input rows). Fail-open MUST seed from this, not span+tail —
-     * reconstructing the hole persists the dropped middle as `modelMessages`.
-     * Absent = complete partition; fail-open reconstructs span+tail.
+     * `#944`-trimmed full pre-trim projection (adversarial #955 follow-up 8).
+     * Present when the route-side cut was a **suffix clip** AND the seed was
+     * a checkpoint (`pinSummaryRow`): Goal 4 honesty is rows[0] and a suffix
+     * clip drops it. mm-seed clip omits this — span+tail is a contiguous
+     * newest suffix; fail-open reconstructs it and `#944`-trims.
      */
     failOpenSeed?: ReadonlyArray<unknown>;
   };
@@ -796,17 +796,19 @@ export async function runTurnLoop(
 
   // Seed: compacted `[summaryRow, ...tail]` on success; otherwise the
   // un-compacted projection. Compact-path fail-open with no `priorMessages`
-  // uses `failOpenSeed` when the cut was a clip (full `#944` trim — the
-  // holey span+tail is not a projection); else reconstructs span+tail
-  // (complete partition) and applies #944 rails.
+  // uses `failOpenSeed` when the cut was a checkpoint suffix clip (Goal 4
+  // honesty dropped from the span); else reconstructs span+tail (complete
+  // partition, or mm suffix clip — a contiguous newest suffix) and applies
+  // #944 rails.
   let loopSeed: unknown[];
   if (compactedSeed !== undefined) {
     loopSeed = compactedSeed;
   } else if (input.priorMessages !== undefined) {
     loopSeed = [...input.priorMessages];
   } else if (input.compact !== undefined) {
-    // Clip fail-open (adversarial #955 follow-up 7): span+tail has a hole.
-    // Prefer the route-computed `#944` trim of the FULL pre-trim seed.
+    // Checkpoint suffix-clip fail-open (adversarial #955 follow-up 8):
+    // Goal 4 honesty is rows[0] and is not in span+tail. Prefer the
+    // route-computed `#944` trim of the FULL pre-trim seed.
     if (input.compact.failOpenSeed !== undefined) {
       loopSeed = buildModelMessages(input.compact.failOpenSeed).rows;
     } else {

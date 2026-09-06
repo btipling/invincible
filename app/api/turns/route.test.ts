@@ -5,7 +5,7 @@ import {
   COMPACTION_SPAN_MAX_BYTES,
   COMPACTION_SUMMARY_MAX_CHARS,
 } from '../../../lib/sessionCloudCaps';
-import { buildCheckpoint } from '../../../lib/agent/compaction';
+import { buildCheckpoint, COMPACTION_SUMMARY_LABEL } from '../../../lib/agent/compaction';
 
 /**
  * Distant-future `updatedAt` planted in the mock envelope for row 1, so the
@@ -2002,18 +2002,19 @@ describe('POST /api/turns', () => {
     expect(blobReadMock).toHaveBeenCalledWith('t_cp_s1_abc');
   });
 
-  it('adversarial #955 follow-up 7 — clipped cut attaches failOpenSeed that keeps the dropped middle', async () => {
+  it('adversarial #955 follow-up 8 — clipped cut suffix-summarizes the middle; mm omits failOpenSeed', async () => {
     standardHarness();
     mockAuthedSession();
     mockStart();
-    // Fat prefix just under COMPACTION_SPAN_MAX_BYTES so the newest-cut span
-    // overflows the cap, continue's older tail misses the 20k-window budget,
-    // and clip drops MIDDLE_MARKER from both span and tail.
+    // Fat oldest prefix just under COMPACTION_SPAN_MAX_BYTES so the newest-cut
+    // span overflows the cap, continue's older tail misses the 20k-window
+    // budget, and suffix clip drops ANCIENT_PREFIX from span+tail while
+    // keeping MIDDLE_MARKER in the span (the overflow `#944` would drop).
     const encoder = new TextEncoder();
     const prefixBytes = (n: number): number =>
       encoder.encode(
         JSON.stringify([
-          { role: 'user', content: 'H'.repeat(n) },
+          { role: 'user', content: `ANCIENT_PREFIX ${'H'.repeat(n)}` },
           { role: 'assistant', delta: { text: 'old' } },
         ]),
       ).length;
@@ -2024,13 +2025,13 @@ describe('POST /api/turns', () => {
       if (prefixBytes(mid) <= COMPACTION_SPAN_MAX_BYTES - 8) lo = mid;
       else hi = mid - 1;
     }
+    const ancient = `ANCIENT_PREFIX ${'H'.repeat(lo)}`;
     const projection = [
-      { role: 'user', content: 'H'.repeat(lo) },
+      { role: 'user', content: ancient },
       { role: 'assistant', delta: { text: 'old' } },
       { role: 'user', content: 'MIDDLE_MARKER' },
       // ~8k-char assistant so the older tail (MIDDLE…) misses the reserved
-      // 20k-window cut rails (clip) but still fits the full #944 budget
-      // (failOpenSeed keeps MIDDLE). Tiny newest tail still fits the cut.
+      // 20k-window cut rails (clip) but still fits the full #944 budget.
       { role: 'assistant', delta: { text: 'T'.repeat(8_000) } },
       { role: 'user', content: 'newest boundary' },
     ];
@@ -2057,13 +2058,71 @@ describe('POST /api/turns', () => {
       ...(startArgs.compact.span as Array<{ content?: string }>),
       ...(startArgs.compact.retainedTail as Array<{ content?: string }>),
     ];
-    expect(covered.some((r) => r.content === 'MIDDLE_MARKER')).toBe(false);
+    expect(covered.some((r) => r.content === ancient)).toBe(false);
+    expect(covered.some((r) => r.content === 'MIDDLE_MARKER')).toBe(true);
+    // mm-seed suffix clip: no third seed-sized array (default-window rail).
+    expect(startArgs.compact.failOpenSeed).toBeUndefined();
+    expect(startArgs.priorMessages).toBeUndefined();
+  });
+
+  it('adversarial #955 follow-up 8 — checkpoint clip still attaches pinned failOpenSeed (Goal 4 honesty)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    const encoder = new TextEncoder();
+    const prefixBytes = (n: number): number =>
+      encoder.encode(
+        JSON.stringify([
+          { role: 'user', content: `ANCIENT_PREFIX ${'H'.repeat(n)}` },
+          { role: 'assistant', delta: { text: 'old' } },
+        ]),
+      ).length;
+    let lo = COMPACTION_SPAN_MAX_BYTES - 4096;
+    let hi = COMPACTION_SPAN_MAX_BYTES;
+    while (lo < hi) {
+      const mid = lo + ((hi - lo + 1) >> 1);
+      if (prefixBytes(mid) <= COMPACTION_SPAN_MAX_BYTES - 8) lo = mid;
+      else hi = mid - 1;
+    }
+    const ancient = `ANCIENT_PREFIX ${'H'.repeat(lo)}`;
+    const checkpoint = {
+      summary: 'earlier session summarized',
+      filesTouched: ['src/a.ts'],
+      retainedTail: [
+        { role: 'user', content: ancient },
+        { role: 'assistant', delta: { text: 'old' } },
+        { role: 'user', content: 'MIDDLE_MARKER' },
+        { role: 'assistant', delta: { text: 'T'.repeat(8_000) } },
+        { role: 'user', content: 'newest boundary' },
+      ],
+    };
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        compactionPointer: 't_cp_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(JSON.stringify(checkpoint));
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      effortValuesForModel: async () => [],
+      getJoinedWindowMap: async () => new Map([['anthropic/claude-a', 20_000]]),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'continue', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.compact).toBeDefined();
+    expect(startArgs.compact.pinSummaryRow).toBe(true);
     expect(Array.isArray(startArgs.compact.failOpenSeed)).toBe(true);
-    expect(
-      (startArgs.compact.failOpenSeed as Array<{ content?: string }>).some(
-        (r) => r.content === 'MIDDLE_MARKER',
-      ),
-    ).toBe(true);
+    const seed = startArgs.compact.failOpenSeed as Array<{
+      role?: string;
+      content?: string;
+    }>;
+    expect(seed[0]?.role).toBe('user');
+    expect(seed[0]?.content?.startsWith(COMPACTION_SUMMARY_LABEL)).toBe(true);
     expect(startArgs.priorMessages).toBeUndefined();
   });
 

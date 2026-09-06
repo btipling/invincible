@@ -556,21 +556,21 @@ export async function POST(req: Request): Promise<Response> {
                 }
               }
               // Combined start() payload rail (adversarial #955 follow-up):
-              // span + tail is the full pre-trim seed. Independently 2 MiB
-              // rails compose to 4 MiB; over COMPACTION_START_MAX_BYTES
-              // yield to the #944 trim (never a 413 that blocks the turn).
-              // Clip (follow-up 7): span+tail has a hole — attach the
-              // `#944` trim of the FULL pre-trim seed as failOpenSeed so
-              // summarizer failure does not persist the dropped middle.
-              const failOpenSeed = cut.clipped
-                ? trimModelMessagesToBudget(
-                    preTrimSeed,
-                    budget,
-                    pinSummaryRow
-                      ? { currentUserContent: parsed.prompt, pinnedCount: 1 }
-                      : { currentUserContent: parsed.prompt },
-                  ).rows
-                : undefined;
+              // independently 2 MiB rails compose toward the 4.5 MB Function
+              // ceiling; over COMPACTION_START_MAX_BYTES yield to the #944
+              // trim (never a 413 that blocks the turn).
+              // Suffix clip (follow-up 8): span+tail is a contiguous newest
+              // suffix — mm fail-open reconstructs it. Checkpoint clip still
+              // attaches failOpenSeed (pinnedCount 1) so Goal 4 honesty at
+              // index 0 is not dropped; mm clip must NOT ship a third
+              // seed-sized array (default-window 2+0.64+0.68 MiB > 3 MiB).
+              const failOpenSeed =
+                cut.clipped === true && pinSummaryRow
+                  ? trimModelMessagesToBudget(preTrimSeed, budget, {
+                      currentUserContent: parsed.prompt,
+                      pinnedCount: 1,
+                    }).rows
+                  : undefined;
               const candidate = {
                 span: cut.span,
                 filesTouched,
