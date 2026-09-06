@@ -64,9 +64,14 @@ import {
   buildModelMessages,
   trimModelMessagesToBudget,
 } from '../../../lib/agent/modelMessages';
-import { buildCheckpoint, renderSummaryRow } from '../../../lib/agent/compaction';
+import { buildCheckpoint, findCompactionCut, renderSummaryRow, fitCompactionCutToStartPayload, compactionCutRails, isCompactionHonestyRow, scrapeCompactionFilesTouched } from '../../../lib/agent/compaction';
+import { shouldCompact } from '../../../lib/agent/compactionBudget';
 import { foldBudgetTokens } from '../../../lib/agent/contextBudget';
-import { TURN_START_MIN_INTERVAL_MS, sanitizeTurnRunId, isRedisSafeOpaqueId } from '../../../lib/sessionCloudCaps';
+import {
+  TURN_START_MIN_INTERVAL_MS,
+  sanitizeTurnRunId,
+  isRedisSafeOpaqueId,
+} from '../../../lib/sessionCloudCaps';
 import { mapByokResolveFailure } from '../../../lib/chatServer';
 import { createProdServices } from '../../../lib/di';
 import { requireSessionUser } from '../../../lib/tenancy/session';
@@ -315,6 +320,27 @@ export async function POST(req: Request): Promise<Response> {
     // Fail-closed: an unreadable / unbound / missing / malformed projection is
     // treated as "no pointer" (legacy roll-forward turn), never a 5xx.
     let priorMessages: unknown[] | undefined;
+    // Plan #950 (A4 compaction phase 3, parent #947 Goal 1): the route-side
+    // trigger + cut. When the PRE-TRIM seeded projection overflows the #944
+    // fold budget (`shouldCompact`) AND a clean user-boundary cut exists
+    // (`findCompactionCut` — the trigger is evaluated on the pre-trim
+    // projection per the parent review-note 1 lock), the route passes
+    // `compact: {span, filesTouched, retainedTail}` into `start()`; the
+    // workflow runs the pre-loop summarizer step and the loop seeds
+    // `[summaryRow, ...retainedTail, user]`. Compaction is preferred OVER the
+    // #944 trim only when a clean cut exists — otherwise today's trim behavior
+    // is preserved (the turn is never blocked; parent correction-row lock).
+    let compactArgs:
+      | {
+          span: ReadonlyArray<unknown>;
+          filesTouched: ReadonlyArray<unknown>;
+          retainedTail: ReadonlyArray<unknown>;
+          budgetTokens: number;
+          pinSummaryRow?: boolean;
+          failOpenSeed?: ReadonlyArray<unknown>;
+          clipped?: boolean;
+        }
+      | undefined;
     try {
       const storeRes = await resolveSessionStore();
       if (storeRes.ok && isEnvelopeStore(storeRes.value)) {
@@ -371,24 +397,25 @@ export async function POST(req: Request): Promise<Response> {
           // Major: GET overlay sidecar-stops without reading this sibling Blob,
           // so a bound miss + no sidecar must not start a history-less turn.
           //
-          // Plan #949 (A4 compaction phase 2) — seed preference is LOCKED:
-          // compactionPointer → modelMessagesPointer → legacy `promptHistory`
-          // sidecar. The compaction checkpoint (`{summary, filesTouched,
-          // retainedTail}`, written by the persist seam when a compaction ran)
-          // is preferred: the route re-validates the shape, re-runs
-          // `buildCheckpoint` (summary / filesTouched caps + omitted-count
-          // honesty), re-pairs the retained tail via `buildModelMessages`,
-          // and seeds `[renderSummaryRow(...), ...retainedTail]` — the
-          // honesty-labeled summary row rides FIRST (a `user` row, never
-          // live assistant prose; parent #947 Goal 4). A malformed/unbound/
-          // missing checkpoint falls through to `modelMessagesPointer` (the
-          // #936 path below); when a bound pointer exists but NO seed is
-          // readable and the host sent no `promptHistory`, the #937
-          // fail-closed 503 still applies (shared across both pointers).
-          // Same DI surface — `services.createBlobTranscriptStore()` (the
-          // #936 read), never a new seam.
+          // Plan #949 (A4 compaction phase 2) — seed preference:
+          // compactionPointer is the **compressed prefix**, not the exclusive
+          // seed. After compact persist, `modelMessages` is the honesty-
+          // prefixed live warehouse (this PR's producer + every later
+          // persist). Prefer that mm when `rows[0]` is Goal 4 honesty so
+          // non-compacting turns after the first compact are not dropped
+          // (adversarial #955 follow-up 9 / parent Goal 2). Pre-compact mm
+          // (no honesty prefix) or an unreadable mm still falls back to the
+          // checkpoint. Malformed/unbound checkpoint falls through to mm
+          // (plan fallback chain). Bound pointer + no readable seed + no
+          // `promptHistory` → #937 fail-closed 503.
           const cpPointer = boundSeedPointer(envelope.meta?.compactionPointer);
           const mmPointer = boundSeedPointer(envelope.meta?.modelMessagesPointer);
+          // Pre-trim seed from the preference chain. The #950 trigger runs
+          // on THIS array (live mm **or** checkpoint **or** mm dump) — a
+          // trimmed seed always fits and would mask the overflow compaction
+          // resolves (parent review-note 1).
+          let checkpointSeed: ReturnType<typeof buildModelMessages>['rows'] | undefined;
+          let mmSeed: ReturnType<typeof buildModelMessages>['rows'] | undefined;
           if (cpPointer) {
             try {
               const blobStore = services.createBlobTranscriptStore();
@@ -440,35 +467,17 @@ export async function POST(req: Request): Promise<Response> {
                       checkpoint.summary,
                       checkpoint.filesTouched,
                     );
-                    // Plan #944 / adversarial #945 + #954: trim to the
-                    // model's window-derived token budget (+ row/byte
-                    // rails). The current ask is `parsed.prompt`
-                    // (appended after the seed as userMessage) and is
-                    // counted in the token rail so history yields to it.
-                    // Goal 4 pin (adversarial #954): the honesty-labeled
-                    // summary row is NOT oldest-disposable context. All
-                    // three rails are measured on the combined
-                    // `[summaryRow, ...tailSlice]` (`pinnedCount: 1`) —
-                    // never a token-only fake `currentUserContent`
-                    // reservation. Yield to the ask only when the
-                    // summary row itself cannot fit.
-                    const windowMap = await windowPromise;
-                    const budget = foldBudgetTokens(windowMap, byok.modelId);
-                    priorMessages = trimModelMessagesToBudget(
-                      [summaryRow, ...checkpoint.retainedTail],
-                      budget,
-                      { currentUserContent: parsed.prompt, pinnedCount: 1 },
-                    ).rows;
+                    checkpointSeed = [summaryRow, ...checkpoint.retainedTail];
                   }
                 }
               }
             } catch {
               // Fail-closed: unreadable/missing/malformed checkpoint →
               // fall back (modelMessagesPointer, then legacy sidecar).
-              priorMessages = undefined;
+              checkpointSeed = undefined;
             }
           }
-          if (priorMessages === undefined && mmPointer) {
+          if (mmPointer) {
             try {
               const blobStore = services.createBlobTranscriptStore();
               const raw = await blobStore.read(mmPointer);
@@ -478,28 +487,102 @@ export async function POST(req: Request): Promise<Response> {
                   // Rebuild (re-pair + caps) so a planted/stale blob cannot
                   // seed an unpaired tool-result at a strict provider
                   // (adversarial-review #937).
-                  const built = buildModelMessages(parsedProjection).rows;
-                  // Plan #944 / adversarial #945: trim the seed to the
-                  // model's window-derived token budget (+ row/byte rails)
-                  // at the route boundary — drop oldest, re-pair. The
-                  // current ask is `parsed.prompt` (appended after the
-                  // seed as userMessage), not the newest seed row; it is
-                  // counted in the token rail so history yields to it.
-                  const windowMap = await windowPromise;
-                  priorMessages = trimModelMessagesToBudget(
-                    built,
-                    foldBudgetTokens(windowMap, byok.modelId),
-                    { currentUserContent: parsed.prompt },
-                  ).rows;
+                  mmSeed = buildModelMessages(parsedProjection).rows;
                 }
               }
             } catch {
-              // Fail-closed: unreadable/missing/malformed projection → no seed.
-              priorMessages = undefined;
+              // Fail-closed: unreadable/missing/malformed projection → no mm.
+              mmSeed = undefined;
+            }
+          }
+          // Live honesty-prefixed mm is the post-compact warehouse (Goal 2).
+          // Checkpoint-only when mm is the pre-compact dump or missing.
+          const preTrimSeed =
+            mmSeed !== undefined && isCompactionHonestyRow(mmSeed[0])
+              ? mmSeed
+              : checkpointSeed !== undefined
+                ? checkpointSeed
+                : mmSeed;
+          const pinSummaryRow = isCompactionHonestyRow(preTrimSeed?.[0]);
+          if (preTrimSeed !== undefined) {
+            const windowMap = await windowPromise;
+            const budget = foldBudgetTokens(windowMap, byok.modelId);
+            // Plan #950 (parent review-note 1 lock): trigger on the PRE-TRIM
+            // seed — whichever pointer actually built it. `shouldCompact`
+            // consumes the #944 fold budget (reserve already subtracted;
+            // never subtracted again — adversarial #953).
+            const rails = compactionCutRails(budget, {
+              currentUserContent: parsed.prompt,
+            });
+            const cut = shouldCompact(preTrimSeed, budget)
+              ? findCompactionCut(preTrimSeed, rails.budgetTokens, {
+                  // Plan #950 Caps / adversarial #955 follow-up 5 + 6 + 14:
+                  // over-cap span continues to a larger tail; when that tail
+                  // misses, clip the last fitting tail's span instead of
+                  // yielding to `#944` trim. Cut rails leave room for the
+                  // max honesty row AND the current ask (`parsed.prompt`)
+                  // so success trim does not drop unsummarized tail.
+                  // Follow-up 9: pin row 0 so checkpoint clip **success**
+                  // re-summarizes Goal 4 honesty instead of dropping it.
+                  // Follow-up 12: `rails.maxSpanBytes` is min(2 MiB,
+                  // fold-budget chars) so the summarizer (same model) can
+                  // actually read the span.
+                  maxSpanBytes: rails.maxSpanBytes,
+                  maxBytes: rails.maxBytes,
+                  maxRows: rails.maxRows,
+                  ...(pinSummaryRow ? { pinnedCount: 1 } : {}),
+                })
+              : null;
+            if (cut) {
+              // `filesTouched` for the checkpoint summary row: paths the
+              // summarizer actually saw in the span (tool `args.path` + the
+              // Goal 4 honesty files line — adversarial #955 follow-up 16 /
+              // 17). Cap/sanitize in `buildCheckpoint`. Scrape the **fitted**
+              // span so a start-rail shrink cannot list files the summarizer
+              // never saw. The pre-fit list is only the combined-payload
+              // size hint (conservative).
+              const filesTouched = scrapeCompactionFilesTouched(cut.span);
+              // Combined start() payload rail (adversarial #955 follow-up):
+              // independently 2 MiB rails compose toward the 4.5 MB Function
+              // ceiling. Over COMPACTION_START_MAX_BYTES **prefix-clip the
+              // span** (keep tail) so a legal cut of a warehouse > 3 MiB
+              // still Goal-1-summarizes the oldest prefix — do not yield to
+              // `#944` after a legal cut (adversarial #955 follow-up 11).
+              // Empty / pin-only miss still yields (never a 413).
+              const fitted = fitCompactionCutToStartPayload(cut, {
+                filesTouched,
+                budgetTokens: budget,
+                ...(pinSummaryRow ? { pinSummaryRow: true } : {}),
+              });
+              if (fitted) {
+                compactArgs = {
+                  span: fitted.span,
+                  filesTouched: scrapeCompactionFilesTouched(fitted.span),
+                  retainedTail: fitted.tail,
+                  budgetTokens: budget,
+                  ...(pinSummaryRow ? { pinSummaryRow: true } : {}),
+                  ...(fitted.clipped === true ? { clipped: true } : {}),
+                };
+              }
+            }
+            if (compactArgs === undefined) {
+              // No compact this turn: #944 trim of the full projection
+              // (Goal 4 pin when the seed is a checkpoint). Compact path
+              // omits `priorMessages` entirely (adversarial #955 — do not
+              // ship a dummy Goal 4 row as the fail-open seed, and do not
+              // send three seed-sized arrays into `start()`).
+              priorMessages = trimModelMessagesToBudget(
+                preTrimSeed,
+                budget,
+                pinSummaryRow
+                  ? { currentUserContent: parsed.prompt, pinnedCount: 1 }
+                  : { currentUserContent: parsed.prompt },
+              ).rows;
             }
           }
           if (
             priorMessages === undefined &&
+            compactArgs === undefined &&
             (cpPointer || mmPointer) &&
             parsed.promptHistory === undefined
           ) {
@@ -605,7 +688,7 @@ export async function POST(req: Request): Promise<Response> {
     // `promptHistory` fold (today's folded `prompt` value moved to an optional
     // field) falling back to the raw prompt when the host didn't send one.
     const userMessage =
-      priorMessages !== undefined
+      priorMessages !== undefined || compactArgs !== undefined
         ? parsed.prompt
         : (parsed.promptHistory ?? parsed.prompt);
     const run = await start(turnWorkflow, [
@@ -615,9 +698,34 @@ export async function POST(req: Request): Promise<Response> {
         scope,
         ...(persistRunBind ? { persistRunBind } : {}),
         ...(reasoning !== undefined ? { reasoning } : {}),
-        ...(priorMessages !== undefined ? { priorMessages } : {}),
+        // Compact path omits `priorMessages` (adversarial #955): span + tail
+        // already compose near the Function ceiling; a third seed-sized
+        // array (dummy pin or fail-open projection) 413s `start()` and
+        // blocks the turn. Fail-open reconstructs from span+tail in the loop.
+        ...(priorMessages !== undefined && compactArgs === undefined
+          ? { priorMessages }
+          : {}),
         ...(freshnessReminderPointer !== undefined
           ? { freshnessReminderPointer }
+          : {}),
+        // Plan #950 (A4 phase 3): the route-side trigger + cut. Plain
+        // serializable values only (span rows / path strings / tail rows).
+        ...(compactArgs !== undefined
+          ? {
+              compact: {
+                span: compactArgs.span,
+                filesTouched: compactArgs.filesTouched,
+                retainedTail: compactArgs.retainedTail,
+                budgetTokens: compactArgs.budgetTokens,
+                ...(compactArgs.pinSummaryRow === true
+                  ? { pinSummaryRow: true }
+                  : {}),
+                ...(compactArgs.failOpenSeed !== undefined
+                  ? { failOpenSeed: compactArgs.failOpenSeed }
+                  : {}),
+                ...(compactArgs.clipped === true ? { clipped: true } : {}),
+              },
+            }
           : {}),
       },
     ]);

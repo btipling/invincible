@@ -49,7 +49,8 @@ import {
   TURN_WALL_CLOCK_WRAPUP_SYSTEM,
 } from '../agent/modelFinish';
 import { STEP_BUDGET_WRAPUP_SYSTEM } from '../agent/modelFinish';
-import { TURN_WALL_CLOCK_MAX_MS, TURN_WALL_CLOCK_WRAPUP_MAX_MS } from '../sessionCloudCaps';
+import { TURN_WALL_CLOCK_MAX_MS, TURN_WALL_CLOCK_WRAPUP_MAX_MS, CONTEXT_CHARS_PER_TOKEN } from '../sessionCloudCaps';
+import { compactionCutRails } from '../agent/compaction';
 
 const LOOP_SCOPE: ObjectScope = { tenantId: 't', userId: 'u', sessionId: 's_loop' };
 
@@ -930,6 +931,39 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     ];
     const fold = derivePersistFold([...prior, ...thisRun], undefined, undefined, undefined, prior.length);
     expect(fold?.freshnessReminder).toEqual([]);
+  });
+
+  it('adversarial #955 follow-up 4 — display checkpoint slices at thisRunStart (Goal 4 honesty is seed, not paint)', () => {
+    const honesty =
+      'Summary of earlier session (compacted, not live assistant prose): earlier work';
+    const seed = [
+      { role: 'user', content: honesty },
+      { role: 'user', content: 'resume from tail' },
+    ];
+    const thisRun = [
+      { role: 'user', content: 'continue' },
+      { role: 'assistant', delta: { text: 'hi', toolCalls: [] } },
+    ];
+    const fold = derivePersistFold(
+      [...seed, ...thisRun],
+      undefined,
+      undefined,
+      undefined,
+      seed.length,
+    );
+    expect(fold?.checkpoint).toEqual([
+      { role: 'user', content: 'continue' },
+      { role: 'assistant', content: 'hi' },
+    ]);
+    expect(
+      fold?.checkpoint?.some((r) => r.content.includes('Summary of earlier session')),
+    ).toBe(false);
+    // Warehouse still carries the seed (next-turn modelMessages).
+    expect(
+      (fold?.modelMessages ?? []).some(
+        (r) => (r as { content?: string }).content === honesty,
+      ),
+    ).toBe(true);
   });
 
   it('plan #941 adversarial #943 — this-run read is kept; prior read_file paths are not', () => {
@@ -5533,5 +5567,789 @@ describe('static-graph clean-flag regression (plan #805 lock)', () => {
       if (/\bBuffer\b/.test(code)) hits.push(canon);
     }
     expect(hits).toEqual([]);
+  });
+});
+
+// --- Plan #950 (A4 compaction phase 3) — loop seeding + checkpoint writer ---
+
+describe('runTurnLoop compaction (plan #950, source #552)', () => {
+  const COMPACT_SCOPE = { tenantId: 't1', userId: 'u1', sessionId: 's1' };
+
+  it('successful summarizer → the first model round sees [summaryRow, ...retainedTail, user] (DoD row 3)', async () => {
+    const { deps, closed } = wiredDeps();
+    let firstRoundMessages: unknown[] | undefined;
+    const modelStep = vi.fn(async (args: { messages: ReadonlyArray<unknown> }) => {
+      if (!firstRoundMessages) firstRoundMessages = [...args.messages];
+      return {
+        ok: true as const,
+        delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+      };
+    });
+    const compactionStep = vi.fn(async () => ({
+      ok: true as const,
+      summary: 'earlier work summarized',
+    }));
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionFilesTouched: ['src/a.ts'],
+        compactionRetainedTail: [{ role: 'user', content: 'resume from tail' }],
+      },
+      {
+        userMessage: 'continue',
+        priorMessages: [{ role: 'user', content: 'OLD overflow row' }],
+        compact: { span: [{ role: 'user', content: 'old turn' }] },
+      },
+    );
+    expect(result.status).toBe('completed');
+    expect(compactionStep).toHaveBeenCalledTimes(1);
+    expect(firstRoundMessages).toHaveLength(3);
+    const [summaryRow, tailRow, userRow] = firstRoundMessages as Array<{
+      role: string;
+      content?: string;
+    }>;
+    expect(summaryRow.role).toBe('user');
+    expect(summaryRow.content).toContain(
+      'Summary of earlier session (compacted, not live assistant prose):',
+    );
+    expect(summaryRow.content).toContain('earlier work summarized');
+    expect(summaryRow.content).toContain('src/a.ts');
+    expect(tailRow).toEqual({ role: 'user', content: 'resume from tail' });
+    expect(userRow).toEqual({ role: 'user', content: 'continue' });
+    expect(closed()).toBe(1);
+  });
+
+  it('display checkpoint is this-run only — honesty + cut tail do not paint (adversarial #955 follow-up 4)', async () => {
+    const { deps } = wiredDeps();
+    const persistSpy = vi.fn(deps.persistStep);
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+    }));
+    const compactionStep = vi.fn(async () => ({
+      ok: true as const,
+      summary: 'earlier work summarized',
+    }));
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        persistStep: persistSpy,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionFilesTouched: ['src/a.ts'],
+        compactionRetainedTail: [{ role: 'user', content: 'resume from tail' }],
+      },
+      {
+        userMessage: 'continue',
+        compact: { span: [{ role: 'user', content: 'old turn' }] },
+      },
+    );
+    expect(result.status).toBe('completed');
+    const folds = persistSpy.mock.calls
+      .map((c) => c[0].fold)
+      .filter((f) => f?.checkpoint !== undefined);
+    expect(folds.length).toBeGreaterThan(0);
+    const ckpt = folds[0]!.checkpoint as Array<{ role: string; content?: string }>;
+    expect(ckpt.some((r) => r.content?.includes('Summary of earlier session'))).toBe(
+      false,
+    );
+    expect(ckpt.some((r) => r.content === 'resume from tail')).toBe(false);
+    expect(ckpt.some((r) => r.role === 'user' && r.content === 'continue')).toBe(true);
+    expect(ckpt.some((r) => r.role === 'assistant' && r.content === 'hi')).toBe(true);
+  });
+
+  it('fail-open: a failing summarizer never blocks the turn — plain priorMessages seed (parent edge-case lock)', async () => {
+    const { deps, closed } = wiredDeps();
+    let firstRoundMessages: unknown[] | undefined;
+    const modelStep = vi.fn(async (args: { messages: ReadonlyArray<unknown> }) => {
+      if (!firstRoundMessages) firstRoundMessages = [...args.messages];
+      return {
+        ok: true as const,
+        delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+      };
+    });
+    const compactionStep = vi.fn(async () => ({
+      ok: false as const,
+      code: 'summarize_failed',
+      error: 'boom',
+    }));
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionRetainedTail: [{ role: 'user', content: 'tail' }],
+      },
+      {
+        userMessage: 'continue',
+        priorMessages: [{ role: 'user', content: 'plain prior row' }],
+        compact: { span: [{ role: 'user', content: 'old turn' }] },
+      },
+    );
+    expect(result.status).toBe('completed');
+    expect(firstRoundMessages).toHaveLength(2);
+    expect(
+      (firstRoundMessages as Array<{ content?: string }>)[0].content,
+    ).toBe('plain prior row');
+    expect(closed()).toBe(1);
+  });
+
+  it('fail-open: a THROWING summarizer never fails the turn', async () => {
+    const { deps } = wiredDeps();
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+    }));
+    const compactionStep = vi.fn(async () => {
+      throw new Error('step vm exploded');
+    });
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+      },
+      {
+        userMessage: 'continue',
+        priorMessages: [{ role: 'user', content: 'prior' }],
+        compact: { span: [] },
+      },
+    );
+    expect(result.status).toBe('completed');
+  });
+
+  it('adversarial #955 follow-up 16/17 — cancelled summarizer is G22 Stop + terminal persist (no fold)', async () => {
+    const { deps, closed } = wiredDeps();
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+    }));
+    const compactionStep = vi.fn(async () => ({
+      ok: false as const,
+      code: 'cancelled',
+      error: 'Request cancelled.',
+    }));
+    const persistSpy = vi.fn(deps.persistStep);
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        persistStep: persistSpy,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionRetainedTail: [{ role: 'user', content: 'tail' }],
+      },
+      {
+        userMessage: 'continue',
+        compact: { span: [{ role: 'user', content: 'old turn' }] },
+      },
+    );
+    expect(result.status).toBe('cancelled');
+    expect(result.error).toBe('Request cancelled.');
+    expect(modelStep).not.toHaveBeenCalled();
+    expect(persistSpy).toHaveBeenCalledTimes(1);
+    expect(persistSpy.mock.calls[0]?.[0]?.fold).toBeUndefined();
+    expect(persistSpy.mock.calls[0]?.[0]?.terminal).not.toBe(false);
+    expect(closed()).toBe(1);
+  });
+
+  it('adversarial #955 follow-up 16/17 — AbortError from summarizer is G22 Stop + terminal persist (no fold)', async () => {
+    const { deps } = wiredDeps();
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+    }));
+    const compactionStep = vi.fn(async () => {
+      const err = new Error('aborted');
+      err.name = 'AbortError';
+      throw err;
+    });
+    const persistSpy = vi.fn(deps.persistStep);
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        persistStep: persistSpy,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+      },
+      {
+        userMessage: 'continue',
+        compact: { span: [{ role: 'user', content: 'old turn' }] },
+      },
+    );
+    expect(result.status).toBe('cancelled');
+    expect(result.error).toBe('Request cancelled.');
+    expect(modelStep).not.toHaveBeenCalled();
+    expect(persistSpy).toHaveBeenCalledTimes(1);
+    expect(persistSpy.mock.calls[0]?.[0]?.fold).toBeUndefined();
+  });
+
+  it('adversarial #955 follow-up 18 — summarizer wall_clock wrap-up immediately (no tools-on first round)', async () => {
+    const { deps, closed } = wiredDeps();
+    const persistSpy = vi.fn(deps.persistStep);
+    const modelStep = vi.fn(async (args: unknown) => {
+      const a = args as { disableTools?: boolean };
+      if (!a.disableTools) {
+        throw new Error('tools-on first round must not run after summarizer wall_clock');
+      }
+      return { ok: true as const, delta: { text: 'wrap', toolCalls: [] } };
+    });
+    const compactionStep = vi.fn(async () => ({
+      ok: false as const,
+      code: 'wall_clock',
+      error: TURN_WALL_CLOCK_ERROR,
+    }));
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        persistStep: persistSpy,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionRetainedTail: [{ role: 'user', content: 'tail row' }],
+        // Still in the future — the loop must not wait on deadlineElapsed().
+        deadlineAt: Date.now() + 60_000,
+      },
+      {
+        userMessage: 'continue',
+        compact: {
+          span: [{ role: 'user', content: 'span row' }],
+          budgetTokens: 100_000,
+        },
+      },
+    );
+    expect(result.status).toBe('capped');
+    expect(result.reason).toBe('wall');
+    expect(modelStep).toHaveBeenCalledTimes(1);
+    expect(
+      (modelStep.mock.calls[0]?.[0] as { disableTools?: boolean }).disableTools,
+    ).toBe(true);
+    const foldCall = persistSpy.mock.calls.find((c) => c[0].fold !== undefined);
+    expect(foldCall).toBeDefined();
+    expect(foldCall?.[0]?.fold?.compactionCheckpoint).toBeUndefined();
+    const mm = foldCall?.[0]?.fold?.modelMessages as Array<{
+      role?: string;
+      content?: string;
+    }>;
+    expect(mm?.some((r) => r.content === 'span row')).toBe(true);
+    expect(mm?.some((r) => r.content === 'tail row')).toBe(true);
+    expect(mm?.some((r) => r.content === 'continue')).toBe(true);
+    expect(mm).toHaveLength(4); // span + tail + ask + wrap-up assistant
+    expect(closed()).toBe(1);
+  });
+
+  it('empty summary → no compacted seed (plain projection); fold carries NO compactionCheckpoint', async () => {
+    const { deps } = wiredDeps();
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+    }));
+    const compactionStep = vi.fn(async () => ({ ok: true as const, summary: '   ' }));
+    const persistSpy = vi.fn(deps.persistStep);
+    await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        persistStep: persistSpy,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+      },
+      {
+        userMessage: 'continue',
+        priorMessages: [{ role: 'user', content: 'prior' }],
+        compact: { span: [] },
+      },
+    );
+    const foldCall = persistSpy.mock.calls.find(
+      (c) => c[0].fold !== undefined,
+    );
+    expect(foldCall?.[0]?.fold?.compactionCheckpoint).toBeUndefined();
+  });
+
+  it('checkpoint writer (parent review-note 2 lock): the terminal fold carries compactionCheckpoint (DoD row 5)', async () => {
+    const { deps } = wiredDeps();
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+    }));
+    const compactionStep = vi.fn(async () => ({
+      ok: true as const,
+      summary: 'fresh summary text',
+    }));
+    const persistSpy = vi.fn(deps.persistStep);
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        persistStep: persistSpy,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionFilesTouched: ['lib/a.ts'],
+        compactionRetainedTail: [{ role: 'user', content: 'tail row' }],
+      },
+      {
+        userMessage: 'continue',
+        priorMessages: [{ role: 'user', content: 'prior' }],
+        compact: { span: [{ role: 'user', content: 'old' }] },
+      },
+    );
+    expect(result.status).toBe('completed');
+    const folds = persistSpy.mock.calls
+      .map((c) => c[0].fold)
+      .filter((f) => f?.compactionCheckpoint !== undefined);
+    expect(folds.length).toBeGreaterThan(0);
+    const ck = folds[0]!.compactionCheckpoint as {
+      summary: string;
+      filesTouched: string[];
+      retainedTail: unknown[];
+    };
+    expect(ck.summary).toContain('fresh summary text');
+    expect(ck.filesTouched).toEqual(['lib/a.ts']);
+    // Adversarial #955 Goal 2: persist the live post-compact conversation,
+    // not the frozen cut-time tail (this turn must survive prefer-checkpoint).
+    expect(ck.retainedTail).toEqual([
+      { role: 'user', content: 'tail row' },
+      { role: 'user', content: 'continue' },
+      { role: 'assistant', delta: { text: 'hi', toolCalls: [] } },
+    ]);
+  });
+
+  it('no compact input → zero summarizer calls (default path unchanged)', async () => {
+    const { deps } = wiredDeps();
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+    }));
+    const compactionStep = vi.fn();
+    await runTurnLoop(
+      { ...deps, modelStep, compactionStep, compactionScope: COMPACT_SCOPE },
+      { userMessage: 'hello', priorMessages: [{ role: 'user', content: 'p' }] },
+    );
+    expect(compactionStep).not.toHaveBeenCalled();
+  });
+
+  it('fail-open without priorMessages reconstructs span+tail (production compact path, adversarial #955)', async () => {
+    const { deps, closed } = wiredDeps();
+    let firstRoundMessages: unknown[] | undefined;
+    const modelStep = vi.fn(async (args: { messages: ReadonlyArray<unknown> }) => {
+      if (!firstRoundMessages) firstRoundMessages = [...args.messages];
+      return {
+        ok: true as const,
+        delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+      };
+    });
+    const compactionStep = vi.fn(async () => ({
+      ok: false as const,
+      code: 'summarize_failed',
+      error: 'boom',
+    }));
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionRetainedTail: [{ role: 'user', content: 'tail row' }],
+      },
+      {
+        userMessage: 'continue',
+        compact: {
+          span: [{ role: 'user', content: 'span row' }],
+          budgetTokens: 100_000,
+        },
+      },
+    );
+    expect(result.status).toBe('completed');
+    expect(firstRoundMessages).toEqual([
+      { role: 'user', content: 'span row' },
+      { role: 'user', content: 'tail row' },
+      { role: 'user', content: 'continue' },
+    ]);
+    expect(closed()).toBe(1);
+  });
+
+  it('fail-open with failOpenSeed keeps the clip hole, not span+tail (adversarial #955 follow-up 8 checkpoint pin)', async () => {
+    const { deps, closed } = wiredDeps();
+    let firstRoundMessages: unknown[] | undefined;
+    const modelStep = vi.fn(async (args: { messages: ReadonlyArray<unknown> }) => {
+      if (!firstRoundMessages) firstRoundMessages = [...args.messages];
+      return {
+        ok: true as const,
+        delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+      };
+    });
+    const compactionStep = vi.fn(async () => ({
+      ok: false as const,
+      code: 'summarize_failed',
+      error: 'boom',
+    }));
+    const persistSpy = vi.fn(deps.persistStep);
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        persistStep: persistSpy,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionRetainedTail: [{ role: 'user', content: 'newest tail' }],
+      },
+      {
+        userMessage: 'continue',
+        compact: {
+          span: [{ role: 'user', content: 'ANCIENT_PREFIX' }],
+          budgetTokens: 100_000,
+          failOpenSeed: [
+            { role: 'user', content: 'MIDDLE_MARKER' },
+            { role: 'user', content: 'recent work' },
+          ],
+        },
+      },
+    );
+    expect(result.status).toBe('completed');
+    expect(firstRoundMessages).toBeDefined();
+    const rows = firstRoundMessages as Array<{ role: string; content?: string }>;
+    expect(rows.some((r) => r.content === 'MIDDLE_MARKER')).toBe(true);
+    expect(rows.some((r) => r.content === 'recent work')).toBe(true);
+    expect(rows.some((r) => r.content === 'ANCIENT_PREFIX')).toBe(false);
+    expect(rows.some((r) => r.content === 'newest tail')).toBe(false);
+    expect(rows[rows.length - 1]).toEqual({ role: 'user', content: 'continue' });
+    const mm = persistSpy.mock.calls
+      .map((c) => c[0].fold?.modelMessages as Array<{ content?: string }> | undefined)
+      .find((m) => Array.isArray(m));
+    expect(mm?.some((r) => r.content === 'MIDDLE_MARKER')).toBe(true);
+    expect(mm?.some((r) => r.content === 'ANCIENT_PREFIX')).toBe(false);
+    const ckFolds = persistSpy.mock.calls
+      .map((c) => c[0].fold)
+      .filter((f) => f?.compactionCheckpoint !== undefined);
+    expect(ckFolds).toHaveLength(0);
+    expect(closed()).toBe(1);
+  });
+
+  it('clipped fail-open seeds pin+tail, not holey span+tail (adversarial #955 follow-up 10)', async () => {
+    const { deps, closed } = wiredDeps();
+    let firstRoundMessages: unknown[] | undefined;
+    const modelStep = vi.fn(async (args: { messages: ReadonlyArray<unknown> }) => {
+      if (!firstRoundMessages) firstRoundMessages = [...args.messages];
+      return {
+        ok: true as const,
+        delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+      };
+    });
+    const compactionStep = vi.fn(async () => ({
+      ok: false as const,
+      code: 'summarize_failed',
+      error: 'boom',
+    }));
+    const persistSpy = vi.fn(deps.persistStep);
+    const honesty =
+      'Summary of earlier session (compacted, not live assistant prose): earlier work';
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        persistStep: persistSpy,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionRetainedTail: [{ role: 'user', content: 'newest tail' }],
+      },
+      {
+        userMessage: 'continue',
+        compact: {
+          span: [
+            { role: 'user', content: honesty },
+            { role: 'user', content: 'ANCIENT_PREFIX' },
+          ],
+          budgetTokens: 100_000,
+          pinSummaryRow: true,
+          clipped: true,
+        },
+      },
+    );
+    expect(result.status).toBe('completed');
+    expect(firstRoundMessages).toBeDefined();
+    const rows = firstRoundMessages as Array<{ role: string; content?: string }>;
+    expect(rows[0]?.content).toBe(honesty);
+    expect(rows.some((r) => r.content === 'newest tail')).toBe(true);
+    expect(rows.some((r) => r.content === 'ANCIENT_PREFIX')).toBe(false);
+    expect(rows[rows.length - 1]).toEqual({ role: 'user', content: 'continue' });
+    const mm = persistSpy.mock.calls
+      .map((c) => c[0].fold?.modelMessages as Array<{ content?: string }> | undefined)
+      .find((m) => Array.isArray(m));
+    expect(mm?.some((r) => r.content === honesty)).toBe(true);
+    expect(mm?.some((r) => r.content === 'newest tail')).toBe(true);
+    expect(mm?.some((r) => r.content === 'ANCIENT_PREFIX')).toBe(false);
+    const ckFolds = persistSpy.mock.calls
+      .map((c) => c[0].fold)
+      .filter((f) => f?.compactionCheckpoint !== undefined);
+    expect(ckFolds).toHaveLength(0);
+    expect(closed()).toBe(1);
+  });
+
+  it('success seed trims [realSummary, ...tail] with pinnedCount 1 (adversarial #955 combined-seed rails)', async () => {
+    const { deps } = wiredDeps();
+    let firstRoundMessages: unknown[] | undefined;
+    const modelStep = vi.fn(async (args: { messages: ReadonlyArray<unknown> }) => {
+      if (!firstRoundMessages) firstRoundMessages = [...args.messages];
+      return {
+        ok: true as const,
+        delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+      };
+    });
+    const fatSummary = 'S'.repeat(80);
+    const fatTail = 'T'.repeat(2_000);
+    const compactionStep = vi.fn(async () => ({
+      ok: true as const,
+      summary: fatSummary,
+    }));
+    await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionRetainedTail: [{ role: 'user', content: fatTail }],
+      },
+      {
+        userMessage: 'continue',
+        // Token budget keeps the pinned real summary + ask; the unpinned
+        // fat tail overflows the combined seed (adversarial #955).
+        compact: { span: [{ role: 'user', content: 'old' }], budgetTokens: 200 },
+      },
+    );
+    expect(firstRoundMessages).toBeDefined();
+    const rows = firstRoundMessages as Array<{ role: string; content?: string }>;
+    expect(rows[0]?.role).toBe('user');
+    expect(rows[0]?.content).toContain('Summary of earlier session');
+    expect(rows[0]?.content).toContain(fatSummary);
+    // Unpinned tail dropped; current ask still last.
+    expect(rows.some((r) => r.content === fatTail)).toBe(false);
+    expect(rows[rows.length - 1]).toEqual({ role: 'user', content: 'continue' });
+  });
+
+  it('fail-open without priorMessages pins the honesty row when pinSummaryRow (adversarial #955 follow-up)', async () => {
+    const { deps, closed } = wiredDeps();
+    let firstRoundMessages: unknown[] | undefined;
+    const modelStep = vi.fn(async (args: { messages: ReadonlyArray<unknown> }) => {
+      if (!firstRoundMessages) firstRoundMessages = [...args.messages];
+      return {
+        ok: true as const,
+        delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+      };
+    });
+    const compactionStep = vi.fn(async () => ({
+      ok: false as const,
+      code: 'summarize_failed',
+      error: 'boom',
+    }));
+    const honesty =
+      'Summary of earlier session (compacted, not live assistant prose): earlier work';
+    const fatTail = 'T'.repeat(2_000);
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionRetainedTail: [{ role: 'user', content: fatTail }],
+      },
+      {
+        userMessage: 'continue',
+        compact: {
+          span: [{ role: 'user', content: honesty }],
+          budgetTokens: 200,
+          pinSummaryRow: true,
+        },
+      },
+    );
+    expect(result.status).toBe('completed');
+    expect(firstRoundMessages).toBeDefined();
+    const rows = firstRoundMessages as Array<{ role: string; content?: string }>;
+    expect(rows[0]?.content).toBe(honesty);
+    expect(rows.some((r) => r.content === fatTail)).toBe(false);
+    expect(rows[rows.length - 1]).toEqual({ role: 'user', content: 'continue' });
+    expect(closed()).toBe(1);
+  });
+
+  it('checkpoint writer re-rails a fat live tail; this turn still survives (adversarial #955 follow-up)', async () => {
+    const { deps } = wiredDeps();
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+    }));
+    const compactionStep = vi.fn(async () => ({
+      ok: true as const,
+      summary: 'fresh summary text',
+    }));
+    const persistSpy = vi.fn(deps.persistStep);
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        persistStep: persistSpy,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionFilesTouched: ['lib/a.ts'],
+        compactionRetainedTail: [{ role: 'user', content: 'tail row' }],
+      },
+      {
+        userMessage: 'continue',
+        compact: { span: [{ role: 'user', content: 'old' }] },
+      },
+    );
+    expect(result.status).toBe('completed');
+    const folds = persistSpy.mock.calls
+      .map((c) => c[0].fold)
+      .filter((f) => f?.compactionCheckpoint !== undefined);
+    const ck = folds[0]!.compactionCheckpoint as {
+      summary: string;
+      filesTouched: string[];
+      retainedTail: unknown[];
+    };
+    // Wiring: boundCheckpointForPersist still keeps this turn on a small tail.
+    expect(ck.retainedTail).toEqual([
+      { role: 'user', content: 'tail row' },
+      { role: 'user', content: 'continue' },
+      { role: 'assistant', delta: { text: 'hi', toolCalls: [] } },
+    ]);
+  });
+
+  it('pin-miss empty seed fail-opens: first model sees reconstructed tail, no checkpoint (adversarial #955 follow-up 5)', async () => {
+    const { deps } = wiredDeps();
+    let firstRoundMessages: unknown[] | undefined;
+    const modelStep = vi.fn(async (args: { messages: ReadonlyArray<unknown> }) => {
+      if (!firstRoundMessages) firstRoundMessages = [...args.messages];
+      return {
+        ok: true as const,
+        delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+      };
+    });
+    const fatSummary = 'S'.repeat(8_000);
+    const compactionStep = vi.fn(async () => ({
+      ok: true as const,
+      summary: fatSummary,
+    }));
+    const persistSpy = vi.fn(deps.persistStep);
+    const ask = 'this turn must survive pin-miss';
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        persistStep: persistSpy,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionFilesTouched: ['lib/a.ts'],
+        compactionRetainedTail: [{ role: 'user', content: 'tail row' }],
+      },
+      {
+        userMessage: ask,
+        // Budget too small for the pinned 8k-char summary + ask → seed [].
+        compact: { span: [{ role: 'user', content: 'old' }], budgetTokens: 100 },
+      },
+    );
+    expect(result.status).toBe('completed');
+    expect(firstRoundMessages).toBeDefined();
+    const rows = firstRoundMessages as Array<{ role: string; content?: string }>;
+    // Fail-open reconstructed span+tail (not `[]` / not the too-fat summary).
+    expect(rows.some((r) => r.content === 'old')).toBe(true);
+    expect(rows.some((r) => r.content === 'tail row')).toBe(true);
+    expect(rows[rows.length - 1]).toEqual({ role: 'user', content: ask });
+    expect(
+      rows.some(
+        (r) =>
+          typeof r.content === 'string' &&
+          r.content.startsWith('Summary of earlier session'),
+      ),
+    ).toBe(false);
+    const folds = persistSpy.mock.calls
+      .map((c) => c[0].fold)
+      .filter((f) => f?.compactionCheckpoint !== undefined);
+    expect(folds).toHaveLength(0);
+  });
+
+  it('reserved cut tail survives a maxed summary (adversarial #955 follow-up 6)', async () => {
+    const { deps } = wiredDeps();
+    let firstRoundMessages: unknown[] | undefined;
+    const modelStep = vi.fn(async (args: { messages: ReadonlyArray<unknown> }) => {
+      if (!firstRoundMessages) firstRoundMessages = [...args.messages];
+      return {
+        ok: true as const,
+        delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+      };
+    });
+    const fatSummary = 'S'.repeat(8_000);
+    const tailContent = 'T'.repeat(6_000);
+    const compactionStep = vi.fn(async () => ({
+      ok: true as const,
+      summary: fatSummary,
+    }));
+    await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionRetainedTail: [{ role: 'user', content: tailContent }],
+      },
+      {
+        userMessage: 'continue',
+        // Full fold budget (20k-window class, 3616, plus slack). A reserved
+        // cut hands a tail that fits WITH the max honesty row; the old
+        // full-budget cut handed a tail that success-trim then dropped.
+        compact: { span: [{ role: 'user', content: 'old' }], budgetTokens: 4_000 },
+      },
+    );
+    const rows = firstRoundMessages as Array<{ role: string; content?: string }>;
+    expect(rows[0]?.content).toContain('Summary of earlier session');
+    expect(rows[0]?.content).toContain(fatSummary);
+    expect(rows.some((r) => r.content === tailContent)).toBe(true);
+    expect(rows[rows.length - 1]).toEqual({ role: 'user', content: 'continue' });
+  });
+
+  it('reserved cut tail survives a maxed summary AND a fat ask (adversarial #955 follow-up 14)', async () => {
+    const { deps } = wiredDeps();
+    let firstRoundMessages: unknown[] | undefined;
+    const modelStep = vi.fn(async (args: { messages: ReadonlyArray<unknown> }) => {
+      if (!firstRoundMessages) firstRoundMessages = [...args.messages];
+      return {
+        ok: true as const,
+        delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+      };
+    });
+    const budget = 3_616;
+    const ask = 'A'.repeat(4_000);
+    const fatSummary = 'S'.repeat(8_000);
+    const rails = compactionCutRails(budget, { currentUserContent: ask });
+    const tailContent = 'T'.repeat(
+      Math.max(80, rails.budgetTokens * CONTEXT_CHARS_PER_TOKEN - 80),
+    );
+    const compactionStep = vi.fn(async () => ({
+      ok: true as const,
+      summary: fatSummary,
+    }));
+    await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionRetainedTail: [{ role: 'user', content: tailContent }],
+      },
+      {
+        userMessage: ask,
+        compact: { span: [{ role: 'user', content: 'old' }], budgetTokens: budget },
+      },
+    );
+    const rows = firstRoundMessages as Array<{ role: string; content?: string }>;
+    expect(rows[0]?.content).toContain('Summary of earlier session');
+    expect(rows[0]?.content).toContain(fatSummary);
+    expect(rows.some((r) => r.content === tailContent)).toBe(true);
+    expect(rows[rows.length - 1]).toEqual({ role: 'user', content: ask });
   });
 });

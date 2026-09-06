@@ -4,9 +4,9 @@
  * The pure, testable while-loop that drives one prompt run. Per the umbrella
  * (#794) Architecture lock, ONE run = ONE prompt, and ONE step boundary = one
  * model round OR one tool **batch** (the round's toolCalls) OR one persist. The loop lives in workflow
- * context; it calls the three thin `'use step'` wrappers
- * (`modelGenerateStep` / `toolExecuteStep` / `persistStep`) which each re-resolve
- * the world in-step from serializable args.
+ * context; it calls the `'use step'` wrappers
+ * (`modelGenerateStep` / `toolExecuteStep` / `persistStep` / `compactionStep`)
+ * which each re-resolve the world in-step from serializable args.
  *
  * **Deliberately directive-free** (no `"use workflow"` / `"use step"` in this
  * file) so the whole matrix runs under plain vitest without the Vercel-Workflows
@@ -52,7 +52,8 @@ import {
   TURN_WALL_CLOCK_WRAPUP,
 } from '../agent/modelFinish';
 import { TURN_WALL_CLOCK_MAX_MS } from '../sessionCloudCaps';
-import { buildModelMessages } from '../agent/modelMessages';
+import { buildModelMessages, trimModelMessagesToBudget } from '../agent/modelMessages';
+import { boundCheckpointForPersist, buildCheckpoint, livePostCompactTail, renderSummaryRow } from '../agent/compaction';
 import { buildFreshnessReminder } from '../agent/freshnessReminder';
 import { logTurnLoop } from './turnLog';
 
@@ -276,6 +277,38 @@ export interface TurnLoopDeps {
    * Optional for tests/in-memory seams.
    */
   persistRunBind?: PersistRunBind;
+  /**
+   * Pre-loop compaction summarizer step (plan #950 — A4 phase 3). Optional:
+   * absent in unit fixtures / legacy callers, wired by `turnWorkflow` in
+   * production. Serializable args only (span rows + scope + deadline);
+   * the result is a plain value. Fail-open upstream.
+   */
+  compactionStep?: (args: {
+    span: ReadonlyArray<unknown>;
+    scope: { tenantId: string; userId: string; sessionId: string };
+    deadlineAt?: number;
+  }) => Promise<
+    | { ok: true; summary: string }
+    | { ok: false; code: string; error: string }
+  >;
+  /**
+   * Serializable session scope for the compaction step's in-step BYOK
+   * re-resolution (plan #950). Required only when `compactionStep` is set.
+   */
+  compactionScope?: { tenantId: string; userId: string; sessionId: string };
+  /**
+   * Route-side `filesTouched` from the compaction cut walk (plan #950) —
+   * the paths the checkpoint summary row lists. Derived by the loop from
+   * THIS run's tool rows would miss the span's pre-turn reads, so the route
+   * forwards what the cut saw. Plain serializable string list.
+   */
+  compactionFilesTouched?: ReadonlyArray<unknown>;
+  /**
+   * Route-side retained tail from the compaction cut walk (plan #950) —
+   * the re-paired rows from the cut boundary to the end. Seeded after the
+   * summary row when compaction ran.
+   */
+  compactionRetainedTail?: ReadonlyArray<unknown>;
 }
 
 /** B13 run-bind state the engine knows at `start()` (serializable values only).
@@ -308,6 +341,47 @@ export interface TurnLoopInput {
    * prior reminder (first turn / zero-read prior turn / degraded mode).
    */
   freshnessReminderPointer?: string;
+  /**
+   * Compaction trigger (plan #950, source #552 — A4 phase 3, parent #947
+   * Goal 1): when present, the workflow runs the pre-loop summarizer step
+   * over `span` and the loop seeds `[summaryRow, ...retainedTail, user]`
+   * instead of `[...priorMessages, user]`. Plain serializable values only —
+   * the span rows are the route-side `findCompactionCut().span` (already
+   * re-paired). A summarizer failure is FAIL-OPEN (parent edge-case lock:
+   * compaction never blocks the turn) — seeded from `priorMessages` when
+   * supplied, otherwise reconstructed from span+tail and #944-trimmed
+   * with `budgetTokens` (adversarial #955: production omits `priorMessages`
+   * on the compact path so `start()` does not ship three seed-sized arrays).
+   */
+  compact?: {
+    /** Compaction SPAN rows to summarize (route-side cut, re-paired). */
+    span: ReadonlyArray<unknown>;
+    /**
+     * #944 fold budget the route already computed (adversarial #955). Used
+     * to trim the real `[summaryRow, ...tail]` success seed (`pinnedCount: 1`)
+     * and the fail-open reconstruction. Absent in unit fixtures that pass
+     * a tiny seed.
+     */
+    budgetTokens?: number;
+    /**
+     * Checkpoint-seeded compact (adversarial #955 follow-up). Fail-open
+     * reconstruction pins the honesty row at index 0. Absent = mm seed.
+     */
+    pinSummaryRow?: boolean;
+    /**
+     * Prefix clip (adversarial #955 follow-up 10). Span is the oldest
+     * overflow, not a complete partition. Fail-open seeds honesty pin
+     * (if any) + `retainedTail` (the `#944` newest window), then trims.
+     * Absent = complete partition; fail-open reconstructs span+tail.
+     */
+    clipped?: boolean;
+    /**
+     * `#944`-trimmed full pre-trim projection (kept for older callers /
+     * unit fixtures). Production clip fail-open uses `clipped` + pin+tail
+     * and does not ship this third array.
+     */
+    failOpenSeed?: ReadonlyArray<unknown>;
+  };
 }
 
 /** Terminal result + the delta log for replay reconstruction (roundtrip). */
@@ -543,21 +617,50 @@ export function derivePersistFold(
   /**
    * Index of this run's first row in `messages` (plan #941 adversarial
    * CONCERNS on PR #943). `runTurnLoop` seeds
-   * `[...priorMessages, user, …this run]`; the reminder names THIS run's
-   * committed `read_file` paths only. `#936` prior rows keep
-   * `assistant.delta.toolCalls[].args.path` — walking the full array would
-   * re-derive last turn's paths on a zero-read chat and break Goal 3
-   * volatility. Default 0 keeps existing unit fixtures that pass a
-   * this-run-only array.
+   * `[...priorMessages, user, …this run]` (or `[summaryRow, ...tail, user]`
+   * after a compact). The reminder names THIS run's committed `read_file`
+   * paths only. `#936` prior rows keep `assistant.delta.toolCalls[].args.path`
+   * — walking the full array would re-derive last turn's paths on a zero-read
+   * chat and break Goal 3 volatility. The display `checkpoint` (transcript
+   * `content`) is sliced at the same index (adversarial #955 follow-up 4):
+   * a Goal 4 honesty row lives in the seed, was never live-painted, and
+   * `mergeCheckpointOntoPrior` matches a prefix of incoming — painting it
+   * would append the labeled row + duplicate the retained tail. Default 0
+   * keeps existing unit fixtures that pass a this-run-only array.
    */
   thisRunStart = 0,
+  /**
+   * Fresh compaction checkpoint (plan #950 — A4 phase 3, parent review-note 2
+   * lock: phase 3 wires the producer). When the pre-loop summarizer ran, the
+   * loop carries the built `{summary, filesTouched, retainedTail}` here so
+   * the terminal fold includes `compactionCheckpoint` and the persist seam
+   * writes it as its OWN Blob object (`meta.compactionPointer`). Absent =
+   * no compaction ran (no pointer written; the prior pointer survives via
+   * copy-forward).
+   */
+  compactionCheckpoint?: {
+    summary: string;
+    filesTouched: string[];
+    retainedTail: unknown[];
+  },
 ): PersistStepFold | undefined {
+  // Display checkpoint + freshness share this index: seed rows (prior
+  // history, Goal 4 honesty) must not leak into transcript `content`.
+  const start = Math.max(
+    0,
+    Math.min(Number.isFinite(thisRunStart) ? Math.floor(thisRunStart) : 0, messages.length),
+  );
   const checkpoint: Array<{ role: string; content: string }> = [];
   let cwd: string | undefined = runBind?.cwd;
   let activeSandboxId: string | undefined = runBind?.activeSandboxId;
-  for (const m of messages) {
-    const row = checkpointRow(m);
-    if (row) checkpoint.push(row);
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    // Bind walk stays over the full array — a seed `change_dir` is still
+    // this session's cwd. Display checkpoint is this-run only.
+    if (i >= start) {
+      const row = checkpointRow(m);
+      if (row) checkpoint.push(row);
+    }
     const bind = toolRowBind(m);
     if (bind.cwd !== undefined) cwd = bind.cwd;
     if (bind.activeSandboxId !== undefined) activeSandboxId = bind.activeSandboxId;
@@ -572,10 +675,6 @@ export function derivePersistFold(
   // the volatile list). Possibly `[]`. ALWAYS carried when the fold
   // exists: a zero-read turn writes `{paths:[]}` and VOLATILE-CLEARS
   // the prior turn's reminder (the next turn folds nothing).
-  const start = Math.max(
-    0,
-    Math.min(Number.isFinite(thisRunStart) ? Math.floor(thisRunStart) : 0, messages.length),
-  );
   const freshnessReminderPaths = buildFreshnessReminder(messages.slice(start)).paths;
   if (
     checkpoint.length === 0 &&
@@ -584,7 +683,8 @@ export function derivePersistFold(
     activeSandboxId === undefined &&
     resolvedProvider === undefined &&
     modelMessages.length === 0 &&
-    freshnessReminderPaths.length === 0
+    freshnessReminderPaths.length === 0 &&
+    compactionCheckpoint === undefined
   ) {
     return undefined;
   }
@@ -601,6 +701,9 @@ export function derivePersistFold(
     // no-tool turn (user+assistant only, no other fold fields) still emits a
     // fold with just the empty reminder so the clear advances the pointer.
     freshnessReminder: freshnessReminderPaths,
+    // Plan #950: the fresh compaction checkpoint (see param doc). Present
+    // only when the pre-loop summarizer produced a summary this run.
+    ...(compactionCheckpoint !== undefined ? { compactionCheckpoint } : {}),
   };
 }
 
@@ -623,11 +726,162 @@ export async function runTurnLoop(
   const cap = Math.max(0, Math.floor(deps.maxSteps ?? MAX_WORKFLOW_STEPS));
   const writable = onceWritable(deps.writable);
   const deltas: unknown[] = [];
-  // Seed from the persisted model-messages projection when present (plan #936):
-  // `[...priorMessages, {role:'user'}]` so the model sees prior typed
-  // assistant/tool rows; otherwise the legacy singleton.
+
+  // Compaction seed (plan #950, parent #947 Goal 1): the pre-loop summarizer
+  // runs ONCE here, before the first model round, over the route-side span.
+  // Fail-open — summarizer **model/BYOK/empty/pin-miss** proceeds UNCOMPACTED.
+  // G22 `'cancelled'` (and AbortError from the step) is NOT fail-open
+  // (adversarial #955 follow-up 16) — Stop must not start the first model
+  // round or persist a reconstructed seed as `modelMessages`. Production
+  // omits `priorMessages` on the compact path (adversarial #955 — do not
+  // ship three seed-sized arrays into `start()`, and do not overwrite the
+  // fail-open seed with an empty Goal 4 row): reconstruct from span+tail
+  // and trim with the route-computed budget. Tests may still pass a plain
+  // `priorMessages`. The summary row is a labeled `user` row
+  // (`renderSummaryRow`) — never live assistant prose (parent Goal 4).
+  let compactedSeed: unknown[] | undefined;
+  let compactedCheckpoint:
+    | { summary: string; filesTouched: string[]; retainedTail: unknown[] }
+    | undefined;
+  // G22 Stop during the pre-loop summarizer (adversarial #955 follow-up 16).
+  // Model/BYOK/empty stay fail-open; `'cancelled'` must not start the first
+  // model round or persist a fail-open seed as `modelMessages`. Follow-up 17:
+  // still terminal-persist with **no fold** so `'cancelling'` is superseded
+  // (`persistOverlayStatus` `'completed'`) — F5 must not cold-attach.
+  let compactCancelled: string | undefined;
+  let compactWall = false;
+  if (input.compact !== undefined && deps.compactionStep !== undefined) {
+    try {
+      const c = await deps.compactionStep({
+        span: input.compact.span,
+        ...(deps.compactionScope !== undefined
+          ? { scope: deps.compactionScope }
+          : { scope: { tenantId: '', userId: '', sessionId: '' } }),
+        ...(deps.deadlineAt !== undefined ? { deadlineAt: deps.deadlineAt } : {}),
+      });
+      if (!c.ok && c.code === 'cancelled') {
+        compactCancelled = c.error || 'Request cancelled.';
+      } else if (!c.ok && c.code === 'wall_clock') {
+        // Adversarial #955 follow-up 18: do not enter the tools-on while.
+        compactWall = true;
+      } else if (c.ok && typeof c.summary === 'string' && c.summary.trim().length > 0) {
+        const checkpoint = buildCheckpoint(
+          {
+            summary: c.summary,
+            filesTouched: (deps.compactionFilesTouched ?? []).filter(
+              (p): p is string => typeof p === 'string',
+            ),
+          },
+          [],
+        );
+        const seedRows = [
+          renderSummaryRow(checkpoint.summary, checkpoint.filesTouched),
+          ...buildModelMessages(deps.compactionRetainedTail ?? []).rows,
+        ];
+        // Measure the REAL combined seed on all three #944 rails with the
+        // summary pinned (adversarial #955 / #954 Goal 4). The route's dummy
+        // empty-summary pin is not this shape.
+        const budget = input.compact.budgetTokens;
+        const trimmedSeed =
+          typeof budget === 'number'
+            ? trimModelMessagesToBudget(seedRows, budget, {
+                currentUserContent: input.userMessage,
+                pinnedCount: 1,
+              }).rows
+            : seedRows;
+        // Pin-miss (adversarial #955 follow-up 5): pinned summary + ask
+        // miss a rail → `[]`. `[]` is NOT a compact success — the first
+        // model round would see only the ask (mm-seed `#944` would have
+        // kept the newest tail) and persist would rewrite mm to this-
+        // turn-only. Fail-open: no compactedSeed, no checkpoint writer.
+        if (trimmedSeed.length > 0) {
+          compactedSeed = trimmedSeed;
+          // Plan #950 checkpoint writer (parent #947 review-note 2 lock).
+          // `retainedTail` is filled at persist time from the live
+          // post-compact messages (adversarial #955 Goal 2) — not the
+          // frozen cut-time tail, which would drop this turn on the next
+          // prefer-checkpoint seed.
+          compactedCheckpoint = {
+            summary: checkpoint.summary,
+            filesTouched: checkpoint.filesTouched,
+            retainedTail: [],
+          };
+        }
+      }
+    } catch (err) {
+      const aborted =
+        err instanceof Error &&
+        (err.name === 'AbortError' ||
+          err.name === 'ResponseAborted' ||
+          err.name.toLowerCase() === 'cancelled');
+      if (aborted) {
+        compactCancelled = 'Request cancelled.';
+      }
+      // Else fail-open: compaction never blocks the turn (parent edge-case
+      // lock) — model/BYOK/empty throws only.
+    }
+  }
+
+  // Seed: compacted `[summaryRow, ...tail]` on success; otherwise the
+  // un-compacted projection. Compact-path fail-open with no `priorMessages`:
+  // `failOpenSeed` (legacy fixtures) wins; a **prefix clip** seeds honesty
+  // pin + tail (the `#944` newest window — span is the oldest overflow, not
+  // a partition); else reconstruct span+tail (complete partition) and apply
+  // #944 rails.
+  let loopSeed: unknown[];
+  if (compactCancelled !== undefined) {
+    // G22: do not persist a fail-open reconstruction after Stop.
+    loopSeed = [];
+  } else if (compactedSeed !== undefined) {
+    loopSeed = compactedSeed;
+  } else if (input.priorMessages !== undefined) {
+    loopSeed = [...input.priorMessages];
+  } else if (input.compact !== undefined) {
+    if (input.compact.failOpenSeed !== undefined) {
+      loopSeed = buildModelMessages(input.compact.failOpenSeed).rows;
+    } else if (input.compact.clipped === true) {
+      // Prefix clip (adversarial #955 follow-up 10): span is the oldest
+      // overflow. Fail-open must not persist holey span+tail. Honesty pin
+      // (span[0] when `pinSummaryRow`) + retained tail is the newest window.
+      const pinRow =
+        input.compact.pinSummaryRow === true
+          ? buildModelMessages(input.compact.span.slice(0, 1)).rows
+          : [];
+      const rebuilt = buildModelMessages([
+        ...pinRow,
+        ...(deps.compactionRetainedTail ?? []),
+      ]).rows;
+      const budget = input.compact.budgetTokens;
+      const pinCount = input.compact.pinSummaryRow === true ? 1 : 0;
+      loopSeed =
+        typeof budget === 'number'
+          ? trimModelMessagesToBudget(rebuilt, budget, {
+              currentUserContent: input.userMessage,
+              ...(pinCount > 0 ? { pinnedCount: pinCount } : {}),
+            }).rows
+          : rebuilt;
+    } else {
+      const rebuilt = buildModelMessages([
+        ...input.compact.span,
+        ...(deps.compactionRetainedTail ?? []),
+      ]).rows;
+      const budget = input.compact.budgetTokens;
+      const pinCount = input.compact.pinSummaryRow === true ? 1 : 0;
+      loopSeed =
+        typeof budget === 'number'
+          ? trimModelMessagesToBudget(rebuilt, budget, {
+              currentUserContent: input.userMessage,
+              ...(pinCount > 0 ? { pinnedCount: pinCount } : {}),
+            }).rows
+          : rebuilt;
+    }
+  } else {
+    loopSeed = [];
+  }
+
+  const thisRunStart = loopSeed.length;
   const messages: unknown[] = [
-    ...(input.priorMessages ?? []),
+    ...loopSeed,
     { role: 'user', content: input.userMessage },
   ];
 
@@ -696,13 +950,25 @@ export async function runTurnLoop(
     | { ok: false; code: string; error: string }
   > => {
     steps += 1;
-    const thisRunStart = (input.priorMessages ?? []).length;
     const fold = derivePersistFold(
       messages,
       usage,
       deps.persistRunBind,
       resolvedProvider,
       thisRunStart,
+      compactedCheckpoint === undefined
+        ? undefined
+        : boundCheckpointForPersist({
+            summary: compactedCheckpoint.summary,
+            filesTouched: compactedCheckpoint.filesTouched,
+            // Live post-compact view (Goal 2): everything after the honesty
+            // row, including this turn. Identify the summary by Goal 4
+            // label, not `slice(1)` — a pin-miss seed is `[]` and
+            // `messages[0]` is this turn's user (adversarial #955
+            // follow-up 3). Re-railed to COMPACTION_CHECKPOINT_MAX_BYTES
+            // so a byte-rail seed + this turn cannot fail-close the write.
+            retainedTail: livePostCompactTail(buildModelMessages(messages).rows),
+          }),
     );
     return deps.persistStep({
       turnRunId: deps.turnRunId,
@@ -849,6 +1115,32 @@ export async function runTurnLoop(
   };
 
   try {
+    if (compactCancelled !== undefined) {
+      // G22: overlay `completed` so F5 cannot attach. Cancel-route
+      // `'cancelling'` is host-held liveness, always superseded by the
+      // run's terminal persist (`app/api/turns/[runId]/cancel/route.ts`).
+      // Omit `fold` — copy-forward mm / compactionPointer / freshness.
+      // An ask-only `messages` fold (loopSeed=[], thisRunStart=0) would
+      // clobber the warehouse (adversarial #955 follow-up 16 lock). Empty
+      // this-run transcript merge keeps the prior (#934).
+      try {
+        await deps.persistStep({
+          turnRunId: deps.turnRunId,
+          deltas,
+          terminal: true,
+        });
+      } catch {
+        // Persist must not skip the writable close on stream death.
+      }
+      return fail('cancelled', 0, 0, compactCancelled);
+    }
+    if (compactWall) {
+      // Summarizer already fired the 1h cap. Fail-open seed is already in
+      // `messages` (not ask-only — wrap-up persist must copy the warehouse).
+      // Do not start a tools-on first round that the deadline signal would
+      // immediately abort (adversarial #955 follow-up 18).
+      return wallWrapUp(0, 0);
+    }
     while (steps < cap) {
       round += 1;
       steps += 1; // this model round = one step boundary

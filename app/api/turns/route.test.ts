@@ -2,9 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AUTH_REQUIRED_ERROR } from '../../../lib/tenancy/errors';
 import {
   COMPACTION_FILES_TOUCHED_MAX,
+  COMPACTION_SPAN_MAX_BYTES,
   COMPACTION_SUMMARY_MAX_CHARS,
 } from '../../../lib/sessionCloudCaps';
-import { buildCheckpoint } from '../../../lib/agent/compaction';
+import { buildCheckpoint, COMPACTION_SUMMARY_LABEL } from '../../../lib/agent/compaction';
 
 /**
  * Distant-future `updatedAt` planted in the mock envelope for row 1, so the
@@ -1538,9 +1539,10 @@ describe('POST /api/turns', () => {
       { role: 'tool', toolName: 'read_file', toolCallId: 'kept', result: 'bytes' },
     ]);
     expect(startArgs.userMessage).toBe('continue');
-    // The checkpoint read wins over the projection read — exactly one blob read.
-    expect(blobReadMock).toHaveBeenCalledTimes(1);
+    // Checkpoint wins when mm is the pre-compact dump (empty / no honesty).
+    // Follow-up 9 still *reads* mm to detect a live honesty-prefixed warehouse.
     expect(blobReadMock).toHaveBeenCalledWith('t_cp_s1_abc');
+    expect(blobReadMock).toHaveBeenCalledWith('t_mm_s1_abc');
   });
 
   it('plan #949 row 2b — malformed checkpoint body (wrong shape) → falls back to modelMessagesPointer, no 5xx', async () => {
@@ -1716,7 +1718,7 @@ describe('POST /api/turns', () => {
     expect(startArgs.userMessage).toBe('continue');
   });
 
-  it('adversarial #954 — Goal 4 summary row is pinned when a fat tail fills the leftover budget', async () => {
+  it('adversarial #954 — Goal 4 summary row is pinned when a fat tail fills the leftover budget (no compactable cut)', async () => {
     standardHarness();
     mockAuthedSession();
     mockStart();
@@ -1725,7 +1727,6 @@ describe('POST /api/turns', () => {
       filesTouched: ['lib/auth.ts'],
       retainedTail: [
         { role: 'user', content: 'OLD_TAIL ' + 'x'.repeat(20_000) },
-        { role: 'user', content: 'newest ask in tail' },
       ],
     };
     readEnvelopeMock.mockResolvedValue({
@@ -1738,8 +1739,9 @@ describe('POST /api/turns', () => {
     });
     blobReadMock.mockResolvedValue(JSON.stringify(checkpoint));
     // 20k window → budget = 20000 − 16384 = 3616 tokens. Summary fits;
-    // summary + 20k-char oldest tail does not. Combined-seed drop-oldest
-    // would have dropped the honesty row; pin keeps it and trims the tail.
+    // summary + 20k-char oldest tail does not. The only user boundary's
+    // tail is the fat row (does not fit) → no compact; pin-trim keeps
+    // the honesty row and drops the tail.
     vi.doMock('../../../lib/gateway/modelCatalog', () => ({
       getJoinedWindowMap: vi.fn(async () => new Map([['anthropic/claude-a', 20_000]])),
       effortValuesForModel: vi.fn(async () => []),
@@ -1749,6 +1751,7 @@ describe('POST /api/turns', () => {
     const res = await postJson({ prompt: 'continue', sessionId: 's1' });
     expect(res.status).toBe(200);
     const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.compact).toBeUndefined();
     expect(startArgs.priorMessages.length).toBeGreaterThanOrEqual(1);
     const summaryRow = startArgs.priorMessages[0];
     expect(summaryRow.role).toBe('user');
@@ -1760,10 +1763,6 @@ describe('POST /api/turns', () => {
     expect(startArgs.priorMessages.some((r: { content?: string }) => r.content?.includes('OLD_TAIL'))).toBe(
       false,
     );
-    expect(startArgs.priorMessages.at(-1)).toEqual({
-      role: 'user',
-      content: 'newest ask in tail',
-    });
     expect(startArgs.userMessage).toBe('continue');
   });
 
@@ -1859,4 +1858,536 @@ describe('POST /api/turns', () => {
       content: 'resume here',
     });
   });
+
+  // --- Plan #950 (source #552 — A4 compaction phase 3) route-trigger rows ---
+
+  it('plan #950 row 1 — overflowing PRE-TRIM projection + clean cut → start() args carry compact {span, filesTouched, retainedTail}', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    // A projection that overflows the #944 fold budget (window 20 000 →
+    // budget = 20 000 − 16 384 = 3 616 tokens ≈ 14.4k chars at chars/4),
+    // ending in a user boundary so the cut walk finds a clean split: the
+    // span (rows before the boundary) overflows the seed but still fits
+    // the summarizer window rail (adversarial #955 follow-up 12:
+    // maxSpanBytes = min(2 MiB, budget×4) ≈ 14.4k); the newest boundary
+    // row + retained tail fit the honesty-reduced tail rails.
+    const fat = 'b'.repeat(6_000);
+    const projection = [
+      { role: 'user', content: fat },
+      { role: 'user', content: 'middle turn ' + fat },
+      { role: 'assistant', delta: { text: 'worked', toolCalls: [{ toolName: 'read_file', toolCallId: 'c1', args: { path: 'src/a.ts' } }] } },
+      { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'bytes' },
+      { role: 'user', content: 'old turn two (newest boundary) ' + 'c'.repeat(2_500) },
+    ];
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(JSON.stringify(projection));
+    // Window 20 000 → budget 3 616 tokens: the ~15k-char pre-trim projection
+    // (~3.8k tokens) overflows → shouldCompact true. Span still fits the
+    // follow-up 12 summarizer-window rail so this stays a complete partition.
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      effortValuesForModel: async () => [],
+      getJoinedWindowMap: async () => new Map([['anthropic/claude-a', 20_000]]),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'continue', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.compact).toBeDefined();
+    expect(Array.isArray(startArgs.compact.span)).toBe(true);
+    // Span = the rows before the newest user boundary.
+    expect(startArgs.compact.span.length).toBeGreaterThan(0);
+    expect(startArgs.compact.span.length).toBeLessThan(projection.length + 1);
+    expect(Array.isArray(startArgs.compact.filesTouched)).toBe(true);
+    expect(startArgs.compact.filesTouched).toContain('src/a.ts');
+    expect(Array.isArray(startArgs.compact.retainedTail)).toBe(true);
+    expect(typeof startArgs.compact.budgetTokens).toBe('number');
+    // mm-seed compact: no Goal 4 honesty row to pin on fail-open.
+    expect(startArgs.compact.pinSummaryRow).toBeUndefined();
+    // Adversarial #955: compact path omits priorMessages (no dummy empty
+    // Goal 4 row as the fail-open seed; no third seed-sized start() array).
+    expect(startArgs.priorMessages).toBeUndefined();
+    // Complete partition — failOpenSeed is clip-only (follow-up 7).
+    expect(startArgs.compact.failOpenSeed).toBeUndefined();
+  });
+
+  it('plan #950 row 2 — under-budget projection → NO compact arg (default #944 path unchanged)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(
+      JSON.stringify([{ role: 'user', content: 'tiny history' }]),
+    );
+    // Generous published window → shouldCompact false.
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      effortValuesForModel: async () => [],
+      getJoinedWindowMap: async () =>
+        new Map([['anthropic/claude-a', 2_000_000]]),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'go', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.compact).toBeUndefined();
+    expect(startArgs.priorMessages).toBeDefined();
+  });
+
+  it('plan #950 adversarial #955 — overflowing PRE-TRIM checkpoint seed + clean cut → compact (trigger is not mm-only)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    const fat = 'b'.repeat(6_000);
+    const checkpoint = {
+      summary: 'earlier session summarized',
+      filesTouched: ['src/a.ts'],
+      retainedTail: [
+        { role: 'user', content: fat },
+        { role: 'user', content: 'middle turn ' + fat },
+        {
+          role: 'assistant',
+          delta: {
+            text: 'worked',
+            toolCalls: [
+              { toolName: 'read_file', toolCallId: 'c1', args: { path: 'src/a.ts' } },
+            ],
+          },
+        },
+        { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'bytes' },
+        { role: 'user', content: 'old turn two (newest boundary) ' + 'c'.repeat(2_500) },
+      ],
+    };
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        compactionPointer: 't_cp_s1_abc',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockImplementation(async (id: string) =>
+      id === 't_cp_s1_abc' ? JSON.stringify(checkpoint) : JSON.stringify([]),
+    );
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      effortValuesForModel: async () => [],
+      getJoinedWindowMap: async () => new Map([['anthropic/claude-a', 20_000]]),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'continue', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.compact).toBeDefined();
+    expect(Array.isArray(startArgs.compact.span)).toBe(true);
+    expect(startArgs.compact.span.length).toBeGreaterThan(0);
+    expect(startArgs.compact.filesTouched).toContain('src/a.ts');
+    expect(startArgs.priorMessages).toBeUndefined();
+    // Checkpoint seed: fail-open must pin the honesty row (adversarial #955 follow-up).
+    expect(startArgs.compact.pinSummaryRow).toBe(true);
+    // Follow-up 9: mm is still read (empty dump → checkpoint seed).
+    expect(blobReadMock).toHaveBeenCalledWith('t_cp_s1_abc');
+    expect(blobReadMock).toHaveBeenCalledWith('t_mm_s1_abc');
+  });
+
+  it('adversarial #955 follow-up 8/10 — clipped cut prefix-summarizes the oldest overflow', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    // Fat middle exceeds COMPACTION_SPAN_MAX_BYTES so the newest-cut span
+    // overflows the cap, continue's older tail misses the 20k-window
+    // budget, and prefix clip keeps ANCIENT_PREFIX in the span (Goal 1)
+    // while dropping FILL from span+tail.
+    const fill = `FILL ${'H'.repeat(COMPACTION_SPAN_MAX_BYTES - 64)}`;
+    const projection = [
+      { role: 'user', content: 'ANCIENT_PREFIX goal of the session' },
+      { role: 'assistant', delta: { text: 'old' } },
+      { role: 'user', content: fill },
+      { role: 'assistant', delta: { text: 'T'.repeat(8_000) } },
+      { role: 'user', content: 'newest boundary' },
+    ];
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(JSON.stringify(projection));
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      effortValuesForModel: async () => [],
+      getJoinedWindowMap: async () => new Map([['anthropic/claude-a', 20_000]]),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'continue', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.compact).toBeDefined();
+    const span = startArgs.compact.span as Array<{ content?: string }>;
+    expect(span.some((r) => r.content === 'ANCIENT_PREFIX goal of the session')).toBe(
+      true,
+    );
+    const covered = [
+      ...span,
+      ...(startArgs.compact.retainedTail as Array<{ content?: string }>),
+    ];
+    expect(covered.some((r) => r.content === fill)).toBe(false);
+    expect(startArgs.compact.clipped).toBe(true);
+    expect(startArgs.compact.failOpenSeed).toBeUndefined();
+    expect(startArgs.priorMessages).toBeUndefined();
+  });
+
+  it('adversarial #955 follow-up 8/10 — checkpoint clip pins honesty and prefix-summarizes oldest', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    const fill = `FILL ${'H'.repeat(COMPACTION_SPAN_MAX_BYTES - 64)}`;
+    const checkpoint = {
+      summary: 'earlier session summarized',
+      filesTouched: ['src/a.ts'],
+      retainedTail: [
+        { role: 'user', content: 'ANCIENT_PREFIX goal of the session' },
+        { role: 'assistant', delta: { text: 'old' } },
+        { role: 'user', content: fill },
+        { role: 'assistant', delta: { text: 'T'.repeat(8_000) } },
+        { role: 'user', content: 'newest boundary' },
+      ],
+    };
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        compactionPointer: 't_cp_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(JSON.stringify(checkpoint));
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      effortValuesForModel: async () => [],
+      getJoinedWindowMap: async () => new Map([['anthropic/claude-a', 20_000]]),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'continue', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.compact).toBeDefined();
+    expect(startArgs.compact.pinSummaryRow).toBe(true);
+    expect(startArgs.compact.clipped).toBe(true);
+    const span = startArgs.compact.span as Array<{ role?: string; content?: string }>;
+    expect(span[0]?.role).toBe('user');
+    expect(span[0]?.content?.startsWith(COMPACTION_SUMMARY_LABEL)).toBe(true);
+    // Adversarial #955 follow-up 17: honesty files line is in the fitted
+    // span — scrape it even when the overflow prefix has no file tools.
+    expect(startArgs.compact.filesTouched).toContain('src/a.ts');
+    expect(
+      span.some((r) => r.content === 'ANCIENT_PREFIX goal of the session'),
+    ).toBe(true);
+    const covered = [
+      ...span,
+      ...(startArgs.compact.retainedTail as Array<{ content?: string }>),
+    ];
+    expect(covered.some((r) => r.content === fill)).toBe(false);
+    expect(startArgs.compact.failOpenSeed).toBeUndefined();
+    expect(startArgs.priorMessages).toBeUndefined();
+  });
+
+  it('adversarial #955 follow-up 11 — 1M-window warehouse > 3 MiB still start()s compact (span shrink, not yield)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    // Two ~1.7 MiB turns so the warehouse is > COMPACTION_START_MAX_BYTES
+    // while each side of a partition still fits the 2 MiB span/tail rails.
+    // 1M window fold budget ≈ 850k tokens ≈ 3.4 MiB — shouldCompact fires.
+    // Combined span+tail would veto; fitCompactionCutToStartPayload keeps
+    // ANCIENT_PREFIX in the span instead of yielding to #944.
+    const spanFill = `SPAN ${'S'.repeat(1.7 * 1024 * 1024)}`;
+    const tailFill = `TAIL ${'T'.repeat(1.6 * 1024 * 1024)}`;
+    const projection = [
+      { role: 'user', content: 'ANCIENT_PREFIX goal of the session' },
+      {
+        role: 'assistant',
+        delta: {
+          text: 'old',
+          toolCalls: [{ toolName: 'read_file', toolCallId: 'k1', args: { path: 'src/kept.ts' } }],
+        },
+      },
+      { role: 'tool', toolName: 'read_file', toolCallId: 'k1', result: 'bytes' },
+      { role: 'user', content: spanFill },
+      {
+        role: 'assistant',
+        delta: {
+          text: 'span-asst',
+          toolCalls: [{ toolName: 'read_file', toolCallId: 'd1', args: { path: 'src/dropped.ts' } }],
+        },
+      },
+      { role: 'tool', toolName: 'read_file', toolCallId: 'd1', result: 'bytes' },
+      { role: 'user', content: tailFill },
+      { role: 'assistant', delta: { text: 'tail-asst' } },
+      { role: 'user', content: 'newest boundary' },
+      { role: 'assistant', delta: { text: 'new' } },
+    ];
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(JSON.stringify(projection));
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      effortValuesForModel: async () => [],
+      getJoinedWindowMap: async () => new Map([['anthropic/claude-a', 1_000_000]]),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'continue', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.compact).toBeDefined();
+    expect(startArgs.priorMessages).toBeUndefined();
+    const span = startArgs.compact.span as Array<{ content?: string }>;
+    expect(span.some((r) => r.content === 'ANCIENT_PREFIX goal of the session')).toBe(
+      true,
+    );
+    expect(span.some((r) => r.content === spanFill)).toBe(false);
+    expect(startArgs.compact.clipped).toBe(true);
+    // Adversarial #955 follow-up 16: filesTouched is the fitted span, not
+    // pre-fit cut.span — dropped-middle tool paths must not ride honesty.
+    expect(startArgs.compact.filesTouched).toContain('src/kept.ts');
+    expect(startArgs.compact.filesTouched).not.toContain('src/dropped.ts');
+    const tail = startArgs.compact.retainedTail as Array<{ content?: string }>;
+    expect(tail.some((r) => r.content === 'newest boundary')).toBe(true);
+  });
+
+  it('adversarial #955 follow-up 9 — honesty-prefixed live mm extends a stale checkpoint (Goal 2)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    const checkpoint = {
+      summary: 'earlier session summarized',
+      filesTouched: ['src/a.ts'],
+      retainedTail: [
+        { role: 'user', content: 'resume here' },
+        { role: 'assistant', delta: { text: 'compacted-turn reply' } },
+      ],
+    };
+    const honesty = {
+      role: 'user',
+      content: `${COMPACTION_SUMMARY_LABEL} earlier session summarized\n\nFiles read/modified: src/a.ts`,
+    };
+    const liveMm = [
+      honesty,
+      { role: 'user', content: 'resume here' },
+      { role: 'assistant', delta: { text: 'compacted-turn reply' } },
+      { role: 'user', content: 'the turn after compact' },
+      { role: 'assistant', delta: { text: 'N+1 must survive' } },
+    ];
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        compactionPointer: 't_cp_s1_abc',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockImplementation(async (id: string) =>
+      id === 't_cp_s1_abc' ? JSON.stringify(checkpoint) : JSON.stringify(liveMm),
+    );
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      effortValuesForModel: async () => [],
+      getJoinedWindowMap: async () =>
+        new Map([['anthropic/claude-a', 2_000_000]]),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'continue', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.compact).toBeUndefined();
+    expect(startArgs.priorMessages[0].content.startsWith(COMPACTION_SUMMARY_LABEL)).toBe(
+      true,
+    );
+    expect(
+      startArgs.priorMessages.some(
+        (r: { content?: string }) => r.content === 'the turn after compact',
+      ),
+    ).toBe(true);
+    expect(
+      startArgs.priorMessages.some(
+        (r: { delta?: { text?: string } }) => r.delta?.text === 'N+1 must survive',
+      ),
+    ).toBe(true);
+    expect(blobReadMock).toHaveBeenCalledWith('t_cp_s1_abc');
+    expect(blobReadMock).toHaveBeenCalledWith('t_mm_s1_abc');
+  });
+
+  it('adversarial #955 follow-up 13 — pin-only clip yields to #944 (no compact)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    // 20k window → fold budget 3616 → span rail ~14.4k. Near-cap honesty
+    // plus a 7k first-unpinned user cannot share that rail; clip would
+    // be pin-only. Route must NOT start() compact (rewriting honesty and
+    // wiping filesTouched is worse than the #944 pin-trim).
+    const honesty = {
+      role: 'user',
+      content: `${COMPACTION_SUMMARY_LABEL} ${'S'.repeat(COMPACTION_SUMMARY_MAX_CHARS)}\n\nFiles read/modified: lib/auth.ts`,
+    };
+    const fat = `FAT_OVERFLOW ${'x'.repeat(7_000)}`;
+    const liveMm = [
+      honesty,
+      { role: 'user', content: fat },
+      { role: 'assistant', delta: { text: 'old' } },
+      { role: 'user', content: 'newest boundary' },
+      { role: 'assistant', delta: { text: 'new' } },
+    ];
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(JSON.stringify(liveMm));
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      effortValuesForModel: async () => [],
+      getJoinedWindowMap: async () => new Map([['anthropic/claude-a', 20_000]]),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'continue', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.compact).toBeUndefined();
+    expect(startArgs.priorMessages).toBeDefined();
+    expect(startArgs.priorMessages[0].content.startsWith(COMPACTION_SUMMARY_LABEL)).toBe(
+      true,
+    );
+    expect(
+      startArgs.priorMessages[0].content.includes('Files read/modified: lib/auth.ts'),
+    ).toBe(true);
+  });
+
+  it('adversarial #955 follow-up 14 — fat ask shrinks the cut rail; yield to #944 instead of compact-then-drop-tail', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    // Same overflowing 20k warehouse as plan #950 row 1: newest tail (~2.5k
+    // chars) fits honesty-only rails and would compact. A 4k ask eats that
+    // room; cutting anyway would success-trim the tail off. Yield instead.
+    const fat = 'b'.repeat(6_000);
+    const newest = 'old turn two (newest boundary) ' + 'c'.repeat(2_500);
+    const projection = [
+      { role: 'user', content: fat },
+      { role: 'user', content: 'middle turn ' + fat },
+      {
+        role: 'assistant',
+        delta: {
+          text: 'worked',
+          toolCalls: [
+            { toolName: 'read_file', toolCallId: 'c1', args: { path: 'src/a.ts' } },
+          ],
+        },
+      },
+      { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'bytes' },
+      { role: 'user', content: newest },
+    ];
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(JSON.stringify(projection));
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      effortValuesForModel: async () => [],
+      getJoinedWindowMap: async () => new Map([['anthropic/claude-a', 20_000]]),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'A'.repeat(4_000), sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.compact).toBeUndefined();
+    expect(startArgs.priorMessages).toBeDefined();
+    expect(
+      startArgs.priorMessages.some((r: { content?: string }) => r.content === newest),
+    ).toBe(true);
+  });
+
+  it('adversarial #955 follow-up 15 — start-rail pin-only shrink yields to #944 (no compact)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    // 1M window: honesty + ≳1.2 MiB first-unpinned assistant + ~1.85 MiB
+    // tail. Span rail (2 MiB) keeps honesty+assistant; combined start()
+    // payload > 3 MiB so fit shrinks. prefix(1)+tail fits, prefix(2)+tail
+    // does not → pin-only. Must NOT start() compact (rewrite honesty).
+    const honesty = {
+      role: 'user',
+      content: `${COMPACTION_SUMMARY_LABEL} earlier session summarized\n\nFiles read/modified: src/a.ts`,
+    };
+    const fatAsst = `FAT_ASST ${'A'.repeat(1.2 * 1024 * 1024)}`;
+    const more = `MORE ${'M'.repeat(1.0 * 1024 * 1024)}`;
+    const tailFill = `TAIL ${'T'.repeat(1.85 * 1024 * 1024)}`;
+    const liveMm = [
+      honesty,
+      { role: 'assistant', delta: { text: fatAsst } },
+      { role: 'user', content: more },
+      { role: 'assistant', delta: { text: 'mid' } },
+      { role: 'user', content: tailFill },
+      { role: 'assistant', delta: { text: 'tail-asst' } },
+    ];
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(JSON.stringify(liveMm));
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      effortValuesForModel: async () => [],
+      getJoinedWindowMap: async () => new Map([['anthropic/claude-a', 1_000_000]]),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'continue', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.compact).toBeUndefined();
+    expect(startArgs.priorMessages).toBeDefined();
+    expect(startArgs.priorMessages[0].content.startsWith(COMPACTION_SUMMARY_LABEL)).toBe(
+      true,
+    );
+    expect(
+      startArgs.priorMessages.some((r: { content?: string }) => r.content === tailFill),
+    ).toBe(true);
+  });
+
 });

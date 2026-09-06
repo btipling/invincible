@@ -28,13 +28,21 @@
  * `foldBudgetTokens` / `estimateTokens`) — consumed, never re-implemented.
  */
 import {
+  COMPACTION_CHECKPOINT_MAX_BYTES,
   COMPACTION_FILES_TOUCHED_MAX,
+  COMPACTION_SPAN_MAX_BYTES,
+  COMPACTION_START_MAX_BYTES,
   COMPACTION_SUMMARY_MAX_CHARS,
   CONTEXT_CHARS_PER_TOKEN,
   MODEL_MSG_SEED_MAX_BYTES,
   MODEL_MSG_SEED_MAX_ROWS,
 } from '../sessionCloudCaps';
-import { type ModelMessageRow, rePairModelMessages } from './modelMessages';
+import {
+  type ModelMessageRow,
+  rePairModelMessages,
+  trimModelMessagesToBudget,
+} from './modelMessages';
+
 
 export type { ModelMessageRow };
 
@@ -63,6 +71,16 @@ export type CompactionCut = {
   span: ModelMessageRow[];
   /** Rows from the boundary to the end — the retained tail. */
   tail: ModelMessageRow[];
+  /**
+   * True when the span is a **prefix clip** of `rows[0:cutIndex]`
+   * (adversarial #955 follow-up 10). `span.concat(tail)` is then not
+   * the full input — the middle between the oldest summarized prefix and
+   * the retained tail is on neither side. `pinnedCount` keeps
+   * `rows[0..pin)` (Goal 4 honesty) in the span so clip **success**
+   * re-summarizes it. Fail-open does **not** reconstruct holey span+tail:
+   * it seeds honesty-pin (if any) + tail (the `#944` newest window).
+   */
+  clipped?: boolean;
 };
 
 const encoder = new TextEncoder();
@@ -75,8 +93,34 @@ const SUMMARY_TRUNCATION_MARKER = '… [summary truncated]';
 export const COMPACTION_SUMMARY_LABEL =
   'Summary of earlier session (compacted, not live assistant prose):';
 
+/** True when `row` is the Goal 4 labeled summary (`user` + locked prefix). */
+export function isCompactionHonestyRow(row: unknown): boolean {
+  if (!row || typeof row !== 'object') return false;
+  const r = row as { role?: unknown; content?: unknown };
+  return (
+    r.role === 'user' &&
+    typeof r.content === 'string' &&
+    r.content.startsWith(COMPACTION_SUMMARY_LABEL)
+  );
+}
+
 /** The files line prefix rendered under the summary in the labeled row. */
 const FILES_TOUCHED_PREFIX = 'Files read/modified:';
+
+/** FS tools whose `args.path` belongs on the Goal 4 files line. */
+const COMPACTION_FILE_TOOLS = new Set(['read_file', 'str_replace', 'write_file']);
+
+/** JSON-key slack for the honesty `{role, content}` row (adversarial #955). */
+const HONESTY_ROW_JSON_SLACK_CHARS = 64;
+
+/**
+ * Typical `Files read/modified:` list slack (adversarial #955 follow-up 7).
+ * `renderSummaryRow` always appends `filesTouched` (up to
+ * `COMPACTION_FILES_TOUCHED_MAX`). Follow-up 6 reserved only summary+label;
+ * a fat files line still overflow-trimmed the unpinned tail. 2 KiB covers a
+ * typical list; a maxed 256 long-path list can still pin-miss fail-open.
+ */
+const HONESTY_FILES_LINE_SLACK_CHARS = 2048;
 
 /** Suffix `boundSummary` appends after a dropped code point. */
 const TRUNCATION_SUFFIX = `\n${SUMMARY_TRUNCATION_MARKER}`;
@@ -264,6 +308,59 @@ export function renderSummaryRow(
 }
 
 /**
+ * Paths the summarizer actually saw in `span` (adversarial #955 follow-up 16
+ * + 17). Assistant `read_file` / `str_replace` / `write_file` `args.path`,
+ * plus the Goal 4 honesty `Files read/modified:` line when that row is in
+ * the span (re-compact clip keeps honesty; scrape-only-tools wiped it).
+ * Omitted-count honesty (`… (N earlier paths omitted)`) is not a path list.
+ * Pure, never throws. Cap/sanitize happens in `buildCheckpoint`.
+ */
+export function scrapeCompactionFilesTouched(
+  span: ReadonlyArray<unknown>,
+): string[] {
+  const out: string[] = [];
+  for (const row of span) {
+    if (!row || typeof row !== 'object') continue;
+    if (isCompactionHonestyRow(row)) {
+      const content = (row as { content: string }).content;
+      const lines = content.split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i]!.trim();
+        if (!line.startsWith(FILES_TOUCHED_PREFIX)) continue;
+        if (/\bearlier paths omitted\b/.test(line)) continue;
+        const rest = line.slice(FILES_TOUCHED_PREFIX.length).trim();
+        if (!rest) break;
+        for (const p of rest.split(',')) {
+          const s = p.trim();
+          if (s) out.push(s);
+        }
+        break;
+      }
+      continue;
+    }
+    const o = row as {
+      role?: unknown;
+      delta?: {
+        toolCalls?: Array<{
+          toolName?: unknown;
+          args?: { path?: unknown };
+        }>;
+      };
+    };
+    if (o.role === 'assistant' && o.delta?.toolCalls) {
+      for (const call of o.delta.toolCalls) {
+        if (typeof call.toolName !== 'string') continue;
+        const path = call.args?.path;
+        if (COMPACTION_FILE_TOOLS.has(call.toolName) && typeof path === 'string') {
+          out.push(path);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * Cut walk (plan #948, parent #947 Cut-boundary decision (b) — turn boundary,
  * then re-pair). Walk back from the newest row to the newest `user` boundary
  * whose retained tail (that user row → end) fits ALL the rails:
@@ -271,14 +368,35 @@ export function renderSummaryRow(
  *    result — estimated over the serialized tail),
  *  - the **row rail** (`maxRows`, default `MODEL_MSG_SEED_MAX_ROWS`),
  *  - the **byte rail** (`maxBytes`, default `MODEL_MSG_SEED_MAX_BYTES` —
- *    the Workflow run-arg carrier bound).
+ *    the Workflow run-arg carrier bound),
+ *  - optionally the **span byte rail** (`maxSpanBytes` — phase 3
+ *    `COMPACTION_SPAN_MAX_BYTES`): a tail that fits every other rail whose
+ *    span is over the cap is **skipped**, not returned. The walk continues
+ *    to an older user boundary (smaller span, larger tail). Plan #950 Caps:
+ *    over-cap span → keep a larger retained tail, never feed the summarizer
+ *    an unbounded prompt and never yield to `#944` trim while a legal
+ *    shorter-span cut still exists (adversarial #955 follow-up 5).
+ *
+ *    When continue cannot produce a partition (the next older tail misses
+ *    a rail — monotonic), **clip** the last fitting tail's span to the
+ *    longest **prefix** `≤ maxSpanBytes` (oldest overflow — parent Goal 1
+ *    / “summarizes the oldest rows”). Suffix-clip (follow-up 8) summarized
+ *    bytes already adjacent to the tail and dropped the user goal; prefix
+ *    clip restores Goal 1 (adversarial #955 follow-up 10). A clip that
+ *    shrinks to the honesty pin only (follow-up 12's fold-budget rail on
+ *    a small window) yields to `#944` — rewriting the existing honesty
+ *    is worse than drop-oldest (adversarial #955 follow-up 13). Yield-to-trim
+ *    of an empty / pin-only clip discards no summary we could have produced;
+ *    a clipped span that still holds unpinned overflow summarizes the
+ *    oldest prefix and keeps the newest tail (middle dropped — `#944`
+ *    would drop it too, without a summary of the start).
  *
  * Tail size is monotonic on every rail as the boundary moves earlier
  * (adversarial #953): if the newest (smallest) tail misses, no earlier tail
- * can fit — return `null` immediately; do not stringify older suffixes
- * (the #945 17s linear-drop class). A future `COMPACTION_SPAN_MAX_BYTES`
- * (phase 3) may `continue` past a *fitting* newest tail to grow the
- * retained tail; a miss still ends the walk.
+ * can fit — return `null` immediately unless a prior span-over-cap fit can
+ * clip; do not stringify older suffixes (the #945 17s linear-drop class).
+ * A span-over-cap on a *fitting* tail is not a miss — `continue`. A later
+ * tail miss ends the walk (clip the remembered fit, or null).
  *
  * The tail must contain at least one row (the boundary `user` row itself)
  * and the span must be non-empty for a cut to exist: a cut whose span would
@@ -300,6 +418,19 @@ export function findCompactionCut(
     maxBytes?: number;
     /** Override the estimator ratio (tests). Defaults to CONTEXT_CHARS_PER_TOKEN. */
     charsPerToken?: number;
+    /**
+     * Summarizer-input ceiling (plan #950 `COMPACTION_SPAN_MAX_BYTES`).
+     * Absent / non-positive → no span rail (phase-1 tests unchanged).
+     */
+    maxSpanBytes?: number;
+    /**
+     * Keep `rows[0..pinnedCount)` in a prefix clip (adversarial #955
+     * follow-up 9 / 10). Goal 4 honesty is index 0 on a checkpoint seed
+     * and is not a cut boundary; without a pin, prefix clip still starts
+     * at row 0 (the oldest overflow). The pin keeps honesty in the span
+     * so clip **success** re-summarizes it.
+     */
+    pinnedCount?: number;
   },
 ): CompactionCut | null {
   if (!Number.isFinite(budgetTokens) || budgetTokens <= 0) return null;
@@ -309,6 +440,16 @@ export function findCompactionCut(
     opts?.charsPerToken && opts.charsPerToken > 0
       ? opts.charsPerToken
       : CONTEXT_CHARS_PER_TOKEN;
+  const maxSpanBytes =
+    opts?.maxSpanBytes !== undefined &&
+    Number.isFinite(opts.maxSpanBytes) &&
+    opts.maxSpanBytes > 0
+      ? opts.maxSpanBytes
+      : undefined;
+  const pinnedCount = Math.max(
+    0,
+    Number.isFinite(opts?.pinnedCount) ? Math.floor(opts!.pinnedCount as number) : 0,
+  );
 
   const n = rows.length;
   if (n === 0) return null;
@@ -321,22 +462,320 @@ export function findCompactionCut(
   }
   if (boundaries.length === 0) return null;
 
-  // Newest boundary whose tail fits every rail. Stop at the first fit
-  // (largest compactable span). First miss → null (monotonic rails).
+  // Last (smallest-span) fitting tail whose span was over the cap. Continue
+  // prefers a later partition; clip uses this when the walk cannot.
+  let spanOverFit: { cutIndex: number; tail: ModelMessageRow[] } | undefined;
+
+  const clipFit = (): CompactionCut | null => {
+    if (spanOverFit === undefined || maxSpanBytes === undefined) return null;
+    const clipped = clipSpanToMaxBytes(
+      rows,
+      spanOverFit.cutIndex,
+      maxSpanBytes,
+      pinnedCount,
+    );
+    if (clipped.length === 0) return null;
+    const span = rePairModelMessages(clipped);
+    // Phase-1 contract: empty span is not a cut. A byte-clip that lands
+    // entirely on orphan tool-results re-pairs to [] — yield to `#944`
+    // rather than summarize nothing (adversarial #955 follow-up 10).
+    if (span.length === 0) return null;
+    // Pin-only clip (adversarial #955 follow-up 13): follow-up 12's
+    // fold-budget span rail on a 20k window is ~14.4k chars. A near-cap
+    // Goal 4 honesty row can consume most of that; `clipSpanToMaxBytes`
+    // then returns the pin and no new overflow. Summarizing that would
+    // rewrite the existing honesty, wipe `filesTouched`, and drop the
+    // middle `#944` would have drop-oldest'd while **keeping** the pin.
+    // Same class as empty re-pair — yield. Complete-partition
+    // honesty-only (cutIndex === pin, not clipped) is different: the
+    // overflow IS the fat honesty, and compressing it is useful.
+    if (pinnedCount > 0 && span.length <= pinnedCount) return null;
+    return {
+      cutIndex: spanOverFit.cutIndex,
+      span,
+      tail: rePairModelMessages(spanOverFit.tail),
+      clipped: true,
+    };
+  };
+
+  // Newest boundary whose tail fits every rail AND whose span fits the
+  // optional span ceiling. Tail miss → clip remembered span-over-cap fit
+  // (or null). Span-over-cap on a fitting tail → continue (older boundary,
+  // smaller span) and remember the fit.
   for (let b = boundaries.length - 1; b >= 0; b--) {
     const cutIndex = boundaries[b];
     const tail = rows.slice(cutIndex);
-    if (tail.length > maxRows) return null;
+    if (tail.length > maxRows) return clipFit();
     const json = JSON.stringify(tail);
-    if (Math.ceil(json.length / ratio) > budgetTokens) return null;
-    if (utf8Bytes(json) > maxBytes) return null;
+    if (Math.ceil(json.length / ratio) > budgetTokens) return clipFit();
+    if (utf8Bytes(json) > maxBytes) return clipFit();
+    const span = rePairModelMessages(rows.slice(0, cutIndex));
+    if (span.length === 0) continue;
+    if (
+      maxSpanBytes !== undefined &&
+      utf8Bytes(JSON.stringify(span)) > maxSpanBytes
+    ) {
+      spanOverFit = { cutIndex, tail };
+      continue;
+    }
     return {
       cutIndex,
-      span: rePairModelMessages(rows.slice(0, cutIndex)),
+      span,
       tail: rePairModelMessages(tail),
     };
   }
-  return null;
+  return clipFit();
+}
+
+/**
+ * Longest **prefix** of `rows[0:cutIndex]` whose JSON is `≤ maxSpanBytes`,
+ * with `rows[0..pinnedCount)` kept (adversarial #955 follow-up 10).
+ * Oldest overflow — parent Goal 1 — not the newest suffix adjacent to the
+ * tail (follow-up 8 inverted this). Empty when even the pinned prefix
+ * overflows (yield to trim). Pure, never throws.
+ */
+function clipSpanToMaxBytes(
+  rows: ReadonlyArray<ModelMessageRow>,
+  cutIndex: number,
+  maxSpanBytes: number,
+  pinnedCount = 0,
+): ModelMessageRow[] {
+  if (cutIndex <= 0) return [];
+  const pin = Math.max(0, Math.min(pinnedCount, cutIndex));
+  const pinned = pin > 0 ? rows.slice(0, pin) : [];
+  if (pin > 0 && utf8Bytes(JSON.stringify(pinned)) > maxSpanBytes) return [];
+  if (cutIndex <= pin) return pinned;
+
+  const candidate = (end: number): ModelMessageRow[] =>
+    pin > 0 ? [...pinned, ...rows.slice(pin, end)] : rows.slice(0, end);
+  const prefixFits = (end: number): boolean =>
+    utf8Bytes(JSON.stringify(candidate(end))) <= maxSpanBytes;
+
+  if (prefixFits(cutIndex)) return rows.slice(0, cutIndex);
+  // Even one unpinned row misses → pin only (already known to fit).
+  if (!prefixFits(pin + 1)) return pinned;
+  let lo = pin + 1;
+  let hi = cutIndex - 1;
+  while (lo < hi) {
+    const mid = lo + Math.floor((hi - lo + 1) / 2);
+    if (prefixFits(mid)) lo = mid;
+    else hi = mid - 1;
+  }
+  return candidate(lo);
+}
+
+/**
+ * Tail rails for the phase-3 cut walk (adversarial #955 follow-up 6 / 7 / 14).
+ * Subtracts the worst-case Goal 4 honesty row (`COMPACTION_SUMMARY_MAX_CHARS`
+ * + label + files-line slack) **and** the current ask (`currentUserContent`,
+ * same `askChars` the #944 trim adds to the token rail) from the token
+ * ceiling so `[max-summary, ...tail]` + ask fits the combined seed by
+ * construction. Follow-up 6 reserved only honesty; the loop always appends
+ * the ask (`trimModelMessagesToBudget(..., currentUserContent)`), so a
+ * maxed summary + a few-KiB prompt drop-oldest'd the retained-tail head —
+ * rows `#944` would have kept, on neither side of the compact (adversarial
+ * #955 follow-up 14). The overflow lands in the span (summarized) instead
+ * of being drop-oldest'd off the tail after success. `shouldCompact` still
+ * uses the full fold budget. Pure, never throws.
+ *
+ * Files-line slack (`HONESTY_FILES_LINE_SLACK_CHARS`) covers a typical
+ * `Files read/modified:` list. A maxed `COMPACTION_FILES_TOUCHED_MAX`
+ * long-path list can still overflow — pin-miss fail-open / combined-seed
+ * trim, never a silent honesty drop.
+ *
+ * `maxBytes` stays honesty-only: the #944 byte rail does not include
+ * `askChars` (the ask is a sibling `userMessage` start() arg, not seed
+ * JSON). `maxSpanBytes` is `min(COMPACTION_SPAN_MAX_BYTES, fold-budget
+ * chars)` (adversarial #955 follow-up 12) — the summarizer does not see
+ * the ask; honesty reserve is NOT subtracted from the span either.
+ */
+export function compactionCutRails(
+  budgetTokens: number,
+  opts?: { currentUserContent?: string },
+): {
+  budgetTokens: number;
+  maxRows: number;
+  maxBytes: number;
+  maxSpanBytes: number;
+} {
+  const reserveChars =
+    COMPACTION_SUMMARY_MAX_CHARS +
+    COMPACTION_SUMMARY_LABEL.length +
+    FILES_TOUCHED_PREFIX.length +
+    HONESTY_ROW_JSON_SLACK_CHARS +
+    HONESTY_FILES_LINE_SLACK_CHARS;
+  const reserveTokens = Math.ceil(reserveChars / CONTEXT_CHARS_PER_TOKEN);
+  const askChars =
+    typeof opts?.currentUserContent === 'string' ? opts.currentUserContent.length : 0;
+  const askTokens =
+    askChars > 0 ? Math.ceil(askChars / CONTEXT_CHARS_PER_TOKEN) : 0;
+  const budget =
+    Number.isFinite(budgetTokens) && budgetTokens > 0 ? budgetTokens : 1;
+  const spanFromBudget = Math.max(1, budget * CONTEXT_CHARS_PER_TOKEN);
+  return {
+    budgetTokens: Math.max(1, budget - reserveTokens - askTokens),
+    maxRows: Math.max(1, MODEL_MSG_SEED_MAX_ROWS - 1),
+    maxBytes: Math.max(1, MODEL_MSG_SEED_MAX_BYTES - reserveChars),
+    maxSpanBytes: Math.min(COMPACTION_SPAN_MAX_BYTES, spanFromBudget),
+  };
+}
+
+/**
+ * Combined `start()` compact-args payload rail (adversarial #955 follow-up).
+ * Prefix-clip `span` + `retainedTail` is oldest overflow + newest tail (a
+ * hole in the middle). `failOpenSeed` is unused — clipped fail-open seeds
+ * pin+tail instead of a third array. Pure, never throws. `maxBytes`
+ * override is for tests.
+ *
+ * Over this ceiling the route does **not** yield to `#944` (adversarial
+ * #955 follow-up 11): `fitCompactionCutToStartPayload` prefix-clips the
+ * span until the candidate fits, so a legal cut of a warehouse > 3 MiB
+ * still Goal-1-summarizes the oldest prefix.
+ */
+export function compactStartPayloadFits(
+  compact: {
+    span: unknown;
+    retainedTail: unknown;
+    filesTouched: unknown;
+    budgetTokens: number;
+    /** `#944` trim of the full pre-trim seed — unused after follow-up 10. */
+    failOpenSeed?: unknown;
+    pinSummaryRow?: boolean;
+    /** Prefix clip (adversarial #955 follow-up 10) — fail-open is pin+tail. */
+    clipped?: boolean;
+  },
+  maxBytes: number = COMPACTION_START_MAX_BYTES,
+): boolean {
+  if (!Number.isFinite(maxBytes) || maxBytes <= 0) return false;
+  try {
+    return utf8Bytes(JSON.stringify(compact)) <= maxBytes;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Shrink a legal cut so the combined `start()` compact args fit
+ * `COMPACTION_START_MAX_BYTES` (adversarial #955 follow-up 11).
+ *
+ * Partition `span.concat(tail)` **is the warehouse**. A warehouse > 3 MiB
+ * (1M-window first overflow, or a 2 MiB span + 2 MiB byte-rail tail clip)
+ * used to veto compact and yield to `#944` — Goal 1 dead for the session
+ * size this plan exists for. Prefix-clip the span (keep tail; oldest
+ * overflow stays in the summarizer) until the candidate fits. Empty /
+ * pin-only miss → `null` (then the route yields). Pure, never throws.
+ * `maxBytes` override is for tests.
+ */
+export function fitCompactionCutToStartPayload(
+  cut: CompactionCut,
+  args: {
+    filesTouched: ReadonlyArray<unknown>;
+    budgetTokens: number;
+    pinSummaryRow?: boolean;
+  },
+  maxBytes: number = COMPACTION_START_MAX_BYTES,
+): CompactionCut | null {
+  const pin = args.pinSummaryRow === true ? 1 : 0;
+  const candidate = (
+    span: ReadonlyArray<ModelMessageRow>,
+    clipped: boolean,
+  ) => ({
+    span,
+    filesTouched: args.filesTouched,
+    retainedTail: cut.tail,
+    budgetTokens: args.budgetTokens,
+    ...(pin > 0 ? { pinSummaryRow: true as const } : {}),
+    ...(clipped ? { clipped: true as const } : {}),
+  });
+  const alreadyClipped = cut.clipped === true;
+  if (compactStartPayloadFits(candidate(cut.span, alreadyClipped), maxBytes)) {
+    return cut;
+  }
+  const n = cut.span.length;
+  if (n === 0) return null;
+  // Non-empty span required (phase-1 contract). Honesty pin stays in a
+  // *non-pin-only* prefix so clip success still re-summarizes Goal 4
+  // together with overflow. Pin-only shrink yields (follow-up 15).
+  const minEnd = Math.max(1, pin);
+  const prefix = (end: number): ModelMessageRow[] => cut.span.slice(0, end);
+  const fits = (end: number): boolean =>
+    compactStartPayloadFits(candidate(prefix(end), true), maxBytes);
+  if (!fits(minEnd)) return null;
+  let lo = minEnd;
+  let hi = n - 1;
+  while (lo < hi) {
+    const mid = lo + Math.floor((hi - lo + 1) / 2);
+    if (fits(mid)) lo = mid;
+    else hi = mid - 1;
+  }
+  const span = rePairModelMessages(prefix(lo));
+  if (span.length === 0) return null;
+  // Pin-only shrink (adversarial #955 follow-up 15): follow-up 13's
+  // `clipFit` yield must apply here too. A ≳1 MiB first-unpinned
+  // assistant (no per-row assistant cap) + 2 MiB byte-rail tail
+  // fits `prefix(1)+tail` and misses `prefix(2)+tail` against
+  // `COMPACTION_START_MAX_BYTES`. Returning `{span:[honesty]}`
+  // rewrites Goal 4 and never summarizes overflow — worse than
+  // `#944` (keeps the pin, drop-oldest's the fat row).
+  if (pin > 0 && span.length <= pin) return null;
+  return {
+    cutIndex: cut.cutIndex,
+    span,
+    tail: cut.tail,
+    clipped: true,
+  };
+}
+
+/**
+ * Live post-compact retained tail (adversarial #955 follow-up 3 / 5). Drop
+ * the honesty-labeled summary row as the **leading** seed row, **not**
+ * `findIndex` over the full live projection and not `slice(1)`.
+ *
+ * Compact success always pins the Goal 4 row at index 0. A this-turn user
+ * whose prompt starts with `COMPACTION_SUMMARY_LABEL` is not the summary —
+ * scanning the full array would drop that ask on a pin-miss projection
+ * (adversarial #955 follow-up 5 Minor). When the label is absent from
+ * `rows[0]`, the tail **is** the full live projection. Pure, never throws.
+ */
+export function livePostCompactTail(
+  rows: ReadonlyArray<ModelMessageRow>,
+): ModelMessageRow[] {
+  if (isCompactionHonestyRow(rows[0])) {
+    return rows.slice(1);
+  }
+  return [...rows];
+}
+
+/**
+ * Re-rail a live post-compact checkpoint so its JSON fits
+ * `COMPACTION_CHECKPOINT_MAX_BYTES` (adversarial #955 follow-up). Drop-oldest
+ * on `retainedTail` (keep newest = this turn) so the persist write succeeds
+ * rather than fail-closing and leaving prefer-checkpoint on the prior
+ * pointer (Goal 2 miss on re-compact). Pure, never throws.
+ */
+export function boundCheckpointForPersist(
+  input: CompactionSummaryInput & { retainedTail: ReadonlyArray<ModelMessageRow> },
+  maxBytes: number = COMPACTION_CHECKPOINT_MAX_BYTES,
+): CompactionCheckpoint {
+  const built = buildCheckpoint(input, input.retainedTail);
+  if (!Number.isFinite(maxBytes) || maxBytes <= 0) return built;
+  const serialize = (tail: ReadonlyArray<ModelMessageRow>): string =>
+    JSON.stringify({
+      summary: built.summary,
+      filesTouched: built.filesTouched,
+      retainedTail: tail,
+    });
+  if (utf8Bytes(serialize(built.retainedTail)) <= maxBytes) return built;
+  const envelope = utf8Bytes(serialize([]));
+  const maxTailBytes = Math.max(1, maxBytes - envelope);
+  const trimmed = trimModelMessagesToBudget(built.retainedTail, Number.MAX_SAFE_INTEGER, {
+    maxBytes: maxTailBytes,
+  });
+  return {
+    summary: built.summary,
+    filesTouched: built.filesTouched,
+    retainedTail: trimmed.rows,
+  };
 }
 
 /**

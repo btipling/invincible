@@ -6,8 +6,9 @@
  *  - adapts durable SSE write/close `'use step'` wrappers (`writeTurnSse` /
  *    `closeTurnSse`) — tokens ride Data Written, never step events; stream I/O
  *    is illegal in `'use workflow'` (plan #842);
- *  - composes the three `'use step'` wrappers (`modelGenerateStep`,
- *    `toolExecuteStep`, `persistStep`) into the loop core's step-fn contracts;
+ *  - composes the `'use step'` wrappers (`modelGenerateStep`,
+ *    `toolExecuteStep`, `persistStep`, `compactionStep`) into the loop core's
+ *    step-fn contracts;
  *  - runs the orchestrator while-loop (`runTurnLoop`) per the umbrella #794
  *    Architecture lock, with the 512-step cap and writable close on every
  *    terminal path;
@@ -47,6 +48,7 @@ import {
   type PersistRunBind,
 } from './turnLoop';
 import { modelGenerateStep } from './modelGenerateStep';
+import { compactionStep } from './compactionStep';
 import { toolExecuteStep } from './toolExecuteStep';
 import { persistStep } from './persistStep';
 import { writeTurnSse, closeTurnSse } from './turnSseStep';
@@ -98,6 +100,46 @@ export interface TurnWorkflowArgs {
    * no prior reminder.
    */
   freshnessReminderPointer?: string;
+  /**
+   * Compaction trigger (plan #950, source #552 — A4 phase 3, parent #947):
+   * the route-side decision + cut walk. `span` is summarized by the pre-loop
+   * `'use step'` (`compactionStep`); the summary row + retained tail seed the
+   * loop. Plain serializable values only (adversarial L1 — no closures, no
+   * functions). Absent = no compaction this turn (unchanged default path).
+   */
+  compact?: {
+    /** Route-side `findCompactionCut().span` — the rows to summarize. */
+    span: ReadonlyArray<unknown>;
+    /** Route-side cut-span file paths (checkpoint `filesTouched`). */
+    filesTouched?: ReadonlyArray<unknown>;
+    /** Route-side `findCompactionCut().tail` — re-paired retained rows. */
+    retainedTail?: ReadonlyArray<unknown>;
+    /**
+     * #944 fold budget already computed at the route (adversarial #955).
+     * The loop trims the *real* `[summaryRow, ...tail]` success seed and
+     * the fail-open reconstruction with this number — dummy empty-summary
+     * pins at the route are not the combined seed.
+     */
+    budgetTokens?: number;
+    /**
+     * Checkpoint-seeded / honesty-prefixed compact (adversarial #955
+     * follow-up 9): the honesty row is pinned in the span (`pinnedCount: 1`
+     * on the cut). Fail-open reconstruction pins it (`pinnedCount: 1`) so
+     * #944 drop-oldest cannot drop Goal 4. Absent/false = mm-seed compact
+     * (no pin).
+     */
+    pinSummaryRow?: boolean;
+    /**
+     * Prefix clip (adversarial #955 follow-up 10). Fail-open seeds pin+tail
+     * instead of holey span+tail. See `TurnLoopInput.compact.clipped`.
+     */
+    clipped?: boolean;
+    /**
+     * `#944`-trimmed full pre-trim projection (kept for older callers /
+     * unit fixtures). Production clip fail-open uses `clipped` + pin+tail.
+     */
+    failOpenSeed?: ReadonlyArray<unknown>;
+  };
 }
 
 /**
@@ -190,6 +232,31 @@ export async function turnWorkflow(
         turnRunId: workflowRunId,
         deadlineAt,
         ...(args.persistRunBind !== undefined ? { persistRunBind: args.persistRunBind } : {}),
+        // Plan #950: the pre-loop summarizer step + its route-side cut data.
+        // The workflow entry composes the `'use step'` wrapper (the loop core
+        // stays directive-free); the span/tail/files ride as plain values.
+        ...(args.compact !== undefined
+          ? {
+              compactionStep: (cargs: {
+                span: ReadonlyArray<unknown>;
+                scope: { tenantId: string; userId: string; sessionId: string };
+                deadlineAt?: number;
+              }) =>
+                compactionStep({
+                  span: cargs.span,
+                  modelId: args.modelId,
+                  scope: args.scope,
+                  deadlineAt,
+                }),
+              compactionScope: args.scope,
+              ...(args.compact.filesTouched !== undefined
+                ? { compactionFilesTouched: args.compact.filesTouched }
+                : {}),
+              ...(args.compact.retainedTail !== undefined
+                ? { compactionRetainedTail: args.compact.retainedTail }
+                : {}),
+            }
+          : {}),
       },
       {
         userMessage: args.userMessage,
@@ -198,6 +265,23 @@ export async function turnWorkflow(
           : {}),
         ...(args.freshnessReminderPointer !== undefined
           ? { freshnessReminderPointer: args.freshnessReminderPointer }
+          : {}),
+        ...(args.compact !== undefined
+          ? {
+              compact: {
+                span: args.compact.span,
+                ...(typeof args.compact.budgetTokens === 'number'
+                  ? { budgetTokens: args.compact.budgetTokens }
+                  : {}),
+                ...(args.compact.pinSummaryRow === true
+                  ? { pinSummaryRow: true }
+                  : {}),
+                ...(args.compact.clipped === true ? { clipped: true } : {}),
+                ...(args.compact.failOpenSeed !== undefined
+                  ? { failOpenSeed: args.compact.failOpenSeed }
+                  : {}),
+              },
+            }
           : {}),
       },
     );
