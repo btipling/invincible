@@ -1716,7 +1716,7 @@ describe('POST /api/turns', () => {
     expect(startArgs.userMessage).toBe('continue');
   });
 
-  it('adversarial #954 — Goal 4 summary row is pinned when a fat tail fills the leftover budget', async () => {
+  it('adversarial #954 — Goal 4 summary row is pinned when a fat tail fills the leftover budget (no compactable cut)', async () => {
     standardHarness();
     mockAuthedSession();
     mockStart();
@@ -1725,7 +1725,6 @@ describe('POST /api/turns', () => {
       filesTouched: ['lib/auth.ts'],
       retainedTail: [
         { role: 'user', content: 'OLD_TAIL ' + 'x'.repeat(20_000) },
-        { role: 'user', content: 'newest ask in tail' },
       ],
     };
     readEnvelopeMock.mockResolvedValue({
@@ -1738,8 +1737,9 @@ describe('POST /api/turns', () => {
     });
     blobReadMock.mockResolvedValue(JSON.stringify(checkpoint));
     // 20k window → budget = 20000 − 16384 = 3616 tokens. Summary fits;
-    // summary + 20k-char oldest tail does not. Combined-seed drop-oldest
-    // would have dropped the honesty row; pin keeps it and trims the tail.
+    // summary + 20k-char oldest tail does not. The only user boundary's
+    // tail is the fat row (does not fit) → no compact; pin-trim keeps
+    // the honesty row and drops the tail.
     vi.doMock('../../../lib/gateway/modelCatalog', () => ({
       getJoinedWindowMap: vi.fn(async () => new Map([['anthropic/claude-a', 20_000]])),
       effortValuesForModel: vi.fn(async () => []),
@@ -1749,6 +1749,7 @@ describe('POST /api/turns', () => {
     const res = await postJson({ prompt: 'continue', sessionId: 's1' });
     expect(res.status).toBe(200);
     const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.compact).toBeUndefined();
     expect(startArgs.priorMessages.length).toBeGreaterThanOrEqual(1);
     const summaryRow = startArgs.priorMessages[0];
     expect(summaryRow.role).toBe('user');
@@ -1760,10 +1761,6 @@ describe('POST /api/turns', () => {
     expect(startArgs.priorMessages.some((r: { content?: string }) => r.content?.includes('OLD_TAIL'))).toBe(
       false,
     );
-    expect(startArgs.priorMessages.at(-1)).toEqual({
-      role: 'user',
-      content: 'newest ask in tail',
-    });
     expect(startArgs.userMessage).toBe('continue');
   });
 
@@ -1907,6 +1904,10 @@ describe('POST /api/turns', () => {
     expect(Array.isArray(startArgs.compact.filesTouched)).toBe(true);
     expect(startArgs.compact.filesTouched).toContain('src/a.ts');
     expect(Array.isArray(startArgs.compact.retainedTail)).toBe(true);
+    expect(typeof startArgs.compact.budgetTokens).toBe('number');
+    // Adversarial #955: compact path omits priorMessages (no dummy empty
+    // Goal 4 row as the fail-open seed; no third seed-sized start() array).
+    expect(startArgs.priorMessages).toBeUndefined();
   });
 
   it('plan #950 row 2 — under-budget projection → NO compact arg (default #944 path unchanged)', async () => {
@@ -1937,6 +1938,61 @@ describe('POST /api/turns', () => {
     const startArgs = startMock.mock.calls[0][1][0];
     expect(startArgs.compact).toBeUndefined();
     expect(startArgs.priorMessages).toBeDefined();
+  });
+
+  it('plan #950 adversarial #955 — overflowing PRE-TRIM checkpoint seed + clean cut → compact (trigger is not mm-only)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    const fat = 'b'.repeat(10_000);
+    const checkpoint = {
+      summary: 'earlier session summarized',
+      filesTouched: ['src/a.ts'],
+      retainedTail: [
+        { role: 'user', content: fat },
+        { role: 'user', content: 'middle turn ' + fat },
+        {
+          role: 'assistant',
+          delta: {
+            text: 'worked',
+            toolCalls: [
+              { toolName: 'read_file', toolCallId: 'c1', args: { path: 'src/a.ts' } },
+            ],
+          },
+        },
+        { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'bytes' },
+        { role: 'user', content: 'old turn two (newest boundary)' },
+      ],
+    };
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        compactionPointer: 't_cp_s1_abc',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockImplementation(async (id: string) =>
+      id === 't_cp_s1_abc' ? JSON.stringify(checkpoint) : JSON.stringify([]),
+    );
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      effortValuesForModel: async () => [],
+      getJoinedWindowMap: async () => new Map([['anthropic/claude-a', 20_000]]),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'continue', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.compact).toBeDefined();
+    expect(Array.isArray(startArgs.compact.span)).toBe(true);
+    expect(startArgs.compact.span.length).toBeGreaterThan(0);
+    expect(startArgs.compact.filesTouched).toContain('src/a.ts');
+    expect(startArgs.priorMessages).toBeUndefined();
+    // Prefer-checkpoint: the mm pointer is not read when the checkpoint seeds.
+    expect(blobReadMock).toHaveBeenCalledTimes(1);
+    expect(blobReadMock).toHaveBeenCalledWith('t_cp_s1_abc');
   });
 
 });

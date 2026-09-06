@@ -113,6 +113,13 @@ export interface TurnWorkflowArgs {
     filesTouched?: ReadonlyArray<unknown>;
     /** Route-side `findCompactionCut().tail` — re-paired retained rows. */
     retainedTail?: ReadonlyArray<unknown>;
+    /**
+     * #944 fold budget already computed at the route (adversarial #955).
+     * The loop trims the *real* `[summaryRow, ...tail]` success seed and
+     * the fail-open reconstruction with this number — dummy empty-summary
+     * pins at the route are not the combined seed.
+     */
+    budgetTokens?: number;
   };
 }
 
@@ -240,7 +247,16 @@ export async function turnWorkflow(
         ...(args.freshnessReminderPointer !== undefined
           ? { freshnessReminderPointer: args.freshnessReminderPointer }
           : {}),
-        ...(args.compact !== undefined ? { compact: { span: args.compact.span } } : {}),
+        ...(args.compact !== undefined
+          ? {
+              compact: {
+                span: args.compact.span,
+                ...(typeof args.compact.budgetTokens === 'number'
+                  ? { budgetTokens: args.compact.budgetTokens }
+                  : {}),
+              },
+            }
+          : {}),
       },
     );
   } finally {

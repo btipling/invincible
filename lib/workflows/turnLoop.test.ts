@@ -5717,7 +5717,13 @@ describe('runTurnLoop compaction (plan #950, source #552)', () => {
     };
     expect(ck.summary).toContain('fresh summary text');
     expect(ck.filesTouched).toEqual(['lib/a.ts']);
-    expect(ck.retainedTail).toEqual([{ role: 'user', content: 'tail row' }]);
+    // Adversarial #955 Goal 2: persist the live post-compact conversation,
+    // not the frozen cut-time tail (this turn must survive prefer-checkpoint).
+    expect(ck.retainedTail).toEqual([
+      { role: 'user', content: 'tail row' },
+      { role: 'user', content: 'continue' },
+      { role: 'assistant', delta: { text: 'hi', toolCalls: [] } },
+    ]);
   });
 
   it('no compact input → zero summarizer calls (default path unchanged)', async () => {
@@ -5732,5 +5738,86 @@ describe('runTurnLoop compaction (plan #950, source #552)', () => {
       { userMessage: 'hello', priorMessages: [{ role: 'user', content: 'p' }] },
     );
     expect(compactionStep).not.toHaveBeenCalled();
+  });
+
+  it('fail-open without priorMessages reconstructs span+tail (production compact path, adversarial #955)', async () => {
+    const { deps, closed } = wiredDeps();
+    let firstRoundMessages: unknown[] | undefined;
+    const modelStep = vi.fn(async (args: { messages: ReadonlyArray<unknown> }) => {
+      if (!firstRoundMessages) firstRoundMessages = [...args.messages];
+      return {
+        ok: true as const,
+        delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+      };
+    });
+    const compactionStep = vi.fn(async () => ({
+      ok: false as const,
+      code: 'summarize_failed',
+      error: 'boom',
+    }));
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionRetainedTail: [{ role: 'user', content: 'tail row' }],
+      },
+      {
+        userMessage: 'continue',
+        compact: {
+          span: [{ role: 'user', content: 'span row' }],
+          budgetTokens: 100_000,
+        },
+      },
+    );
+    expect(result.status).toBe('completed');
+    expect(firstRoundMessages).toEqual([
+      { role: 'user', content: 'span row' },
+      { role: 'user', content: 'tail row' },
+      { role: 'user', content: 'continue' },
+    ]);
+    expect(closed()).toBe(1);
+  });
+
+  it('success seed trims [realSummary, ...tail] with pinnedCount 1 (adversarial #955 combined-seed rails)', async () => {
+    const { deps } = wiredDeps();
+    let firstRoundMessages: unknown[] | undefined;
+    const modelStep = vi.fn(async (args: { messages: ReadonlyArray<unknown> }) => {
+      if (!firstRoundMessages) firstRoundMessages = [...args.messages];
+      return {
+        ok: true as const,
+        delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+      };
+    });
+    const fatSummary = 'S'.repeat(80);
+    const fatTail = 'T'.repeat(2_000);
+    const compactionStep = vi.fn(async () => ({
+      ok: true as const,
+      summary: fatSummary,
+    }));
+    await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionRetainedTail: [{ role: 'user', content: fatTail }],
+      },
+      {
+        userMessage: 'continue',
+        // Token budget keeps the pinned real summary + ask; the unpinned
+        // fat tail overflows the combined seed (adversarial #955).
+        compact: { span: [{ role: 'user', content: 'old' }], budgetTokens: 200 },
+      },
+    );
+    expect(firstRoundMessages).toBeDefined();
+    const rows = firstRoundMessages as Array<{ role: string; content?: string }>;
+    expect(rows[0]?.role).toBe('user');
+    expect(rows[0]?.content).toContain('Summary of earlier session');
+    expect(rows[0]?.content).toContain(fatSummary);
+    // Unpinned tail dropped; current ask still last.
+    expect(rows.some((r) => r.content === fatTail)).toBe(false);
+    expect(rows[rows.length - 1]).toEqual({ role: 'user', content: 'continue' });
   });
 });

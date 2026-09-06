@@ -24,8 +24,9 @@
  * `toolCallId` is also skipped — we never invent ids that cannot be paired.
  *
  * **Deliberately pure:** no I/O, no DB, no MCP, no blob, no crypto/dns. This
- * module is ONLY imported from `modelGenerateStep.ts` (a `'use step'` leaf) so
- * it does NOT pollute the `turnWorkflow` entry's B11 static closure.
+ * module is imported only from `'use step'` leaves (`modelGenerateStep`,
+ * `compactionStep`) so it does NOT pollute the `turnWorkflow` entry's B11
+ * static closure.
  */
 
 import type {

@@ -336,6 +336,7 @@ export async function POST(req: Request): Promise<Response> {
           span: ReadonlyArray<unknown>;
           filesTouched: ReadonlyArray<unknown>;
           retainedTail: ReadonlyArray<unknown>;
+          budgetTokens: number;
         }
       | undefined;
     try {
@@ -412,6 +413,14 @@ export async function POST(req: Request): Promise<Response> {
           // #936 read), never a new seam.
           const cpPointer = boundSeedPointer(envelope.meta?.compactionPointer);
           const mmPointer = boundSeedPointer(envelope.meta?.modelMessagesPointer);
+          // Pre-trim seed from the locked preference chain. The #950 trigger
+          // runs on THIS array (checkpoint **or** mm) — a trimmed seed always
+          // fits and would mask the overflow compaction resolves (parent
+          // review-note 1). After the first compact, prefer-checkpoint is the
+          // seed the model will actually get; skipping the trigger there
+          // never re-compacts (adversarial #955).
+          let preTrimSeed: ReturnType<typeof buildModelMessages>['rows'] | undefined;
+          let pinSummaryRow = false;
           if (cpPointer) {
             try {
               const blobStore = services.createBlobTranscriptStore();
@@ -463,35 +472,18 @@ export async function POST(req: Request): Promise<Response> {
                       checkpoint.summary,
                       checkpoint.filesTouched,
                     );
-                    // Plan #944 / adversarial #945 + #954: trim to the
-                    // model's window-derived token budget (+ row/byte
-                    // rails). The current ask is `parsed.prompt`
-                    // (appended after the seed as userMessage) and is
-                    // counted in the token rail so history yields to it.
-                    // Goal 4 pin (adversarial #954): the honesty-labeled
-                    // summary row is NOT oldest-disposable context. All
-                    // three rails are measured on the combined
-                    // `[summaryRow, ...tailSlice]` (`pinnedCount: 1`) —
-                    // never a token-only fake `currentUserContent`
-                    // reservation. Yield to the ask only when the
-                    // summary row itself cannot fit.
-                    const windowMap = await windowPromise;
-                    const budget = foldBudgetTokens(windowMap, byok.modelId);
-                    priorMessages = trimModelMessagesToBudget(
-                      [summaryRow, ...checkpoint.retainedTail],
-                      budget,
-                      { currentUserContent: parsed.prompt, pinnedCount: 1 },
-                    ).rows;
+                    preTrimSeed = [summaryRow, ...checkpoint.retainedTail];
+                    pinSummaryRow = true;
                   }
                 }
               }
             } catch {
               // Fail-closed: unreadable/missing/malformed checkpoint →
               // fall back (modelMessagesPointer, then legacy sidecar).
-              priorMessages = undefined;
+              preTrimSeed = undefined;
             }
           }
-          if (priorMessages === undefined && mmPointer) {
+          if (preTrimSeed === undefined && mmPointer) {
             try {
               const blobStore = services.createBlobTranscriptStore();
               const raw = await blobStore.read(mmPointer);
@@ -501,105 +493,92 @@ export async function POST(req: Request): Promise<Response> {
                   // Rebuild (re-pair + caps) so a planted/stale blob cannot
                   // seed an unpaired tool-result at a strict provider
                   // (adversarial-review #937).
-                  const built = buildModelMessages(parsedProjection).rows;
-                  // Plan #950 (A4 phase 3, parent review-note 1 lock): the
-                  // trigger is evaluated on the PRE-TRIM projection — a
-                  // trimmed seed always fits and would mask the overflow
-                  // compaction resolves. `shouldCompact` consumes the #944
-                  // fold budget (the reserve is already subtracted; never
-                  // subtracted again — adversarial #953).
-                  const windowMap = await windowPromise;
-                  const budget = foldBudgetTokens(windowMap, byok.modelId);
-                  const cut = shouldCompact(built, budget)
-                    ? findCompactionCut(built, budget)
-                    : null;
-                  if (cut) {
-                    // A clean user-boundary cut exists → compact. The span
-                    // (summarizer input) is byte-railed by
-                    // `COMPACTION_SPAN_MAX_BYTES` — over it, yield to the
-                    // #944 trim (never a huge summarizer prompt).
-                    const spanJson = JSON.stringify(cut.span);
-                    if (
-                      new TextEncoder().encode(spanJson).length <=
-                      COMPACTION_SPAN_MAX_BYTES
-                    ) {
-                      // `filesTouched` for the checkpoint summary row:
-                      // derive from the span's `read_file` / edit tool rows
-                      // (phase-1 `boundFilesTouched` caps + sanitizes in
-                      // `buildCheckpoint` — pass the raw paths through).
-                      const filesTouched: string[] = [];
-                      for (const row of cut.span) {
-                        if (!row || typeof row !== 'object') continue;
-                        const o = row as {
-                          role?: unknown;
-                          toolName?: unknown;
-                          delta?: { toolCalls?: Array<{ toolName?: unknown; args?: { path?: unknown } }> };
-                        };
-                        if (o.role === 'tool' && typeof o.toolName === 'string') {
-                          // Tool RESULT rows carry the toolName; the path
-                          // lives on the paired assistant call — collect
-                          // from the assistant delta calls instead (below).
-                        }
-                        if (o.role === 'assistant' && o.delta?.toolCalls) {
-                          for (const call of o.delta.toolCalls) {
-                            if (typeof call.toolName !== 'string') continue;
-                            const path = call.args?.path;
-                            if (
-                              (call.toolName === 'read_file' ||
-                                call.toolName === 'str_replace' ||
-                                call.toolName === 'write_file') &&
-                              typeof path === 'string'
-                            ) {
-                              filesTouched.push(path);
-                            }
-                          }
-                        }
-                      }
-                      compactArgs = {
-                        span: cut.span,
-                        filesTouched,
-                        retainedTail: cut.tail,
-                      };
-                    }
-                  }
-                  // Plan #944 / adversarial #945: trim the seed to the
-                  // model's window-derived token budget (+ row/byte rails)
-                  // at the route boundary — drop oldest, re-pair. The
-                  // current ask is `parsed.prompt` (appended after the
-                  // seed as userMessage), not the newest seed row; it is
-                  // counted in the token rail so history yields to it.
-                  // When compacting, the seed the loop will use is
-                  // `[summaryRow, ...retainedTail]` — trim THAT shape so
-                  // the same rails bound the compacted seed too (the
-                  // loop replaces `priorMessages` with it).
-                  if (compactArgs) {
-                    const compactedSeedShape = trimModelMessagesToBudget(
-                      [
-                        renderSummaryRow('', []),
-                        ...buildModelMessages(compactArgs.retainedTail).rows,
-                      ],
-                      budget,
-                      { currentUserContent: parsed.prompt, pinnedCount: 1 },
-                    ).rows;
-                    if (compactedSeedShape.length > 0) {
-                      priorMessages = compactedSeedShape;
-                    }
-                  } else {
-                    priorMessages = trimModelMessagesToBudget(
-                      built,
-                      budget,
-                      { currentUserContent: parsed.prompt },
-                    ).rows;
-                  }
+                  preTrimSeed = buildModelMessages(parsedProjection).rows;
                 }
               }
             } catch {
               // Fail-closed: unreadable/missing/malformed projection → no seed.
-              priorMessages = undefined;
+              preTrimSeed = undefined;
+            }
+          }
+          if (preTrimSeed !== undefined) {
+            const windowMap = await windowPromise;
+            const budget = foldBudgetTokens(windowMap, byok.modelId);
+            // Plan #950 (parent review-note 1 lock): trigger on the PRE-TRIM
+            // seed — whichever pointer actually built it. `shouldCompact`
+            // consumes the #944 fold budget (reserve already subtracted;
+            // never subtracted again — adversarial #953).
+            const cut = shouldCompact(preTrimSeed, budget)
+              ? findCompactionCut(preTrimSeed, budget)
+              : null;
+            if (cut) {
+              // A clean user-boundary cut exists → compact. The span
+              // (summarizer input) is byte-railed by
+              // `COMPACTION_SPAN_MAX_BYTES` — over it, yield to the
+              // #944 trim (never a huge summarizer prompt).
+              const spanJson = JSON.stringify(cut.span);
+              if (
+                new TextEncoder().encode(spanJson).length <=
+                COMPACTION_SPAN_MAX_BYTES
+              ) {
+                // `filesTouched` for the checkpoint summary row: derive
+                // from the span's `read_file` / edit tool rows (phase-1
+                // `boundFilesTouched` caps + sanitizes in `buildCheckpoint`
+                // — pass the raw paths through). Paths live on the
+                // assistant call, not the tool-result row.
+                const filesTouched: string[] = [];
+                for (const row of cut.span) {
+                  if (!row || typeof row !== 'object') continue;
+                  const o = row as {
+                    role?: unknown;
+                    delta?: {
+                      toolCalls?: Array<{
+                        toolName?: unknown;
+                        args?: { path?: unknown };
+                      }>;
+                    };
+                  };
+                  if (o.role === 'assistant' && o.delta?.toolCalls) {
+                    for (const call of o.delta.toolCalls) {
+                      if (typeof call.toolName !== 'string') continue;
+                      const path = call.args?.path;
+                      if (
+                        (call.toolName === 'read_file' ||
+                          call.toolName === 'str_replace' ||
+                          call.toolName === 'write_file') &&
+                        typeof path === 'string'
+                      ) {
+                        filesTouched.push(path);
+                      }
+                    }
+                  }
+                }
+                compactArgs = {
+                  span: cut.span,
+                  filesTouched,
+                  retainedTail: cut.tail,
+                  budgetTokens: budget,
+                };
+              }
+            }
+            if (compactArgs === undefined) {
+              // No compact this turn: #944 trim of the full projection
+              // (Goal 4 pin when the seed is a checkpoint). Compact path
+              // omits `priorMessages` entirely (adversarial #955 — do not
+              // ship a dummy Goal 4 row as the fail-open seed, and do not
+              // send three seed-sized arrays into `start()`).
+              priorMessages = trimModelMessagesToBudget(
+                preTrimSeed,
+                budget,
+                pinSummaryRow
+                  ? { currentUserContent: parsed.prompt, pinnedCount: 1 }
+                  : { currentUserContent: parsed.prompt },
+              ).rows;
             }
           }
           if (
             priorMessages === undefined &&
+            compactArgs === undefined &&
             (cpPointer || mmPointer) &&
             parsed.promptHistory === undefined
           ) {
@@ -705,7 +684,7 @@ export async function POST(req: Request): Promise<Response> {
     // `promptHistory` fold (today's folded `prompt` value moved to an optional
     // field) falling back to the raw prompt when the host didn't send one.
     const userMessage =
-      priorMessages !== undefined
+      priorMessages !== undefined || compactArgs !== undefined
         ? parsed.prompt
         : (parsed.promptHistory ?? parsed.prompt);
     const run = await start(turnWorkflow, [
@@ -715,7 +694,13 @@ export async function POST(req: Request): Promise<Response> {
         scope,
         ...(persistRunBind ? { persistRunBind } : {}),
         ...(reasoning !== undefined ? { reasoning } : {}),
-        ...(priorMessages !== undefined ? { priorMessages } : {}),
+        // Compact path omits `priorMessages` (adversarial #955): span + tail
+        // already compose near the Function ceiling; a third seed-sized
+        // array (dummy pin or fail-open projection) 413s `start()` and
+        // blocks the turn. Fail-open reconstructs from span+tail in the loop.
+        ...(priorMessages !== undefined && compactArgs === undefined
+          ? { priorMessages }
+          : {}),
         ...(freshnessReminderPointer !== undefined
           ? { freshnessReminderPointer }
           : {}),
@@ -727,6 +712,7 @@ export async function POST(req: Request): Promise<Response> {
                 span: compactArgs.span,
                 filesTouched: compactArgs.filesTouched,
                 retainedTail: compactArgs.retainedTail,
+                budgetTokens: compactArgs.budgetTokens,
               },
             }
           : {}),

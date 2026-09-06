@@ -31,6 +31,7 @@
 import { withDefaultStreamWriter } from './turnSseWrite';
 import { logTurnModel } from './turnLog';
 import { deadlineSignal } from './turnDeadline';
+import { toModelMessages } from './toModelMessages';
 import {
   generateOneRound,
   type OneRoundDelta,
@@ -130,7 +131,11 @@ export async function compactionStep(
   try {
     const result = await withDefaultStreamWriter(async () =>
       generateOneRound(deps, {
-        messages: [...args.span],
+        // Same converter as `modelGenerateStep`: orchestrator-local
+        // assistant/tool rows are not AI SDK `ModelMessage`s. A real overflow
+        // span is assistant+tool (adversarial #955); passing it raw fail-opens
+        // the summarizer.
+        messages: toModelMessages(args.span),
         tools: {},
         onEvent: () => {},
       }),

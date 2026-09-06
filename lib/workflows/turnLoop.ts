@@ -52,7 +52,7 @@ import {
   TURN_WALL_CLOCK_WRAPUP,
 } from '../agent/modelFinish';
 import { TURN_WALL_CLOCK_MAX_MS } from '../sessionCloudCaps';
-import { buildModelMessages } from '../agent/modelMessages';
+import { buildModelMessages, trimModelMessagesToBudget } from '../agent/modelMessages';
 import { buildCheckpoint, renderSummaryRow } from '../agent/compaction';
 import { buildFreshnessReminder } from '../agent/freshnessReminder';
 import { logTurnLoop } from './turnLog';
@@ -348,12 +348,21 @@ export interface TurnLoopInput {
    * instead of `[...priorMessages, user]`. Plain serializable values only —
    * the span rows are the route-side `findCompactionCut().span` (already
    * re-paired). A summarizer failure is FAIL-OPEN (parent edge-case lock:
-   * compaction never blocks the turn) — the turn proceeds seeded from the
-   * un-compacted projection with the #944 trim rails still applied.
+   * compaction never blocks the turn) — seeded from `priorMessages` when
+   * supplied, otherwise reconstructed from span+tail and #944-trimmed
+   * with `budgetTokens` (adversarial #955: production omits `priorMessages`
+   * on the compact path so `start()` does not ship three seed-sized arrays).
    */
   compact?: {
     /** Compaction SPAN rows to summarize (route-side cut, re-paired). */
     span: ReadonlyArray<unknown>;
+    /**
+     * #944 fold budget the route already computed (adversarial #955). Used
+     * to trim the real `[summaryRow, ...tail]` success seed (`pinnedCount: 1`)
+     * and the fail-open reconstruction. Absent in unit fixtures that pass
+     * a tiny seed.
+     */
+    budgetTokens?: number;
   };
 }
 
@@ -692,11 +701,13 @@ export async function runTurnLoop(
   // Compaction seed (plan #950, parent #947 Goal 1): the pre-loop summarizer
   // runs ONCE here, before the first model round, over the route-side span.
   // Fail-open — ANY summarizer failure (step throw, `{ok:false}`, empty
-  // summary, past-deadline) proceeds UNCOMPACTED: the seed falls back to the
-  // plain `[...priorMessages, user]` projection (the #944 trim rails at the
-  // route boundary still bound it). The summary row is a labeled `user` row
-  // (renderSummaryRow) — never live assistant prose (parent Goal 4) — and the
-  // retained tail is re-paired by the phase-1 cut itself.
+  // summary, past-deadline) proceeds UNCOMPACTED. Production omits
+  // `priorMessages` on the compact path (adversarial #955 — do not ship
+  // three seed-sized arrays into `start()`, and do not overwrite the
+  // fail-open seed with an empty Goal 4 row): reconstruct from span+tail
+  // and trim with the route-computed budget. Tests may still pass a plain
+  // `priorMessages`. The summary row is a labeled `user` row
+  // (renderSummaryRow) — never live assistant prose (parent Goal 4).
   let compactedSeed: unknown[] | undefined;
   let compactedCheckpoint:
     | { summary: string; filesTouched: string[]; retainedTail: unknown[] }
@@ -720,22 +731,30 @@ export async function runTurnLoop(
           },
           [],
         );
-        compactedSeed = [
+        const seedRows = [
           renderSummaryRow(checkpoint.summary, checkpoint.filesTouched),
-          ...(deps.compactionRetainedTail ?? []),
+          ...buildModelMessages(deps.compactionRetainedTail ?? []).rows,
         ];
-        // Plan #950 checkpoint writer (parent #947 review-note 2 lock: phase
-        // 3 wires `derivePersistFold` → checkpoint write): carry the fresh
-        // checkpoint so the terminal persist seam writes it as its OWN Blob
-        // object and advances `meta.compactionPointer`. The tail is re-paired
-        // route-side by the phase-1 cut; `derivePersistFold` re-pairs again
-        // via `buildCheckpoint` at fold time (idempotent).
+        // Measure the REAL combined seed on all three #944 rails with the
+        // summary pinned (adversarial #955 / #954 Goal 4). The route's dummy
+        // empty-summary pin is not this shape.
+        const budget = input.compact.budgetTokens;
+        compactedSeed =
+          typeof budget === 'number'
+            ? trimModelMessagesToBudget(seedRows, budget, {
+                currentUserContent: input.userMessage,
+                pinnedCount: 1,
+              }).rows
+            : seedRows;
+        // Plan #950 checkpoint writer (parent #947 review-note 2 lock).
+        // `retainedTail` is filled at persist time from the live
+        // post-compact messages (adversarial #955 Goal 2) — not the
+        // frozen cut-time tail, which would drop this turn on the next
+        // prefer-checkpoint seed.
         compactedCheckpoint = {
           summary: checkpoint.summary,
           filesTouched: checkpoint.filesTouched,
-          retainedTail: deps.compactionRetainedTail
-            ? [...deps.compactionRetainedTail]
-            : [],
+          retainedTail: [],
         };
       }
     } catch {
@@ -743,12 +762,33 @@ export async function runTurnLoop(
     }
   }
 
-  // Seed from the persisted model-messages projection when present (plan #936):
-  // `[...priorMessages, {role:'user'}]` so the model sees prior typed
-  // assistant/tool rows; otherwise the legacy singleton. Compacted turns seed
-  // `[summaryRow, ...retainedTail, user]` (plan #950) instead.
+  // Seed: compacted `[summaryRow, ...tail]` on success; otherwise the
+  // un-compacted projection. Compact-path fail-open with no `priorMessages`
+  // reconstructs span+tail (the full pre-trim cut) and applies #944 rails.
+  let loopSeed: unknown[];
+  if (compactedSeed !== undefined) {
+    loopSeed = compactedSeed;
+  } else if (input.priorMessages !== undefined) {
+    loopSeed = [...input.priorMessages];
+  } else if (input.compact !== undefined) {
+    const rebuilt = buildModelMessages([
+      ...input.compact.span,
+      ...(deps.compactionRetainedTail ?? []),
+    ]).rows;
+    const budget = input.compact.budgetTokens;
+    loopSeed =
+      typeof budget === 'number'
+        ? trimModelMessagesToBudget(rebuilt, budget, {
+            currentUserContent: input.userMessage,
+          }).rows
+        : rebuilt;
+  } else {
+    loopSeed = [];
+  }
+
+  const thisRunStart = loopSeed.length;
   const messages: unknown[] = [
-    ...(compactedSeed ?? input.priorMessages ?? []),
+    ...loopSeed,
     { role: 'user', content: input.userMessage },
   ];
 
@@ -817,14 +857,22 @@ export async function runTurnLoop(
     | { ok: false; code: string; error: string }
   > => {
     steps += 1;
-    const thisRunStart = (input.priorMessages ?? []).length;
     const fold = derivePersistFold(
       messages,
       usage,
       deps.persistRunBind,
       resolvedProvider,
       thisRunStart,
-      compactedCheckpoint,
+      compactedCheckpoint === undefined
+        ? undefined
+        : {
+            summary: compactedCheckpoint.summary,
+            filesTouched: compactedCheckpoint.filesTouched,
+            // Live post-compact view (Goal 2): everything after the summary
+            // row, including this turn. Cut-time tail would drop this turn
+            // from the next prefer-checkpoint seed (adversarial #955).
+            retainedTail: buildModelMessages(messages).rows.slice(1),
+          },
     );
     return deps.persistStep({
       turnRunId: deps.turnRunId,

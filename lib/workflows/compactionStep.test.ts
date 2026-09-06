@@ -146,4 +146,80 @@ describe('compactionStep (plan #950)', () => {
     const res = await compactionStep(stepArgs);
     expect(['ok', 'code']).toContain(res.ok === true ? 'ok' : 'code');
   });
+
+  it('converts orchestrator-local span rows via toModelMessages before generateOneRound (adversarial #955)', async () => {
+    const write = vi.fn(async () => {});
+    vi.doMock('./turnSseWrite', () => ({
+      writeOnDefaultStream: write,
+      withDefaultStreamWriter: async (
+        fn: (w: (p: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(write),
+    }));
+    const m1 = vi.fn(async (_deps: unknown, input: unknown) => {
+      const i = input as { messages: unknown[] };
+      expect(i.messages).toHaveLength(3);
+      const [user, asst, tool] = i.messages as Array<{
+        role: string;
+        content?: unknown;
+        delta?: unknown;
+      }>;
+      expect(user).toEqual({ role: 'user', content: 'turn 1' });
+      // Assistant/tool must be SDK ModelMessage content-parts, not the
+      // orchestrator `{delta, toolName, result}` shape.
+      expect(asst.role).toBe('assistant');
+      expect(asst.delta).toBeUndefined();
+      expect(Array.isArray(asst.content)).toBe(true);
+      const asstParts = asst.content as Array<{ type: string; toolCallId?: string }>;
+      expect(asstParts.some((p) => p.type === 'tool-call' && p.toolCallId === 'c1')).toBe(
+        true,
+      );
+      expect(tool.role).toBe('tool');
+      expect(Array.isArray(tool.content)).toBe(true);
+      const toolParts = tool.content as Array<{ type: string; toolCallId?: string }>;
+      expect(toolParts.some((p) => p.type === 'tool-result' && p.toolCallId === 'c1')).toBe(
+        true,
+      );
+      return { ok: true as const, delta: { text: 'the summary', toolCalls: [] } };
+    });
+    vi.doMock('../agent/generateOneRound', () => ({
+      generateOneRound: m1,
+      toolsWithoutExecutors: (t: Record<string, unknown>) => t,
+    }));
+    vi.doMock('../di/index', () => ({
+      createProdServices: () => ({
+        resolveInferenceForRequest: {
+          resolveByokForRequest: async () => ({
+            ok: true as const,
+            modelId: 'byok-resolved',
+            provider: 'anthropic',
+            credentials: { apiKey: 'sk-test' },
+            only: ['anthropic'] as [string],
+            byok: { anthropic: [{ apiKey: 'sk-test' }] },
+            secretId: 'sec-1',
+            secretsToRedact: ['sk-test'],
+          }),
+        },
+      }),
+    }));
+    const { compactionStep } = await import('./compactionStep');
+    const res = await compactionStep({
+      modelId: 'anthropic/claude-a',
+      span: [
+        { role: 'user', content: 'turn 1' },
+        {
+          role: 'assistant',
+          delta: {
+            text: 'reading',
+            toolCalls: [
+              { toolName: 'read_file', toolCallId: 'c1', args: { path: 'src/a.ts' } },
+            ],
+          },
+        },
+        { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'bytes' },
+      ],
+      scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
+    });
+    expect(res).toEqual({ ok: true, summary: 'the summary' });
+    expect(m1).toHaveBeenCalledTimes(1);
+  });
 });
