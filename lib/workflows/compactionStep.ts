@@ -17,10 +17,11 @@
  *
  * Serializable-only args (adversarial L1, same discipline as every step):
  * `span` is the plain row array from the route-side cut walk, `modelId` the
- * requested model. Any failure → `{ ok:false, code:'summarize_failed' }` —
- * the WORKFLOW treats that as fail-open (turn proceeds uncompacted, seeded
- * from the un-compacted projection; the trim rails still apply), never a
- * 5xx (parent edge-case lock: compaction must never block the turn).
+ * requested model. Model/BYOK/empty failure → `{ ok:false, code:'summarize_failed' }`
+ * — the WORKFLOW treats that as fail-open (turn proceeds uncompacted). G22
+ * Stop (`'cancelled'`) and the 1h wall (`'wall_clock'`) are forwarded, never
+ * remapped to fail-open (adversarial #955 follow-up 16). Compaction must
+ * never 5xx the turn (parent edge-case lock) and must never swallow Stop.
  *
  * Static graph: this file is a `'use step'` leaf — its import closure is the
  * B9 core (`generateOneRound`) + DI (in-step BYOK resolve) + the loop log,
@@ -30,8 +31,9 @@
  */
 import { withDefaultStreamWriter } from './turnSseWrite';
 import { logTurnModel } from './turnLog';
-import { deadlineSignal } from './turnDeadline';
+import { deadlineSignal, isDeadlineElapsed } from './turnDeadline';
 import { toModelMessages } from './toModelMessages';
+import { TURN_WALL_CLOCK_ERROR } from '../agent/modelFinish';
 import {
   generateOneRound,
   type OneRoundDelta,
@@ -70,7 +72,13 @@ export interface CompactionStepArgs {
 /** Fail-closed step result. `summarize_failed` is fail-open upstream. */
 export type CompactionStepResult =
   | { ok: true; summary: string }
-  | { ok: false; code: 'summarize_failed' | 'wall_clock'; error: string };
+  | { ok: false; code: 'summarize_failed' | 'wall_clock' | 'cancelled'; error: string };
+
+function isAbortErr(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const name = err.name.toLowerCase();
+  return name === 'aborterror' || name === 'responseaborted' || name === 'cancelled';
+}
 
 /**
  * Run the pre-loop summarizer as ONE workflow step: re-resolve BYOK in-step,
@@ -120,12 +128,22 @@ export async function compactionStep(
       reasoning: 'none',
     };
   } catch (err) {
+    if (isAbortErr(err)) {
+      const wall = isDeadlineElapsed(args.deadlineAt);
+      const code = wall ? 'wall_clock' : 'cancelled';
+      logTurnModel({ ok: false, code });
+      return {
+        ok: false,
+        code,
+        error: wall ? TURN_WALL_CLOCK_ERROR : 'Request cancelled.',
+      };
+    }
     logTurnModel({ ok: false, code: 'summarize_failed' });
     const error = err instanceof Error ? err.message : String(err);
     return { ok: false, code: 'summarize_failed', error };
   }
 
-  // One tools-off model round over the span. No `tools` key at all — the
+  // One tools-off model round over the span. Empty schemas — the
   // summarizer cannot call tools by construction (parent forbidden list).
   // No live SSE: the delta is returned, never streamed (see file doc).
   try {
@@ -141,13 +159,42 @@ export async function compactionStep(
       }),
     );
     if (!result.ok) {
-      logTurnModel({ ok: false, code: 'summarize_failed' });
-      return { ok: false, code: 'summarize_failed', error: result.error };
+      // G22 Stop and the 1h wall must not become fail-open (adversarial
+      // #955 follow-up 16). Deadline-elapsed `'cancelled'` is `'wall_clock'`,
+      // same as `modelGenerateStep`.
+      const code =
+        result.code === 'wall_clock' ||
+        (result.code === 'cancelled' && isDeadlineElapsed(args.deadlineAt))
+          ? 'wall_clock'
+          : result.code === 'cancelled'
+            ? 'cancelled'
+            : 'summarize_failed';
+      logTurnModel({ ok: false, code });
+      return {
+        ok: false,
+        code,
+        error:
+          code === 'wall_clock'
+            ? result.code === 'wall_clock'
+              ? result.error
+              : TURN_WALL_CLOCK_ERROR
+            : result.error,
+      };
     }
     const delta: OneRoundDelta = result.delta;
     logTurnModel({ ok: true, textChars: delta.text.length });
     return { ok: true, summary: delta.text };
   } catch (err) {
+    if (isAbortErr(err)) {
+      const wall = isDeadlineElapsed(args.deadlineAt);
+      const code = wall ? 'wall_clock' : 'cancelled';
+      logTurnModel({ ok: false, code });
+      return {
+        ok: false,
+        code,
+        error: wall ? TURN_WALL_CLOCK_ERROR : 'Request cancelled.',
+      };
+    }
     logTurnModel({ ok: false, code: 'summarize_failed' });
     const error = err instanceof Error ? err.message : String(err);
     return { ok: false, code: 'summarize_failed', error };

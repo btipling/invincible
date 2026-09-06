@@ -729,18 +729,24 @@ export async function runTurnLoop(
 
   // Compaction seed (plan #950, parent #947 Goal 1): the pre-loop summarizer
   // runs ONCE here, before the first model round, over the route-side span.
-  // Fail-open — ANY summarizer failure (step throw, `{ok:false}`, empty
-  // summary, past-deadline, **pin-miss empty seed**) proceeds UNCOMPACTED. Production omits
-  // `priorMessages` on the compact path (adversarial #955 — do not ship
-  // three seed-sized arrays into `start()`, and do not overwrite the
-  // fail-open seed with an empty Goal 4 row): reconstruct from span+tail
-  // and trim with the route-computed budget. Tests may still pass a plain
-  // `priorMessages`. The summary row is a labeled `user` row
-  // (renderSummaryRow) — never live assistant prose (parent Goal 4).
+  // Fail-open — summarizer **model/BYOK/empty/pin-miss** proceeds UNCOMPACTED.
+  // G22 `'cancelled'` (and AbortError from the step) is NOT fail-open
+  // (adversarial #955 follow-up 16) — Stop must not start the first model
+  // round or persist a reconstructed seed. Production omits `priorMessages`
+  // on the compact path (adversarial #955 — do not ship three seed-sized
+  // arrays into `start()`, and do not overwrite the fail-open seed with an
+  // empty Goal 4 row): reconstruct from span+tail and trim with the
+  // route-computed budget. Tests may still pass a plain `priorMessages`.
+  // The summary row is a labeled `user` row (renderSummaryRow) — never live
+  // assistant prose (parent Goal 4).
   let compactedSeed: unknown[] | undefined;
   let compactedCheckpoint:
     | { summary: string; filesTouched: string[]; retainedTail: unknown[] }
     | undefined;
+  // G22 Stop during the pre-loop summarizer (adversarial #955 follow-up 16).
+  // Model/BYOK/empty stay fail-open; `'cancelled'` must not start the first
+  // model round or persist a fail-open seed.
+  let compactCancelled: string | undefined;
   if (input.compact !== undefined && deps.compactionStep !== undefined) {
     try {
       const c = await deps.compactionStep({
@@ -750,7 +756,9 @@ export async function runTurnLoop(
           : { scope: { tenantId: '', userId: '', sessionId: '' } }),
         ...(deps.deadlineAt !== undefined ? { deadlineAt: deps.deadlineAt } : {}),
       });
-      if (c.ok && typeof c.summary === 'string' && c.summary.trim().length > 0) {
+      if (!c.ok && c.code === 'cancelled') {
+        compactCancelled = c.error || 'Request cancelled.';
+      } else if (c.ok && typeof c.summary === 'string' && c.summary.trim().length > 0) {
         const checkpoint = buildCheckpoint(
           {
             summary: c.summary,
@@ -794,8 +802,17 @@ export async function runTurnLoop(
           };
         }
       }
-    } catch {
-      // Fail-open: compaction never blocks the turn (parent edge-case lock).
+    } catch (err) {
+      const aborted =
+        err instanceof Error &&
+        (err.name === 'AbortError' ||
+          err.name === 'ResponseAborted' ||
+          err.name.toLowerCase() === 'cancelled');
+      if (aborted) {
+        compactCancelled = 'Request cancelled.';
+      }
+      // Else fail-open: compaction never blocks the turn (parent edge-case
+      // lock) — model/BYOK/empty throws only.
     }
   }
 
@@ -806,7 +823,10 @@ export async function runTurnLoop(
   // a partition); else reconstruct span+tail (complete partition) and apply
   // #944 rails.
   let loopSeed: unknown[];
-  if (compactedSeed !== undefined) {
+  if (compactCancelled !== undefined) {
+    // G22: do not persist a fail-open reconstruction after Stop.
+    loopSeed = [];
+  } else if (compactedSeed !== undefined) {
     loopSeed = compactedSeed;
   } else if (input.priorMessages !== undefined) {
     loopSeed = [...input.priorMessages];
@@ -1089,6 +1109,9 @@ export async function runTurnLoop(
   };
 
   try {
+    if (compactCancelled !== undefined) {
+      return fail('cancelled', 0, 0, compactCancelled);
+    }
     while (steps < cap) {
       round += 1;
       steps += 1; // this model round = one step boundary

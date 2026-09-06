@@ -2120,9 +2120,23 @@ describe('POST /api/turns', () => {
     const tailFill = `TAIL ${'T'.repeat(1.6 * 1024 * 1024)}`;
     const projection = [
       { role: 'user', content: 'ANCIENT_PREFIX goal of the session' },
-      { role: 'assistant', delta: { text: 'old' } },
+      {
+        role: 'assistant',
+        delta: {
+          text: 'old',
+          toolCalls: [{ toolName: 'read_file', toolCallId: 'k1', args: { path: 'src/kept.ts' } }],
+        },
+      },
+      { role: 'tool', toolName: 'read_file', toolCallId: 'k1', result: 'bytes' },
       { role: 'user', content: spanFill },
-      { role: 'assistant', delta: { text: 'span-asst' } },
+      {
+        role: 'assistant',
+        delta: {
+          text: 'span-asst',
+          toolCalls: [{ toolName: 'read_file', toolCallId: 'd1', args: { path: 'src/dropped.ts' } }],
+        },
+      },
+      { role: 'tool', toolName: 'read_file', toolCallId: 'd1', result: 'bytes' },
       { role: 'user', content: tailFill },
       { role: 'assistant', delta: { text: 'tail-asst' } },
       { role: 'user', content: 'newest boundary' },
@@ -2154,6 +2168,10 @@ describe('POST /api/turns', () => {
     );
     expect(span.some((r) => r.content === spanFill)).toBe(false);
     expect(startArgs.compact.clipped).toBe(true);
+    // Adversarial #955 follow-up 16: filesTouched is the fitted span, not
+    // pre-fit cut.span — dropped-middle tool paths must not ride honesty.
+    expect(startArgs.compact.filesTouched).toContain('src/kept.ts');
+    expect(startArgs.compact.filesTouched).not.toContain('src/dropped.ts');
     const tail = startArgs.compact.retainedTail as Array<{ content?: string }>;
     expect(tail.some((r) => r.content === 'newest boundary')).toBe(true);
   });

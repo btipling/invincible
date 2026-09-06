@@ -77,6 +77,96 @@ describe('compactionStep (plan #950)', () => {
     expect(deps.system).toContain('Summary of earlier session');
   });
 
+  it('G22 Stop: generateOneRound cancelled → {ok:false, code:"cancelled"} (not summarize_failed)', async () => {
+    const write = vi.fn(async () => {});
+    vi.doMock('./turnSseWrite', () => ({
+      writeOnDefaultStream: write,
+      withDefaultStreamWriter: async (
+        fn: (w: (p: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(write),
+    }));
+    vi.doMock('../agent/generateOneRound', () => ({
+      generateOneRound: async () => ({
+        ok: false as const,
+        code: 'cancelled',
+        error: 'Request cancelled.',
+      }),
+    }));
+    vi.doMock('../di/index', () => ({
+      createProdServices: () => ({
+        resolveInferenceForRequest: {
+          resolveByokForRequest: async () => ({
+            ok: true as const,
+            modelId: 'm',
+            provider: 'anthropic',
+            credentials: {},
+            only: ['anthropic'] as [string],
+            byok: { anthropic: [{}] },
+            secretId: 's',
+            secretsToRedact: [],
+          }),
+        },
+      }),
+    }));
+    const { compactionStep } = await import('./compactionStep');
+    const res = await compactionStep({
+      modelId: 'm',
+      span: [],
+      scope: { tenantId: 't', userId: 'u', sessionId: 's' },
+      deadlineAt: Date.now() + 60_000,
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.code).toBe('cancelled');
+      expect(res.error).toBe('Request cancelled.');
+    }
+  });
+
+  it('AbortError from generateOneRound → cancelled, not summarize_failed', async () => {
+    const write = vi.fn(async () => {});
+    vi.doMock('./turnSseWrite', () => ({
+      writeOnDefaultStream: write,
+      withDefaultStreamWriter: async (
+        fn: (w: (p: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(write),
+    }));
+    vi.doMock('../agent/generateOneRound', () => ({
+      generateOneRound: async () => {
+        const err = new Error('aborted');
+        err.name = 'AbortError';
+        throw err;
+      },
+    }));
+    vi.doMock('../di/index', () => ({
+      createProdServices: () => ({
+        resolveInferenceForRequest: {
+          resolveByokForRequest: async () => ({
+            ok: true as const,
+            modelId: 'm',
+            provider: 'anthropic',
+            credentials: {},
+            only: ['anthropic'] as [string],
+            byok: { anthropic: [{}] },
+            secretId: 's',
+            secretsToRedact: [],
+          }),
+        },
+      }),
+    }));
+    const { compactionStep } = await import('./compactionStep');
+    const res = await compactionStep({
+      modelId: 'm',
+      span: [],
+      scope: { tenantId: 't', userId: 'u', sessionId: 's' },
+      deadlineAt: Date.now() + 60_000,
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.code).toBe('cancelled');
+      expect(res.error).toBe('Request cancelled.');
+    }
+  });
+
   it('fail-open shape: model error → {ok:false, code:"summarize_failed"}', async () => {
     const write = vi.fn(async () => {});
     vi.doMock('./turnSseWrite', () => ({

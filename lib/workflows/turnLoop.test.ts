@@ -5724,6 +5724,70 @@ describe('runTurnLoop compaction (plan #950, source #552)', () => {
     expect(result.status).toBe('completed');
   });
 
+  it('adversarial #955 follow-up 16 — cancelled summarizer is G22 Stop, not fail-open', async () => {
+    const { deps, closed } = wiredDeps();
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+    }));
+    const compactionStep = vi.fn(async () => ({
+      ok: false as const,
+      code: 'cancelled',
+      error: 'Request cancelled.',
+    }));
+    const persistSpy = vi.fn(deps.persistStep);
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        persistStep: persistSpy,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionRetainedTail: [{ role: 'user', content: 'tail' }],
+      },
+      {
+        userMessage: 'continue',
+        compact: { span: [{ role: 'user', content: 'old turn' }] },
+      },
+    );
+    expect(result.status).toBe('cancelled');
+    expect(result.error).toBe('Request cancelled.');
+    expect(modelStep).not.toHaveBeenCalled();
+    expect(persistSpy).not.toHaveBeenCalled();
+    expect(closed()).toBe(1);
+  });
+
+  it('adversarial #955 follow-up 16 — AbortError from summarizer is G22 Stop', async () => {
+    const { deps } = wiredDeps();
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+    }));
+    const compactionStep = vi.fn(async () => {
+      const err = new Error('aborted');
+      err.name = 'AbortError';
+      throw err;
+    });
+    const persistSpy = vi.fn(deps.persistStep);
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        persistStep: persistSpy,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+      },
+      {
+        userMessage: 'continue',
+        compact: { span: [{ role: 'user', content: 'old turn' }] },
+      },
+    );
+    expect(result.status).toBe('cancelled');
+    expect(result.error).toBe('Request cancelled.');
+    expect(modelStep).not.toHaveBeenCalled();
+    expect(persistSpy).not.toHaveBeenCalled();
+  });
+
   it('empty summary → no compacted seed (plain projection); fold carries NO compactionCheckpoint', async () => {
     const { deps } = wiredDeps();
     const modelStep = vi.fn(async () => ({
