@@ -15,14 +15,18 @@ import { describe, expect, it } from 'vitest';
 import {
   COMPACTION_CHECKPOINT_MAX_BYTES,
   COMPACTION_FILES_TOUCHED_MAX,
+  COMPACTION_SPAN_MAX_BYTES,
   COMPACTION_START_MAX_BYTES,
   COMPACTION_SUMMARY_MAX_CHARS,
+  CONTEXT_CHARS_PER_TOKEN,
   MODEL_MSG_SEED_MAX_BYTES,
+  MODEL_MSG_SEED_MAX_ROWS,
 } from '../sessionCloudCaps';
 import {
   boundCheckpointForPersist,
   buildCheckpoint,
   compactStartPayloadFits,
+  compactionCutRails,
   findCompactionCut,
   livePostCompactTail,
   renderSummaryRow,
@@ -270,22 +274,75 @@ describe('findCompactionCut (plan #948 row 1 + 2)', () => {
     expect(cut!.tail[0]).toEqual(rows[2]);
   });
 
-  it('adversarial #955 follow-up 5 — span-over-cap with no later legal cut → null', () => {
-    // Two user turns. Newest tail fits; its span is over cap. Older
-    // boundary would be index 0 (empty span — not a candidate). No legal
-    // shorter-span cut → null (yield to trim), never return the oversize span.
+  it('adversarial #955 follow-up 6 — span-over-cap of the only fitting tail clips the span, not null', () => {
+    // Three user turns. Newest tail (t3) fits a tight budget; its span
+    // (t1+t2) is over cap. Next older tail (t2+t3) misses that budget →
+    // follow-up 5 returned null. Clip keeps the newest tail and the oldest
+    // prefix that fits the cap.
     const rows: ModelMessageRow[] = [
-      user('only-span'),
-      assistant('x'.repeat(80)),
-      user('newest'),
-      assistant('y'),
+      user('t1-span-head'),
+      assistant('a'.repeat(40)),
+      user('t2-middle'),
+      assistant('b'.repeat(40)),
+      user('t3-newest'),
+      assistant('c'),
     ];
-    const spanBytes = new TextEncoder().encode(JSON.stringify(rows.slice(0, 2))).length;
-    const budget = Math.ceil(JSON.stringify(rows.slice(2)).length / 4) + 50;
-    expect(findCompactionCut(rows, budget)?.cutIndex).toBe(2);
-    expect(
-      findCompactionCut(rows, budget, { maxSpanBytes: Math.max(1, spanBytes - 1) }),
-    ).toBeNull();
+    const newestTailJson = JSON.stringify(rows.slice(4));
+    const olderTailJson = JSON.stringify(rows.slice(2));
+    const budget = Math.ceil(newestTailJson.length / 4) + 1;
+    expect(Math.ceil(olderTailJson.length / 4)).toBeGreaterThan(budget);
+    const headSpan = JSON.stringify(rows.slice(0, 2));
+    const fullSpan = JSON.stringify(rows.slice(0, 4));
+    const cap = new TextEncoder().encode(headSpan).length + 8;
+    expect(new TextEncoder().encode(fullSpan).length).toBeGreaterThan(cap);
+    const cut = findCompactionCut(rows, budget, { maxSpanBytes: cap });
+    expect(cut).not.toBeNull();
+    expect(cut!.cutIndex).toBe(4);
+    expect(cut!.tail[0]).toEqual(rows[4]);
+    const spanBytes = new TextEncoder().encode(JSON.stringify(cut!.span)).length;
+    expect(spanBytes).toBeLessThanOrEqual(cap);
+    expect(cut!.span.length).toBeGreaterThan(0);
+    expect(cut!.span.length).toBeLessThan(4);
+    // Clipped span is a prefix of the original span (oldest history).
+    expect(cut!.span).toEqual(rows.slice(0, cut!.span.length));
+  });
+
+  it('adversarial #955 follow-up 6 — clip empty when even the first row exceeds maxSpanBytes → null', () => {
+    const rows: ModelMessageRow[] = [
+      user('only-span ' + 'x'.repeat(80)),
+      assistant('y'),
+      user('newest'),
+      assistant('z'),
+    ];
+    const newestTailJson = JSON.stringify(rows.slice(2));
+    const budget = Math.ceil(newestTailJson.length / 4) + 1;
+    const cut = findCompactionCut(rows, budget, { maxSpanBytes: 8 });
+    expect(cut).toBeNull();
+  });
+});
+
+describe('compactionCutRails (adversarial #955 follow-up 6)', () => {
+  it('subtracts the max honesty row from token/byte/row rails; span cap unchanged', () => {
+    const full = 20_000;
+    const rails = compactionCutRails(full);
+    const reserveTokens = Math.ceil(
+      (COMPACTION_SUMMARY_MAX_CHARS + COMPACTION_SUMMARY_LABEL.length + 64) /
+        CONTEXT_CHARS_PER_TOKEN,
+    );
+    expect(rails.budgetTokens).toBe(full - reserveTokens);
+    expect(rails.maxRows).toBe(MODEL_MSG_SEED_MAX_ROWS - 1);
+    expect(rails.maxBytes).toBe(
+      MODEL_MSG_SEED_MAX_BYTES -
+        (COMPACTION_SUMMARY_MAX_CHARS + COMPACTION_SUMMARY_LABEL.length + 64),
+    );
+    expect(rails.maxSpanBytes).toBe(COMPACTION_SPAN_MAX_BYTES);
+  });
+
+  it('degenerate budget still returns positive rails (never compact-on-a-lie zero)', () => {
+    const rails = compactionCutRails(1);
+    expect(rails.budgetTokens).toBeGreaterThanOrEqual(1);
+    expect(rails.maxRows).toBeGreaterThanOrEqual(1);
+    expect(rails.maxBytes).toBeGreaterThanOrEqual(1);
   });
 });
 

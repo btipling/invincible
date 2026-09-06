@@ -64,11 +64,10 @@ import {
   buildModelMessages,
   trimModelMessagesToBudget,
 } from '../../../lib/agent/modelMessages';
-import { buildCheckpoint, findCompactionCut, renderSummaryRow, compactStartPayloadFits } from '../../../lib/agent/compaction';
+import { buildCheckpoint, findCompactionCut, renderSummaryRow, compactStartPayloadFits, compactionCutRails } from '../../../lib/agent/compaction';
 import { shouldCompact } from '../../../lib/agent/compactionBudget';
 import { foldBudgetTokens } from '../../../lib/agent/contextBudget';
 import {
-  COMPACTION_SPAN_MAX_BYTES,
   TURN_START_MIN_INTERVAL_MS,
   sanitizeTurnRunId,
   isRedisSafeOpaqueId,
@@ -509,12 +508,17 @@ export async function POST(req: Request): Promise<Response> {
             // seed — whichever pointer actually built it. `shouldCompact`
             // consumes the #944 fold budget (reserve already subtracted;
             // never subtracted again — adversarial #953).
+            const rails = compactionCutRails(budget);
             const cut = shouldCompact(preTrimSeed, budget)
-              ? findCompactionCut(preTrimSeed, budget, {
-                  // Plan #950 Caps / adversarial #955 follow-up 5: over-cap
-                  // span continues the walk to a larger tail (shorter span).
-                  // Do not yield to `#944` trim while a legal cut exists.
-                  maxSpanBytes: COMPACTION_SPAN_MAX_BYTES,
+              ? findCompactionCut(preTrimSeed, rails.budgetTokens, {
+                  // Plan #950 Caps / adversarial #955 follow-up 5 + 6: over-cap
+                  // span continues to a larger tail; when that tail misses,
+                  // clip the last fitting tail's span instead of yielding to
+                  // `#944` trim. Cut rails leave room for the max honesty row
+                  // so success trim does not drop unsummarized tail.
+                  maxSpanBytes: rails.maxSpanBytes,
+                  maxBytes: rails.maxBytes,
+                  maxRows: rails.maxRows,
                 })
               : null;
             if (cut) {

@@ -6033,4 +6033,43 @@ describe('runTurnLoop compaction (plan #950, source #552)', () => {
       .filter((f) => f?.compactionCheckpoint !== undefined);
     expect(folds).toHaveLength(0);
   });
+
+  it('reserved cut tail survives a maxed summary (adversarial #955 follow-up 6)', async () => {
+    const { deps } = wiredDeps();
+    let firstRoundMessages: unknown[] | undefined;
+    const modelStep = vi.fn(async (args: { messages: ReadonlyArray<unknown> }) => {
+      if (!firstRoundMessages) firstRoundMessages = [...args.messages];
+      return {
+        ok: true as const,
+        delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+      };
+    });
+    const fatSummary = 'S'.repeat(8_000);
+    const tailContent = 'T'.repeat(6_000);
+    const compactionStep = vi.fn(async () => ({
+      ok: true as const,
+      summary: fatSummary,
+    }));
+    await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionRetainedTail: [{ role: 'user', content: tailContent }],
+      },
+      {
+        userMessage: 'continue',
+        // Full fold budget (20k-window class, 3616, plus slack). A reserved
+        // cut hands a tail that fits WITH the max honesty row; the old
+        // full-budget cut handed a tail that success-trim then dropped.
+        compact: { span: [{ role: 'user', content: 'old' }], budgetTokens: 4_000 },
+      },
+    );
+    const rows = firstRoundMessages as Array<{ role: string; content?: string }>;
+    expect(rows[0]?.content).toContain('Summary of earlier session');
+    expect(rows[0]?.content).toContain(fatSummary);
+    expect(rows.some((r) => r.content === tailContent)).toBe(true);
+    expect(rows[rows.length - 1]).toEqual({ role: 'user', content: 'continue' });
+  });
 });

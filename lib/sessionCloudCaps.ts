@@ -685,12 +685,13 @@ export const COMPACTION_CHECKPOINT_MAX_BYTES =
  * run-arg carrier) so the summarizer prompt stays bounded; a span over the
  * cap is not a yield-to-trim by itself — `findCompactionCut` **continues**
  * to an older user boundary (larger retained tail, shorter span) until a
- * legal cut exists or the tail misses a rail (plan #950 Caps / adversarial
- * #955 follow-up 5). Combined `start()` over `COMPACTION_START_MAX_BYTES`
- * still yields to the #944 trim (the turn is never blocked). **NEW generous
- * cap**; no existing cap value changed → no human gate. Enforced in the
- * cut walk (`lib/agent/compaction.ts` `maxSpanBytes`, passed from
- * `app/api/turns/route.ts`).
+ * legal cut exists; if growing the tail misses a rail, it **clips** the last
+ * fitting tail's span to this ceiling (oldest prefix) instead of returning
+ * null (plan #950 Caps / adversarial #955 follow-up 5 + 6). Combined `start()`
+ * over `COMPACTION_START_MAX_BYTES` still yields to the #944 trim (the turn
+ * is never blocked). **NEW generous cap**; no existing cap value changed →
+ * no human gate. Enforced in the cut walk (`lib/agent/compaction.ts`
+ * `maxSpanBytes`, passed from `app/api/turns/route.ts`).
  */
 export const COMPACTION_SPAN_MAX_BYTES = 2 * 1024 * 1024;
 

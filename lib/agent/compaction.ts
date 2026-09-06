@@ -30,6 +30,7 @@
 import {
   COMPACTION_CHECKPOINT_MAX_BYTES,
   COMPACTION_FILES_TOUCHED_MAX,
+  COMPACTION_SPAN_MAX_BYTES,
   COMPACTION_START_MAX_BYTES,
   COMPACTION_SUMMARY_MAX_CHARS,
   CONTEXT_CHARS_PER_TOKEN,
@@ -287,11 +288,20 @@ export function renderSummaryRow(
  *    an unbounded prompt and never yield to `#944` trim while a legal
  *    shorter-span cut still exists (adversarial #955 follow-up 5).
  *
+ *    When continue cannot produce a partition (the next older tail misses
+ *    a rail — monotonic), **clip** the last fitting tail's span to the
+ *    longest prefix `≤ maxSpanBytes` instead of `null` (adversarial #955
+ *    follow-up 6). Yield-to-trim would discard the fitting tail AND the
+ *    oldest history with no summary; a clipped span summarizes the oldest
+ *    cap-sized prefix and keeps the newest tail (middle between them is
+ *    dropped — same region `#944` would drop, plus a summary of the head).
+ *
  * Tail size is monotonic on every rail as the boundary moves earlier
  * (adversarial #953): if the newest (smallest) tail misses, no earlier tail
- * can fit — return `null` immediately; do not stringify older suffixes
- * (the #945 17s linear-drop class). A span-over-cap on a *fitting* tail
- * is not a miss — `continue`. A later tail miss still ends the walk.
+ * can fit — return `null` immediately unless a prior span-over-cap fit can
+ * clip; do not stringify older suffixes (the #945 17s linear-drop class).
+ * A span-over-cap on a *fitting* tail is not a miss — `continue`. A later
+ * tail miss ends the walk (clip the remembered fit, or null).
  *
  * The tail must contain at least one row (the boundary `user` row itself)
  * and the span must be non-empty for a cut to exist: a cut whose span would
@@ -345,21 +355,38 @@ export function findCompactionCut(
   }
   if (boundaries.length === 0) return null;
 
+  // Last (smallest-span) fitting tail whose span was over the cap. Continue
+  // prefers a later partition; clip uses this when the walk cannot.
+  let spanOverFit: { cutIndex: number; tail: ModelMessageRow[] } | undefined;
+
+  const clipFit = (): CompactionCut | null => {
+    if (spanOverFit === undefined || maxSpanBytes === undefined) return null;
+    const clipped = clipSpanToMaxBytes(rows, spanOverFit.cutIndex, maxSpanBytes);
+    if (clipped.length === 0) return null;
+    return {
+      cutIndex: spanOverFit.cutIndex,
+      span: rePairModelMessages(clipped),
+      tail: rePairModelMessages(spanOverFit.tail),
+    };
+  };
+
   // Newest boundary whose tail fits every rail AND whose span fits the
-  // optional span ceiling. Tail miss → null (monotonic). Span-over-cap on
-  // a fitting tail → continue (older boundary, smaller span).
+  // optional span ceiling. Tail miss → clip remembered span-over-cap fit
+  // (or null). Span-over-cap on a fitting tail → continue (older boundary,
+  // smaller span) and remember the fit.
   for (let b = boundaries.length - 1; b >= 0; b--) {
     const cutIndex = boundaries[b];
     const tail = rows.slice(cutIndex);
-    if (tail.length > maxRows) return null;
+    if (tail.length > maxRows) return clipFit();
     const json = JSON.stringify(tail);
-    if (Math.ceil(json.length / ratio) > budgetTokens) return null;
-    if (utf8Bytes(json) > maxBytes) return null;
+    if (Math.ceil(json.length / ratio) > budgetTokens) return clipFit();
+    if (utf8Bytes(json) > maxBytes) return clipFit();
     const span = rePairModelMessages(rows.slice(0, cutIndex));
     if (
       maxSpanBytes !== undefined &&
       utf8Bytes(JSON.stringify(span)) > maxSpanBytes
     ) {
+      spanOverFit = { cutIndex, tail };
       continue;
     }
     return {
@@ -368,9 +395,59 @@ export function findCompactionCut(
       tail: rePairModelMessages(tail),
     };
   }
-  return null;
+  return clipFit();
 }
 
+/**
+ * Longest prefix of `rows[0:cutIndex]` whose JSON is `≤ maxSpanBytes`.
+ * Empty when even the first row overflows (yield to trim). Pure, never throws.
+ */
+function clipSpanToMaxBytes(
+  rows: ReadonlyArray<ModelMessageRow>,
+  cutIndex: number,
+  maxSpanBytes: number,
+): ModelMessageRow[] {
+  if (cutIndex <= 0) return [];
+  const prefixFits = (end: number): boolean =>
+    utf8Bytes(JSON.stringify(rows.slice(0, end))) <= maxSpanBytes;
+  if (!prefixFits(1)) return [];
+  if (prefixFits(cutIndex)) return rows.slice(0, cutIndex);
+  let lo = 1;
+  let hi = cutIndex - 1;
+  while (lo < hi) {
+    const mid = lo + ((hi - lo + 1) >> 1);
+    if (prefixFits(mid)) lo = mid;
+    else hi = mid - 1;
+  }
+  return rows.slice(0, lo);
+}
+
+/**
+ * Tail rails for the phase-3 cut walk (adversarial #955 follow-up 6).
+ * Subtracts the worst-case Goal 4 honesty row (`COMPACTION_SUMMARY_MAX_CHARS`
+ * + label slack) from the token/byte/row ceilings so `[max-summary, ...tail]`
+ * fits the combined seed by construction. The overflow lands in the span
+ * (summarized) instead of being drop-oldest'd off the tail after success.
+ * `shouldCompact` still uses the full fold budget. Pure, never throws.
+ */
+export function compactionCutRails(budgetTokens: number): {
+  budgetTokens: number;
+  maxRows: number;
+  maxBytes: number;
+  maxSpanBytes: number;
+} {
+  const reserveChars =
+    COMPACTION_SUMMARY_MAX_CHARS + COMPACTION_SUMMARY_LABEL.length + 64;
+  const reserveTokens = Math.ceil(reserveChars / CONTEXT_CHARS_PER_TOKEN);
+  const budget =
+    Number.isFinite(budgetTokens) && budgetTokens > 0 ? budgetTokens : 1;
+  return {
+    budgetTokens: Math.max(1, budget - reserveTokens),
+    maxRows: Math.max(1, MODEL_MSG_SEED_MAX_ROWS - 1),
+    maxBytes: Math.max(1, MODEL_MSG_SEED_MAX_BYTES - reserveChars),
+    maxSpanBytes: COMPACTION_SPAN_MAX_BYTES,
+  };
+}
 
 /**
  * Combined `start()` compact-args payload rail (adversarial #955 follow-up).
