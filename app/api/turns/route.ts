@@ -338,6 +338,7 @@ export async function POST(req: Request): Promise<Response> {
           budgetTokens: number;
           pinSummaryRow?: boolean;
           failOpenSeed?: ReadonlyArray<unknown>;
+          clipped?: boolean;
         }
       | undefined;
     try {
@@ -563,15 +564,16 @@ export async function POST(req: Request): Promise<Response> {
               // independently 2 MiB rails compose toward the 4.5 MB Function
               // ceiling; over COMPACTION_START_MAX_BYTES yield to the #944
               // trim (never a 413 that blocks the turn).
-              // Suffix clip (follow-up 8 / 9): span+tail is a contiguous
-              // newest suffix (mm) or `[honesty, …suffix, …tail]` when row 0
-              // is pinned. Fail-open reconstructs span+tail — no third
-              // seed-sized `failOpenSeed` array (default-window rail).
+              // Prefix clip (follow-up 10): span is the oldest overflow
+              // (Goal 1); tail is the newest window. Middle is on neither
+              // side. Fail-open reconstructs pin+tail — no third seed-sized
+              // `failOpenSeed` array.
               const candidate = {
                 span: cut.span,
                 filesTouched,
                 retainedTail: cut.tail,
                 budgetTokens: budget,
+                ...(cut.clipped === true ? { clipped: true } : {}),
               };
               if (compactStartPayloadFits(candidate)) {
                 compactArgs = {
@@ -738,6 +740,7 @@ export async function POST(req: Request): Promise<Response> {
                 ...(compactArgs.failOpenSeed !== undefined
                   ? { failOpenSeed: compactArgs.failOpenSeed }
                   : {}),
+                ...(compactArgs.clipped === true ? { clipped: true } : {}),
               },
             }
           : {}),

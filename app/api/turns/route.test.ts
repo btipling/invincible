@@ -2003,36 +2003,19 @@ describe('POST /api/turns', () => {
     expect(blobReadMock).toHaveBeenCalledWith('t_mm_s1_abc');
   });
 
-  it('adversarial #955 follow-up 8 — clipped cut suffix-summarizes the middle; mm omits failOpenSeed', async () => {
+  it('adversarial #955 follow-up 8/10 — clipped cut prefix-summarizes the oldest overflow', async () => {
     standardHarness();
     mockAuthedSession();
     mockStart();
-    // Fat oldest prefix just under COMPACTION_SPAN_MAX_BYTES so the newest-cut
-    // span overflows the cap, continue's older tail misses the 20k-window
-    // budget, and suffix clip drops ANCIENT_PREFIX from span+tail while
-    // keeping MIDDLE_MARKER in the span (the overflow `#944` would drop).
-    const encoder = new TextEncoder();
-    const prefixBytes = (n: number): number =>
-      encoder.encode(
-        JSON.stringify([
-          { role: 'user', content: `ANCIENT_PREFIX ${'H'.repeat(n)}` },
-          { role: 'assistant', delta: { text: 'old' } },
-        ]),
-      ).length;
-    let lo = COMPACTION_SPAN_MAX_BYTES - 4096;
-    let hi = COMPACTION_SPAN_MAX_BYTES;
-    while (lo < hi) {
-      const mid = lo + ((hi - lo + 1) >> 1);
-      if (prefixBytes(mid) <= COMPACTION_SPAN_MAX_BYTES - 8) lo = mid;
-      else hi = mid - 1;
-    }
-    const ancient = `ANCIENT_PREFIX ${'H'.repeat(lo)}`;
+    // Fat middle exceeds COMPACTION_SPAN_MAX_BYTES so the newest-cut span
+    // overflows the cap, continue's older tail misses the 20k-window
+    // budget, and prefix clip keeps ANCIENT_PREFIX in the span (Goal 1)
+    // while dropping FILL from span+tail.
+    const fill = `FILL ${'H'.repeat(COMPACTION_SPAN_MAX_BYTES - 64)}`;
     const projection = [
-      { role: 'user', content: ancient },
+      { role: 'user', content: 'ANCIENT_PREFIX goal of the session' },
       { role: 'assistant', delta: { text: 'old' } },
-      { role: 'user', content: 'MIDDLE_MARKER' },
-      // ~8k-char assistant so the older tail (MIDDLE…) misses the reserved
-      // 20k-window cut rails (clip) but still fits the full #944 budget.
+      { role: 'user', content: fill },
       { role: 'assistant', delta: { text: 'T'.repeat(8_000) } },
       { role: 'user', content: 'newest boundary' },
     ];
@@ -2055,44 +2038,32 @@ describe('POST /api/turns', () => {
     expect(res.status).toBe(200);
     const startArgs = startMock.mock.calls[0][1][0];
     expect(startArgs.compact).toBeDefined();
+    const span = startArgs.compact.span as Array<{ content?: string }>;
+    expect(span.some((r) => r.content === 'ANCIENT_PREFIX goal of the session')).toBe(
+      true,
+    );
     const covered = [
-      ...(startArgs.compact.span as Array<{ content?: string }>),
+      ...span,
       ...(startArgs.compact.retainedTail as Array<{ content?: string }>),
     ];
-    expect(covered.some((r) => r.content === ancient)).toBe(false);
-    expect(covered.some((r) => r.content === 'MIDDLE_MARKER')).toBe(true);
-    // mm-seed suffix clip: no third seed-sized array (default-window rail).
+    expect(covered.some((r) => r.content === fill)).toBe(false);
+    expect(startArgs.compact.clipped).toBe(true);
     expect(startArgs.compact.failOpenSeed).toBeUndefined();
     expect(startArgs.priorMessages).toBeUndefined();
   });
 
-  it('adversarial #955 follow-up 8 — checkpoint clip pins honesty in the span (no failOpenSeed)', async () => {
+  it('adversarial #955 follow-up 8/10 — checkpoint clip pins honesty and prefix-summarizes oldest', async () => {
     standardHarness();
     mockAuthedSession();
     mockStart();
-    const encoder = new TextEncoder();
-    const prefixBytes = (n: number): number =>
-      encoder.encode(
-        JSON.stringify([
-          { role: 'user', content: `ANCIENT_PREFIX ${'H'.repeat(n)}` },
-          { role: 'assistant', delta: { text: 'old' } },
-        ]),
-      ).length;
-    let lo = COMPACTION_SPAN_MAX_BYTES - 4096;
-    let hi = COMPACTION_SPAN_MAX_BYTES;
-    while (lo < hi) {
-      const mid = lo + ((hi - lo + 1) >> 1);
-      if (prefixBytes(mid) <= COMPACTION_SPAN_MAX_BYTES - 8) lo = mid;
-      else hi = mid - 1;
-    }
-    const ancient = `ANCIENT_PREFIX ${'H'.repeat(lo)}`;
+    const fill = `FILL ${'H'.repeat(COMPACTION_SPAN_MAX_BYTES - 64)}`;
     const checkpoint = {
       summary: 'earlier session summarized',
       filesTouched: ['src/a.ts'],
       retainedTail: [
-        { role: 'user', content: ancient },
+        { role: 'user', content: 'ANCIENT_PREFIX goal of the session' },
         { role: 'assistant', delta: { text: 'old' } },
-        { role: 'user', content: 'MIDDLE_MARKER' },
+        { role: 'user', content: fill },
         { role: 'assistant', delta: { text: 'T'.repeat(8_000) } },
         { role: 'user', content: 'newest boundary' },
       ],
@@ -2117,15 +2088,18 @@ describe('POST /api/turns', () => {
     const startArgs = startMock.mock.calls[0][1][0];
     expect(startArgs.compact).toBeDefined();
     expect(startArgs.compact.pinSummaryRow).toBe(true);
+    expect(startArgs.compact.clipped).toBe(true);
     const span = startArgs.compact.span as Array<{ role?: string; content?: string }>;
     expect(span[0]?.role).toBe('user');
     expect(span[0]?.content?.startsWith(COMPACTION_SUMMARY_LABEL)).toBe(true);
-    expect(span.some((r) => r.content === 'MIDDLE_MARKER')).toBe(true);
+    expect(
+      span.some((r) => r.content === 'ANCIENT_PREFIX goal of the session'),
+    ).toBe(true);
     const covered = [
       ...span,
       ...(startArgs.compact.retainedTail as Array<{ content?: string }>),
     ];
-    expect(covered.some((r) => r.content === ancient)).toBe(false);
+    expect(covered.some((r) => r.content === fill)).toBe(false);
     expect(startArgs.compact.failOpenSeed).toBeUndefined();
     expect(startArgs.priorMessages).toBeUndefined();
   });

@@ -5910,6 +5910,66 @@ describe('runTurnLoop compaction (plan #950, source #552)', () => {
     expect(closed()).toBe(1);
   });
 
+  it('clipped fail-open seeds pin+tail, not holey span+tail (adversarial #955 follow-up 10)', async () => {
+    const { deps, closed } = wiredDeps();
+    let firstRoundMessages: unknown[] | undefined;
+    const modelStep = vi.fn(async (args: { messages: ReadonlyArray<unknown> }) => {
+      if (!firstRoundMessages) firstRoundMessages = [...args.messages];
+      return {
+        ok: true as const,
+        delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+      };
+    });
+    const compactionStep = vi.fn(async () => ({
+      ok: false as const,
+      code: 'summarize_failed',
+      error: 'boom',
+    }));
+    const persistSpy = vi.fn(deps.persistStep);
+    const honesty =
+      'Summary of earlier session (compacted, not live assistant prose): earlier work';
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        persistStep: persistSpy,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionRetainedTail: [{ role: 'user', content: 'newest tail' }],
+      },
+      {
+        userMessage: 'continue',
+        compact: {
+          span: [
+            { role: 'user', content: honesty },
+            { role: 'user', content: 'ANCIENT_PREFIX' },
+          ],
+          budgetTokens: 100_000,
+          pinSummaryRow: true,
+          clipped: true,
+        },
+      },
+    );
+    expect(result.status).toBe('completed');
+    expect(firstRoundMessages).toBeDefined();
+    const rows = firstRoundMessages as Array<{ role: string; content?: string }>;
+    expect(rows[0]?.content).toBe(honesty);
+    expect(rows.some((r) => r.content === 'newest tail')).toBe(true);
+    expect(rows.some((r) => r.content === 'ANCIENT_PREFIX')).toBe(false);
+    expect(rows[rows.length - 1]).toEqual({ role: 'user', content: 'continue' });
+    const mm = persistSpy.mock.calls
+      .map((c) => c[0].fold?.modelMessages as Array<{ content?: string }> | undefined)
+      .find((m) => Array.isArray(m));
+    expect(mm?.some((r) => r.content === honesty)).toBe(true);
+    expect(mm?.some((r) => r.content === 'newest tail')).toBe(true);
+    expect(mm?.some((r) => r.content === 'ANCIENT_PREFIX')).toBe(false);
+    const ckFolds = persistSpy.mock.calls
+      .map((c) => c[0].fold)
+      .filter((f) => f?.compactionCheckpoint !== undefined);
+    expect(ckFolds).toHaveLength(0);
+    expect(closed()).toBe(1);
+  });
+
   it('success seed trims [realSummary, ...tail] with pinnedCount 1 (adversarial #955 combined-seed rails)', async () => {
     const { deps } = wiredDeps();
     let firstRoundMessages: unknown[] | undefined;

@@ -72,12 +72,13 @@ export type CompactionCut = {
   /** Rows from the boundary to the end — the retained tail. */
   tail: ModelMessageRow[];
   /**
-   * True when the span is a **suffix clip** of `rows[0:cutIndex]`
-   * (adversarial #955 follow-up 8 / 9). `span.concat(tail)` is then not
-   * the full input — the oldest unpinned prefix is on neither side.
-   * `pinnedCount` keeps `rows[0..pin)` (Goal 4 honesty) in the span so
-   * clip **success** re-summarizes it; fail-open reconstructs span+tail
-   * (honesty is in the span) without a third `failOpenSeed` array.
+   * True when the span is a **prefix clip** of `rows[0:cutIndex]`
+   * (adversarial #955 follow-up 10). `span.concat(tail)` is then not
+   * the full input — the middle between the oldest summarized prefix and
+   * the retained tail is on neither side. `pinnedCount` keeps
+   * `rows[0..pin)` (Goal 4 honesty) in the span so clip **success**
+   * re-summarizes it. Fail-open does **not** reconstruct holey span+tail:
+   * it seeds honesty-pin (if any) + tail (the `#944` newest window).
    */
   clipped?: boolean;
 };
@@ -322,13 +323,14 @@ export function renderSummaryRow(
  *
  *    When continue cannot produce a partition (the next older tail misses
  *    a rail — monotonic), **clip** the last fitting tail's span to the
- *    longest **suffix** `≤ maxSpanBytes` (newest over-cap bytes adjacent
- *    to the tail — the region `#944` drop-oldest would delete), not the
- *    oldest prefix (adversarial #955 follow-up 8). Yield-to-trim would
- *    discard the fitting tail AND the overflow with no summary; a clipped
- *    span summarizes the overflow next to the keep-window and keeps the
- *    newest tail (oldest prefix dropped — same region `#944` would drop,
- *    plus a summary of the overflow).
+ *    longest **prefix** `≤ maxSpanBytes` (oldest overflow — parent Goal 1
+ *    / “summarizes the oldest rows”). Suffix-clip (follow-up 8) summarized
+ *    bytes already adjacent to the tail and dropped the user goal; prefix
+ *    clip restores Goal 1 (adversarial #955 follow-up 10). Yield-to-trim
+ *    would discard the fitting tail AND the overflow with no summary; a
+ *    clipped span summarizes the oldest overflow and keeps the newest
+ *    tail (middle dropped — `#944` would drop it too, without a summary
+ *    of the start).
  *
  * Tail size is monotonic on every rail as the boundary moves earlier
  * (adversarial #953): if the newest (smallest) tail misses, no earlier tail
@@ -363,10 +365,11 @@ export function findCompactionCut(
      */
     maxSpanBytes?: number;
     /**
-     * Keep `rows[0..pinnedCount)` in a suffix clip (adversarial #955
-     * follow-up 9). Goal 4 honesty is index 0 on a checkpoint seed and is
-     * not a cut boundary; without a pin, suffix clip drops it from the
-     * span and compact **success** re-summarizes only the recent overflow.
+     * Keep `rows[0..pinnedCount)` in a prefix clip (adversarial #955
+     * follow-up 9 / 10). Goal 4 honesty is index 0 on a checkpoint seed
+     * and is not a cut boundary; without a pin, prefix clip still starts
+     * at row 0 (the oldest overflow). The pin keeps honesty in the span
+     * so clip **success** re-summarizes it.
      */
     pinnedCount?: number;
   },
@@ -413,9 +416,14 @@ export function findCompactionCut(
       pinnedCount,
     );
     if (clipped.length === 0) return null;
+    const span = rePairModelMessages(clipped);
+    // Phase-1 contract: empty span is not a cut. A byte-clip that lands
+    // entirely on orphan tool-results re-pairs to [] — yield to `#944`
+    // rather than summarize nothing (adversarial #955 follow-up 10).
+    if (span.length === 0) return null;
     return {
       cutIndex: spanOverFit.cutIndex,
-      span: rePairModelMessages(clipped),
+      span,
       tail: rePairModelMessages(spanOverFit.tail),
       clipped: true,
     };
@@ -433,6 +441,7 @@ export function findCompactionCut(
     if (Math.ceil(json.length / ratio) > budgetTokens) return clipFit();
     if (utf8Bytes(json) > maxBytes) return clipFit();
     const span = rePairModelMessages(rows.slice(0, cutIndex));
+    if (span.length === 0) continue;
     if (
       maxSpanBytes !== undefined &&
       utf8Bytes(JSON.stringify(span)) > maxSpanBytes
@@ -450,11 +459,11 @@ export function findCompactionCut(
 }
 
 /**
- * Longest **suffix** of `rows[0:cutIndex]` whose JSON is `≤ maxSpanBytes`,
- * with `rows[0..pinnedCount)` kept as a prefix (adversarial #955 follow-up 9).
- * Newest over-cap bytes adjacent to the tail (follow-up 8) — the region
- * `#944` drop-oldest would delete — not the oldest unpinned prefix.
- * Empty when even the pinned prefix overflows (yield to trim). Pure, never throws.
+ * Longest **prefix** of `rows[0:cutIndex]` whose JSON is `≤ maxSpanBytes`,
+ * with `rows[0..pinnedCount)` kept (adversarial #955 follow-up 10).
+ * Oldest overflow — parent Goal 1 — not the newest suffix adjacent to the
+ * tail (follow-up 8 inverted this). Empty when even the pinned prefix
+ * overflows (yield to trim). Pure, never throws.
  */
 function clipSpanToMaxBytes(
   rows: ReadonlyArray<ModelMessageRow>,
@@ -468,22 +477,20 @@ function clipSpanToMaxBytes(
   if (pin > 0 && utf8Bytes(JSON.stringify(pinned)) > maxSpanBytes) return [];
   if (cutIndex <= pin) return pinned;
 
-  const candidate = (start: number): ModelMessageRow[] =>
-    pin > 0
-      ? [...pinned, ...rows.slice(start, cutIndex)]
-      : rows.slice(start, cutIndex);
-  const suffixFits = (start: number): boolean =>
-    utf8Bytes(JSON.stringify(candidate(start))) <= maxSpanBytes;
+  const candidate = (end: number): ModelMessageRow[] =>
+    pin > 0 ? [...pinned, ...rows.slice(pin, end)] : rows.slice(0, end);
+  const prefixFits = (end: number): boolean =>
+    utf8Bytes(JSON.stringify(candidate(end))) <= maxSpanBytes;
 
-  if (suffixFits(pin)) return rows.slice(0, cutIndex);
-  // start=cutIndex → suffix empty → pinned only (already known to fit).
-  if (!suffixFits(cutIndex - 1)) return pinned;
-  let lo = pin;
+  if (prefixFits(cutIndex)) return rows.slice(0, cutIndex);
+  // Even one unpinned row misses → pin only (already known to fit).
+  if (!prefixFits(pin + 1)) return pinned;
+  let lo = pin + 1;
   let hi = cutIndex - 1;
   while (lo < hi) {
-    const mid = lo + ((hi - lo) >> 1);
-    if (suffixFits(mid)) hi = mid;
-    else lo = mid + 1;
+    const mid = lo + Math.floor((hi - lo + 1) / 2);
+    if (prefixFits(mid)) lo = mid;
+    else hi = mid - 1;
   }
   return candidate(lo);
 }
@@ -527,10 +534,10 @@ export function compactionCutRails(budgetTokens: number): {
 
 /**
  * Combined `start()` compact-args payload rail (adversarial #955 follow-up).
- * `span` + `retainedTail` on a suffix clip is the newest contiguous suffix
- * (mm) or `[honesty, …suffix, …tail]` (checkpoint pin). `failOpenSeed` is
- * unused once the clip pins row 0 — kept optional for older callers. Pure,
- * never throws. `maxBytes` override is for tests.
+ * Prefix-clip `span` + `retainedTail` is oldest overflow + newest tail (a
+ * hole in the middle). `failOpenSeed` is unused — clipped fail-open seeds
+ * pin+tail instead of a third array. Pure, never throws. `maxBytes`
+ * override is for tests.
  */
 export function compactStartPayloadFits(
   compact: {
@@ -538,9 +545,11 @@ export function compactStartPayloadFits(
     retainedTail: unknown;
     filesTouched: unknown;
     budgetTokens: number;
-    /** `#944` trim of the full pre-trim seed — checkpoint clip fail-open only. */
+    /** `#944` trim of the full pre-trim seed — unused after follow-up 10. */
     failOpenSeed?: unknown;
     pinSummaryRow?: boolean;
+    /** Prefix clip (adversarial #955 follow-up 10) — fail-open is pin+tail. */
+    clipped?: boolean;
   },
   maxBytes: number = COMPACTION_START_MAX_BYTES,
 ): boolean {

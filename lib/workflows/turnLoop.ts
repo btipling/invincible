@@ -369,11 +369,16 @@ export interface TurnLoopInput {
      */
     pinSummaryRow?: boolean;
     /**
-     * `#944`-trimmed full pre-trim projection (adversarial #955 follow-up 8).
-     * Present when the route-side cut was a **suffix clip** AND the seed was
-     * a checkpoint (`pinSummaryRow`): Goal 4 honesty is rows[0] and a suffix
-     * clip drops it. mm-seed clip omits this — span+tail is a contiguous
-     * newest suffix; fail-open reconstructs it and `#944`-trims.
+     * Prefix clip (adversarial #955 follow-up 10). Span is the oldest
+     * overflow, not a complete partition. Fail-open seeds honesty pin
+     * (if any) + `retainedTail` (the `#944` newest window), then trims.
+     * Absent = complete partition; fail-open reconstructs span+tail.
+     */
+    clipped?: boolean;
+    /**
+     * `#944`-trimmed full pre-trim projection (kept for older callers /
+     * unit fixtures). Production clip fail-open uses `clipped` + pin+tail
+     * and does not ship this third array.
      */
     failOpenSeed?: ReadonlyArray<unknown>;
   };
@@ -795,10 +800,10 @@ export async function runTurnLoop(
   }
 
   // Seed: compacted `[summaryRow, ...tail]` on success; otherwise the
-  // un-compacted projection. Compact-path fail-open with no `priorMessages`
-  // uses `failOpenSeed` when the cut was a checkpoint suffix clip (Goal 4
-  // honesty dropped from the span); else reconstructs span+tail (complete
-  // partition, or mm suffix clip — a contiguous newest suffix) and applies
+  // un-compacted projection. Compact-path fail-open with no `priorMessages`:
+  // `failOpenSeed` (legacy fixtures) wins; a **prefix clip** seeds honesty
+  // pin + tail (the `#944` newest window — span is the oldest overflow, not
+  // a partition); else reconstruct span+tail (complete partition) and apply
   // #944 rails.
   let loopSeed: unknown[];
   if (compactedSeed !== undefined) {
@@ -806,11 +811,29 @@ export async function runTurnLoop(
   } else if (input.priorMessages !== undefined) {
     loopSeed = [...input.priorMessages];
   } else if (input.compact !== undefined) {
-    // Checkpoint suffix-clip fail-open (adversarial #955 follow-up 8):
-    // Goal 4 honesty is rows[0] and is not in span+tail. Prefer the
-    // route-computed `#944` trim of the FULL pre-trim seed.
     if (input.compact.failOpenSeed !== undefined) {
       loopSeed = buildModelMessages(input.compact.failOpenSeed).rows;
+    } else if (input.compact.clipped === true) {
+      // Prefix clip (adversarial #955 follow-up 10): span is the oldest
+      // overflow. Fail-open must not persist holey span+tail. Honesty pin
+      // (span[0] when `pinSummaryRow`) + retained tail is the newest window.
+      const pinRow =
+        input.compact.pinSummaryRow === true
+          ? buildModelMessages(input.compact.span.slice(0, 1)).rows
+          : [];
+      const rebuilt = buildModelMessages([
+        ...pinRow,
+        ...(deps.compactionRetainedTail ?? []),
+      ]).rows;
+      const budget = input.compact.budgetTokens;
+      const pinCount = input.compact.pinSummaryRow === true ? 1 : 0;
+      loopSeed =
+        typeof budget === 'number'
+          ? trimModelMessagesToBudget(rebuilt, budget, {
+              currentUserContent: input.userMessage,
+              ...(pinCount > 0 ? { pinnedCount: pinCount } : {}),
+            }).rows
+          : rebuilt;
     } else {
       const rebuilt = buildModelMessages([
         ...input.compact.span,

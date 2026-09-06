@@ -129,8 +129,13 @@ export interface TurnWorkflowArgs {
      */
     pinSummaryRow?: boolean;
     /**
-     * `#944`-trimmed full pre-trim projection (adversarial #955 follow-up 8).
-     * Checkpoint suffix-clip fail-open only — see `TurnLoopInput.compact.failOpenSeed`.
+     * Prefix clip (adversarial #955 follow-up 10). Fail-open seeds pin+tail
+     * instead of holey span+tail. See `TurnLoopInput.compact.clipped`.
+     */
+    clipped?: boolean;
+    /**
+     * `#944`-trimmed full pre-trim projection (kept for older callers /
+     * unit fixtures). Production clip fail-open uses `clipped` + pin+tail.
      */
     failOpenSeed?: ReadonlyArray<unknown>;
   };
@@ -270,6 +275,7 @@ export async function turnWorkflow(
                 ...(args.compact.pinSummaryRow === true
                   ? { pinSummaryRow: true }
                   : {}),
+                ...(args.compact.clipped === true ? { clipped: true } : {}),
                 ...(args.compact.failOpenSeed !== undefined
                   ? { failOpenSeed: args.compact.failOpenSeed }
                   : {}),

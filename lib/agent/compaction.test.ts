@@ -304,27 +304,25 @@ describe('findCompactionCut (plan #948 row 1 + 2)', () => {
     expect(spanBytes).toBeLessThanOrEqual(cap);
     expect(cut!.span.length).toBeGreaterThan(0);
     expect(cut!.span.length).toBeLessThan(4);
-    // Adversarial #955 follow-up 8: suffix clip — newest over-cap bytes
-    // adjacent to the tail, not the oldest prefix. `t2-middle` is in the
-    // span (summarized); `t1-span-head` is the dropped oldest prefix
-    // (`#944` would drop it too). `clipped` flags the missing prefix so
-    // checkpoint fail-open can pass a `#944` seed (honesty at index 0).
+    // Adversarial #955 follow-up 10: prefix clip — oldest overflow in
+    // the span (Goal 1); `t2-middle` is the dropped middle (`#944`
+    // would drop it too, without a summary of the start).
     expect(cut!.clipped).toBe(true);
-    expect(cut!.span[0]).toEqual(rows[2]);
-    expect(cut!.span[cut!.span.length - 1]).toEqual(rows[3]);
+    expect(cut!.span[0]).toEqual(rows[0]);
+    expect(cut!.span[cut!.span.length - 1]).toEqual(rows[1]);
     const covered = [...cut!.span, ...cut!.tail];
     expect(
-      covered.some((r) => r.role === 'user' && r.content === 't2-middle'),
+      covered.some((r) => r.role === 'user' && r.content === 't1-span-head'),
     ).toBe(true);
     expect(
-      covered.some((r) => r.role === 'user' && r.content === 't1-span-head'),
+      covered.some((r) => r.role === 'user' && r.content === 't2-middle'),
     ).toBe(false);
-    expect(rows.some((r) => r.role === 'user' && r.content === 't1-span-head')).toBe(
+    expect(rows.some((r) => r.role === 'user' && r.content === 't2-middle')).toBe(
       true,
     );
   });
 
-  it('adversarial #955 follow-up 9 — pinnedCount keeps rows[0] in a suffix clip', () => {
+  it('adversarial #955 follow-up 9 — pinnedCount keeps rows[0] in a prefix clip', () => {
     const honesty = user(`${COMPACTION_SUMMARY_LABEL} earlier session`);
     const rows: ModelMessageRow[] = [
       honesty,
@@ -341,11 +339,11 @@ describe('findCompactionCut (plan #948 row 1 + 2)', () => {
     expect(Math.ceil(olderTailJson.length / 4)).toBeGreaterThan(budget);
     const encoder = new TextEncoder();
     const fullSpanBytes = encoder.encode(JSON.stringify(rows.slice(0, 5))).length;
-    // Cap fits honesty + t2-middle turn, not honesty + ancient t1 prefix.
-    const pinPlusMiddle = encoder.encode(
-      JSON.stringify([honesty, rows[3], rows[4]]),
+    // Cap fits honesty + t1-span-head turn, not honesty + t1 + t2-middle.
+    const pinPlusOldest = encoder.encode(
+      JSON.stringify([honesty, rows[1], rows[2]]),
     ).length;
-    const cap = pinPlusMiddle + 8;
+    const cap = pinPlusOldest + 8;
     expect(fullSpanBytes).toBeGreaterThan(cap);
     const cut = findCompactionCut(rows, budget, {
       maxSpanBytes: cap,
@@ -356,10 +354,13 @@ describe('findCompactionCut (plan #948 row 1 + 2)', () => {
     expect(cut!.span[0]).toEqual(honesty);
     expect(
       cut!.span.some((r) => r.role === 'user' && r.content === 't1-span-head'),
+    ).toBe(true);
+    expect(
+      cut!.span.some((r) => r.role === 'user' && r.content === 't2-middle'),
     ).toBe(false);
     const covered = [...cut!.span, ...cut!.tail];
     expect(
-      covered.some((r) => r.role === 'user' && r.content === 't2-middle'),
+      covered.some((r) => r.role === 'user' && r.content === 't3-newest'),
     ).toBe(true);
   });
 
@@ -373,6 +374,19 @@ describe('findCompactionCut (plan #948 row 1 + 2)', () => {
     const newestTailJson = JSON.stringify(rows.slice(2));
     const budget = Math.ceil(newestTailJson.length / 4) + 1;
     const cut = findCompactionCut(rows, budget, { maxSpanBytes: 8 });
+    expect(cut).toBeNull();
+  });
+
+  it('adversarial #955 follow-up 10 — empty re-paired span is not a cut', () => {
+    // Leading orphan tool-results re-pair to []. Phase-1 contract: no cut.
+    const rows: ModelMessageRow[] = [
+      toolOk('write_file', 'c1', 'ok'),
+      user('newest'),
+      assistant('z'),
+    ];
+    const newestTailJson = JSON.stringify(rows.slice(1));
+    const budget = Math.ceil(newestTailJson.length / 4) + 50;
+    const cut = findCompactionCut(rows, budget);
     expect(cut).toBeNull();
   });
 });
@@ -615,10 +629,10 @@ describe('compactStartPayloadFits (adversarial #955 follow-up)', () => {
     expect(compactStartPayloadFits(compact, Number.NaN)).toBe(false);
   });
 
-  it('adversarial #955 follow-up 8 — mm suffix-clip span+tail fits 3 MiB; adding failOpenSeed of the default-window seed does not', () => {
+  it('adversarial #955 follow-up 8/10 — prefix-clip span+tail fits 3 MiB; adding failOpenSeed of the default-window seed does not', () => {
     // Default 200k fold budget ≈ 170k tokens ≈ 0.68 MiB JSON. Tail rails ≈
     // 0.64 MiB. Clipped span ≤ 2 MiB. 2+0.64 = 2.64 < 3; +0.68 failOpenSeed
-    // = 3.32 > 3 — the Goal 1 miss when mm clip shipped a third array.
+    // = 3.32 > 3 — why clipped fail-open uses pin+tail, not a third array.
     const span = [{ role: 'user', content: 'S'.repeat(2 * 1024 * 1024 - 64) }];
     const retainedTail = [{ role: 'user', content: 'T'.repeat(640 * 1024) }];
     const failOpenSeed = [{ role: 'user', content: 'F'.repeat(680 * 1024) }];
@@ -627,6 +641,7 @@ describe('compactStartPayloadFits (adversarial #955 follow-up)', () => {
       retainedTail,
       filesTouched: [] as string[],
       budgetTokens: 170_000,
+      clipped: true,
     };
     expect(compactStartPayloadFits(base)).toBe(true);
     expect(compactStartPayloadFits({ ...base, failOpenSeed })).toBe(false);
