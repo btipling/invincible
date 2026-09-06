@@ -4,9 +4,9 @@
  * The pure, testable while-loop that drives one prompt run. Per the umbrella
  * (#794) Architecture lock, ONE run = ONE prompt, and ONE step boundary = one
  * model round OR one tool **batch** (the round's toolCalls) OR one persist. The loop lives in workflow
- * context; it calls the three thin `'use step'` wrappers
- * (`modelGenerateStep` / `toolExecuteStep` / `persistStep`) which each re-resolve
- * the world in-step from serializable args.
+ * context; it calls the `'use step'` wrappers
+ * (`modelGenerateStep` / `toolExecuteStep` / `persistStep` / `compactionStep`)
+ * which each re-resolve the world in-step from serializable args.
  *
  * **Deliberately directive-free** (no `"use workflow"` / `"use step"` in this
  * file) so the whole matrix runs under plain vitest without the Vercel-Workflows
@@ -749,6 +749,7 @@ export async function runTurnLoop(
   // still terminal-persist with **no fold** so `'cancelling'` is superseded
   // (`persistOverlayStatus` `'completed'`) — F5 must not cold-attach.
   let compactCancelled: string | undefined;
+  let compactWall = false;
   if (input.compact !== undefined && deps.compactionStep !== undefined) {
     try {
       const c = await deps.compactionStep({
@@ -760,6 +761,9 @@ export async function runTurnLoop(
       });
       if (!c.ok && c.code === 'cancelled') {
         compactCancelled = c.error || 'Request cancelled.';
+      } else if (!c.ok && c.code === 'wall_clock') {
+        // Adversarial #955 follow-up 18: do not enter the tools-on while.
+        compactWall = true;
       } else if (c.ok && typeof c.summary === 'string' && c.summary.trim().length > 0) {
         const checkpoint = buildCheckpoint(
           {
@@ -1129,6 +1133,13 @@ export async function runTurnLoop(
         // Persist must not skip the writable close on stream death.
       }
       return fail('cancelled', 0, 0, compactCancelled);
+    }
+    if (compactWall) {
+      // Summarizer already fired the 1h cap. Fail-open seed is already in
+      // `messages` (not ask-only — wrap-up persist must copy the warehouse).
+      // Do not start a tools-on first round that the deadline signal would
+      // immediately abort (adversarial #955 follow-up 18).
+      return wallWrapUp(0, 0);
     }
     while (steps < cap) {
       round += 1;

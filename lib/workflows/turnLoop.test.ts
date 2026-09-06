@@ -5791,6 +5791,60 @@ describe('runTurnLoop compaction (plan #950, source #552)', () => {
     expect(persistSpy.mock.calls[0]?.[0]?.fold).toBeUndefined();
   });
 
+  it('adversarial #955 follow-up 18 — summarizer wall_clock wrap-up immediately (no tools-on first round)', async () => {
+    const { deps, closed } = wiredDeps();
+    const persistSpy = vi.fn(deps.persistStep);
+    const modelStep = vi.fn(async (args: unknown) => {
+      const a = args as { disableTools?: boolean };
+      if (!a.disableTools) {
+        throw new Error('tools-on first round must not run after summarizer wall_clock');
+      }
+      return { ok: true as const, delta: { text: 'wrap', toolCalls: [] } };
+    });
+    const compactionStep = vi.fn(async () => ({
+      ok: false as const,
+      code: 'wall_clock',
+      error: TURN_WALL_CLOCK_ERROR,
+    }));
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        persistStep: persistSpy,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionRetainedTail: [{ role: 'user', content: 'tail row' }],
+        // Still in the future — the loop must not wait on deadlineElapsed().
+        deadlineAt: Date.now() + 60_000,
+      },
+      {
+        userMessage: 'continue',
+        compact: {
+          span: [{ role: 'user', content: 'span row' }],
+          budgetTokens: 100_000,
+        },
+      },
+    );
+    expect(result.status).toBe('capped');
+    expect(result.reason).toBe('wall');
+    expect(modelStep).toHaveBeenCalledTimes(1);
+    expect(
+      (modelStep.mock.calls[0]?.[0] as { disableTools?: boolean }).disableTools,
+    ).toBe(true);
+    const foldCall = persistSpy.mock.calls.find((c) => c[0].fold !== undefined);
+    expect(foldCall).toBeDefined();
+    expect(foldCall?.[0]?.fold?.compactionCheckpoint).toBeUndefined();
+    const mm = foldCall?.[0]?.fold?.modelMessages as Array<{
+      role?: string;
+      content?: string;
+    }>;
+    expect(mm?.some((r) => r.content === 'span row')).toBe(true);
+    expect(mm?.some((r) => r.content === 'tail row')).toBe(true);
+    expect(mm?.some((r) => r.content === 'continue')).toBe(true);
+    expect(mm).toHaveLength(4); // span + tail + ask + wrap-up assistant
+    expect(closed()).toBe(1);
+  });
+
   it('empty summary → no compacted seed (plain projection); fold carries NO compactionCheckpoint', async () => {
     const { deps } = wiredDeps();
     const modelStep = vi.fn(async () => ({

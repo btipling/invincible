@@ -6,8 +6,9 @@
  *  - adapts durable SSE write/close `'use step'` wrappers (`writeTurnSse` /
  *    `closeTurnSse`) — tokens ride Data Written, never step events; stream I/O
  *    is illegal in `'use workflow'` (plan #842);
- *  - composes the three `'use step'` wrappers (`modelGenerateStep`,
- *    `toolExecuteStep`, `persistStep`) into the loop core's step-fn contracts;
+ *  - composes the `'use step'` wrappers (`modelGenerateStep`,
+ *    `toolExecuteStep`, `persistStep`, `compactionStep`) into the loop core's
+ *    step-fn contracts;
  *  - runs the orchestrator while-loop (`runTurnLoop`) per the umbrella #794
  *    Architecture lock, with the 512-step cap and writable close on every
  *    terminal path;
