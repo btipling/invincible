@@ -637,8 +637,9 @@ export function fitCompactionCutToStartPayload(
   }
   const n = cut.span.length;
   if (n === 0) return null;
-  // Non-empty span required (phase-1 contract). Honesty pin stays in the
-  // prefix so clip success still re-summarizes Goal 4.
+  // Non-empty span required (phase-1 contract). Honesty pin stays in a
+  // *non-pin-only* prefix so clip success still re-summarizes Goal 4
+  // together with overflow. Pin-only shrink yields (follow-up 15).
   const minEnd = Math.max(1, pin);
   const prefix = (end: number): ModelMessageRow[] => cut.span.slice(0, end);
   const fits = (end: number): boolean =>
@@ -653,6 +654,14 @@ export function fitCompactionCutToStartPayload(
   }
   const span = rePairModelMessages(prefix(lo));
   if (span.length === 0) return null;
+  // Pin-only shrink (adversarial #955 follow-up 15): follow-up 13's
+  // `clipFit` yield must apply here too. A ≳1 MiB first-unpinned
+  // assistant (no per-row assistant cap) + 2 MiB byte-rail tail
+  // fits `prefix(1)+tail` and misses `prefix(2)+tail` against
+  // `COMPACTION_START_MAX_BYTES`. Returning `{span:[honesty]}`
+  // rewrites Goal 4 and never summarizes overflow — worse than
+  // `#944` (keeps the pin, drop-oldest's the fat row).
+  if (pin > 0 && span.length <= pin) return null;
   return {
     cutIndex: cut.cutIndex,
     span,

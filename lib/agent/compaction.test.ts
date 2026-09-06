@@ -928,6 +928,47 @@ describe('fitCompactionCutToStartPayload (adversarial #955 follow-up 11)', () =>
       fitCompactionCutToStartPayload(cut, { filesTouched: [], budgetTokens: 1 }, 80),
     ).toBeNull();
   });
+
+  it('adversarial #955 follow-up 15 — pin-only shrink yields null (do not rewrite honesty)', () => {
+    // Cap fits honesty+tail and misses honesty+fat-assistant+tail.
+    // Follow-up 13's clipFit already yields this shape; the start-payload
+    // shrink did not. Assistant text is uncapped per-row (user rows are
+    // 256 KiB) — a ≳1 MiB first-unpinned assistant vs a 2 MiB tail is
+    // the production 3 MiB rail.
+    const honesty = user(`${COMPACTION_SUMMARY_LABEL} earlier session`);
+    const fat = assistant('FAT_ASST ' + 'A'.repeat(120));
+    const oldest = user('ANCIENT_PREFIX');
+    const cut = {
+      cutIndex: 4,
+      span: [honesty, fat, oldest],
+      tail: [user('newest tail')],
+    };
+    const args = {
+      filesTouched: ['src/a.ts'],
+      budgetTokens: 170_000,
+      pinSummaryRow: true as const,
+    };
+    const encoder = new TextEncoder();
+    const payload = (span: typeof cut.span) =>
+      encoder.encode(
+        JSON.stringify({
+          span,
+          filesTouched: args.filesTouched,
+          retainedTail: cut.tail,
+          budgetTokens: args.budgetTokens,
+          pinSummaryRow: true,
+          clipped: true,
+        }),
+      ).length;
+    const pinOnly = payload([honesty]);
+    const pinPlusFat = payload([honesty, fat]);
+    expect(pinPlusFat).toBeGreaterThan(pinOnly);
+    const cap = pinOnly + 8;
+    expect(pinPlusFat).toBeGreaterThan(cap);
+    expect(
+      fitCompactionCutToStartPayload(cut, args, cap),
+    ).toBeNull();
+  });
 });
 
 describe('boundCheckpointForPersist (adversarial #955 follow-up)', () => {

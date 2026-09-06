@@ -2318,4 +2318,55 @@ describe('POST /api/turns', () => {
     ).toBe(true);
   });
 
+  it('adversarial #955 follow-up 15 — start-rail pin-only shrink yields to #944 (no compact)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    // 1M window: honesty + ≳1.2 MiB first-unpinned assistant + ~1.85 MiB
+    // tail. Span rail (2 MiB) keeps honesty+assistant; combined start()
+    // payload > 3 MiB so fit shrinks. prefix(1)+tail fits, prefix(2)+tail
+    // does not → pin-only. Must NOT start() compact (rewrite honesty).
+    const honesty = {
+      role: 'user',
+      content: `${COMPACTION_SUMMARY_LABEL} earlier session summarized\n\nFiles read/modified: src/a.ts`,
+    };
+    const fatAsst = `FAT_ASST ${'A'.repeat(1.2 * 1024 * 1024)}`;
+    const more = `MORE ${'M'.repeat(1.0 * 1024 * 1024)}`;
+    const tailFill = `TAIL ${'T'.repeat(1.85 * 1024 * 1024)}`;
+    const liveMm = [
+      honesty,
+      { role: 'assistant', delta: { text: fatAsst } },
+      { role: 'user', content: more },
+      { role: 'assistant', delta: { text: 'mid' } },
+      { role: 'user', content: tailFill },
+      { role: 'assistant', delta: { text: 'tail-asst' } },
+    ];
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(JSON.stringify(liveMm));
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      effortValuesForModel: async () => [],
+      getJoinedWindowMap: async () => new Map([['anthropic/claude-a', 1_000_000]]),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'continue', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.compact).toBeUndefined();
+    expect(startArgs.priorMessages).toBeDefined();
+    expect(startArgs.priorMessages[0].content.startsWith(COMPACTION_SUMMARY_LABEL)).toBe(
+      true,
+    );
+    expect(
+      startArgs.priorMessages.some((r: { content?: string }) => r.content === tailFill),
+    ).toBe(true);
+  });
+
 });
