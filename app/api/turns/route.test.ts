@@ -1905,6 +1905,8 @@ describe('POST /api/turns', () => {
     expect(startArgs.compact.filesTouched).toContain('src/a.ts');
     expect(Array.isArray(startArgs.compact.retainedTail)).toBe(true);
     expect(typeof startArgs.compact.budgetTokens).toBe('number');
+    // mm-seed compact: no Goal 4 honesty row to pin on fail-open.
+    expect(startArgs.compact.pinSummaryRow).toBeUndefined();
     // Adversarial #955: compact path omits priorMessages (no dummy empty
     // Goal 4 row as the fail-open seed; no third seed-sized start() array).
     expect(startArgs.priorMessages).toBeUndefined();
@@ -1990,6 +1992,8 @@ describe('POST /api/turns', () => {
     expect(startArgs.compact.span.length).toBeGreaterThan(0);
     expect(startArgs.compact.filesTouched).toContain('src/a.ts');
     expect(startArgs.priorMessages).toBeUndefined();
+    // Checkpoint seed: fail-open must pin the honesty row (adversarial #955 follow-up).
+    expect(startArgs.compact.pinSummaryRow).toBe(true);
     // Prefer-checkpoint: the mm pointer is not read when the checkpoint seeds.
     expect(blobReadMock).toHaveBeenCalledTimes(1);
     expect(blobReadMock).toHaveBeenCalledWith('t_cp_s1_abc');

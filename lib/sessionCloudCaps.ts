@@ -690,6 +690,19 @@ export const COMPACTION_CHECKPOINT_MAX_BYTES =
 export const COMPACTION_SPAN_MAX_BYTES = 2 * 1024 * 1024;
 
 /**
+ * Combined `start()` compact-args ceiling (adversarial #955 follow-up on
+ * PR #955 / plan #950). `compact.span` + `compact.retainedTail` **is** the
+ * full pre-trim seed (a partition, not two views). Independently railed they
+ * compose to 4 MiB against the 4.5 MB Function payload ceiling; `start()`
+ * throw → route 503, which compaction must never do (parent forbidden /
+ * Goal 6). 3 MiB leaves ~1.5 MB for the SDK envelope + the rest of the
+ * `TurnWorkflowArgs`. Over this ceiling the route yields to the #944 trim.
+ * **NEW generous cap**; no existing cap value changed → no human gate.
+ * Enforced at the route trigger (`app/api/turns/route.ts`).
+ */
+export const COMPACTION_START_MAX_BYTES = 3 * 1024 * 1024;
+
+/**
  * Path cap for the per-turn freshness reminder (plan #941, source #693). The
  * reminder names exactly what the #277 `RunFileFreshness` gate will demand
  * (a `read_file` before edit); 64 workspace-relative paths (~4–8 KiB

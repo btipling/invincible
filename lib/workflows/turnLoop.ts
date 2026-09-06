@@ -53,7 +53,7 @@ import {
 } from '../agent/modelFinish';
 import { TURN_WALL_CLOCK_MAX_MS } from '../sessionCloudCaps';
 import { buildModelMessages, trimModelMessagesToBudget } from '../agent/modelMessages';
-import { buildCheckpoint, renderSummaryRow } from '../agent/compaction';
+import { boundCheckpointForPersist, buildCheckpoint, renderSummaryRow } from '../agent/compaction';
 import { buildFreshnessReminder } from '../agent/freshnessReminder';
 import { logTurnLoop } from './turnLog';
 
@@ -363,6 +363,11 @@ export interface TurnLoopInput {
      * a tiny seed.
      */
     budgetTokens?: number;
+    /**
+     * Checkpoint-seeded compact (adversarial #955 follow-up). Fail-open
+     * reconstruction pins the honesty row at index 0. Absent = mm seed.
+     */
+    pinSummaryRow?: boolean;
   };
 }
 
@@ -776,10 +781,12 @@ export async function runTurnLoop(
       ...(deps.compactionRetainedTail ?? []),
     ]).rows;
     const budget = input.compact.budgetTokens;
+    const pinCount = input.compact.pinSummaryRow === true ? 1 : 0;
     loopSeed =
       typeof budget === 'number'
         ? trimModelMessagesToBudget(rebuilt, budget, {
             currentUserContent: input.userMessage,
+            ...(pinCount > 0 ? { pinnedCount: pinCount } : {}),
           }).rows
         : rebuilt;
   } else {
@@ -865,14 +872,17 @@ export async function runTurnLoop(
       thisRunStart,
       compactedCheckpoint === undefined
         ? undefined
-        : {
+        : boundCheckpointForPersist({
             summary: compactedCheckpoint.summary,
             filesTouched: compactedCheckpoint.filesTouched,
             // Live post-compact view (Goal 2): everything after the summary
             // row, including this turn. Cut-time tail would drop this turn
             // from the next prefer-checkpoint seed (adversarial #955).
+            // Re-railed to COMPACTION_CHECKPOINT_MAX_BYTES so a byte-rail
+            // seed + this turn cannot fail-close the write (adversarial
+            // #955 follow-up).
             retainedTail: buildModelMessages(messages).rows.slice(1),
-          },
+          }),
     );
     return deps.persistStep({
       turnRunId: deps.turnRunId,

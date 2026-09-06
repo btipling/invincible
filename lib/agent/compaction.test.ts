@@ -15,11 +15,14 @@ import { describe, expect, it } from 'vitest';
 import {
   COMPACTION_CHECKPOINT_MAX_BYTES,
   COMPACTION_FILES_TOUCHED_MAX,
+  COMPACTION_START_MAX_BYTES,
   COMPACTION_SUMMARY_MAX_CHARS,
   MODEL_MSG_SEED_MAX_BYTES,
 } from '../sessionCloudCaps';
 import {
+  boundCheckpointForPersist,
   buildCheckpoint,
+  compactStartPayloadFits,
   findCompactionCut,
   renderSummaryRow,
 } from './compaction';
@@ -432,5 +435,58 @@ describe('compaction checkpoint persist cap (plan #949 / adversarial #954)', () 
     // the checkpoint object adds summary/files/keys. Slack is 256 KiB.
     expect(COMPACTION_CHECKPOINT_MAX_BYTES).toBe(MODEL_MSG_SEED_MAX_BYTES + 256 * 1024);
     expect(COMPACTION_CHECKPOINT_MAX_BYTES).toBeGreaterThan(MODEL_MSG_SEED_MAX_BYTES);
+  });
+});
+
+describe('compactStartPayloadFits (adversarial #955 follow-up)', () => {
+  it('COMPACTION_START_MAX_BYTES sits under the 4.5 MB Function ceiling with margin', () => {
+    expect(COMPACTION_START_MAX_BYTES).toBe(3 * 1024 * 1024);
+    expect(COMPACTION_START_MAX_BYTES).toBeLessThan(4.5 * 1024 * 1024);
+    expect(COMPACTION_START_MAX_BYTES).toBeGreaterThan(MODEL_MSG_SEED_MAX_BYTES);
+  });
+
+  it('accepts a small compact payload; rejects when over maxBytes', () => {
+    const compact = {
+      span: [{ role: 'user', content: 'old' }],
+      retainedTail: [{ role: 'user', content: 'new' }],
+      filesTouched: ['src/a.ts'],
+      budgetTokens: 3616,
+    };
+    expect(compactStartPayloadFits(compact)).toBe(true);
+    expect(compactStartPayloadFits(compact, 10)).toBe(false);
+    expect(compactStartPayloadFits(compact, 0)).toBe(false);
+    expect(compactStartPayloadFits(compact, Number.NaN)).toBe(false);
+  });
+});
+
+describe('boundCheckpointForPersist (adversarial #955 follow-up)', () => {
+  it('keeps a small checkpoint unchanged', () => {
+    const built = boundCheckpointForPersist({
+      summary: 'earlier work',
+      filesTouched: ['src/a.ts'],
+      retainedTail: [user('tail'), user('this turn')],
+    });
+    expect(built.summary).toContain('earlier work');
+    expect(built.filesTouched).toEqual(['src/a.ts']);
+    expect(built.retainedTail).toEqual([user('tail'), user('this turn')]);
+  });
+
+  it('drop-oldest on a fat tail so JSON fits; newest (this turn) survives', () => {
+    const fat = user('OLD '.repeat(200));
+    const newestContent = 'this turn must survive';
+    const newest = user(newestContent);
+    const bound = boundCheckpointForPersist(
+      {
+        summary: 's',
+        filesTouched: [],
+        retainedTail: [fat, fat, newest],
+      },
+      400,
+    );
+    const json = JSON.stringify(bound);
+    expect(new TextEncoder().encode(json).length).toBeLessThanOrEqual(400);
+    expect(JSON.stringify(bound.retainedTail)).toContain(newestContent);
+    // Oldest fat rows are the ones that yield.
+    expect(bound.retainedTail.length).toBeLessThan(3);
   });
 });

@@ -64,7 +64,7 @@ import {
   buildModelMessages,
   trimModelMessagesToBudget,
 } from '../../../lib/agent/modelMessages';
-import { buildCheckpoint, findCompactionCut, renderSummaryRow } from '../../../lib/agent/compaction';
+import { buildCheckpoint, findCompactionCut, renderSummaryRow, compactStartPayloadFits } from '../../../lib/agent/compaction';
 import { shouldCompact } from '../../../lib/agent/compactionBudget';
 import { foldBudgetTokens } from '../../../lib/agent/contextBudget';
 import {
@@ -337,6 +337,7 @@ export async function POST(req: Request): Promise<Response> {
           filesTouched: ReadonlyArray<unknown>;
           retainedTail: ReadonlyArray<unknown>;
           budgetTokens: number;
+          pinSummaryRow?: boolean;
         }
       | undefined;
     try {
@@ -553,12 +554,22 @@ export async function POST(req: Request): Promise<Response> {
                     }
                   }
                 }
-                compactArgs = {
+                // Combined start() payload rail (adversarial #955 follow-up):
+                // span + tail is the full pre-trim seed. Independently 2 MiB
+                // rails compose to 4 MiB; over COMPACTION_START_MAX_BYTES
+                // yield to the #944 trim (never a 413 that blocks the turn).
+                const candidate = {
                   span: cut.span,
                   filesTouched,
                   retainedTail: cut.tail,
                   budgetTokens: budget,
                 };
+                if (compactStartPayloadFits(candidate)) {
+                  compactArgs = {
+                    ...candidate,
+                    ...(pinSummaryRow ? { pinSummaryRow: true } : {}),
+                  };
+                }
               }
             }
             if (compactArgs === undefined) {
@@ -713,6 +724,9 @@ export async function POST(req: Request): Promise<Response> {
                 filesTouched: compactArgs.filesTouched,
                 retainedTail: compactArgs.retainedTail,
                 budgetTokens: compactArgs.budgetTokens,
+                ...(compactArgs.pinSummaryRow === true
+                  ? { pinSummaryRow: true }
+                  : {}),
               },
             }
           : {}),

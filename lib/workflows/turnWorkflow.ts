@@ -120,6 +120,13 @@ export interface TurnWorkflowArgs {
      * pins at the route are not the combined seed.
      */
     budgetTokens?: number;
+    /**
+     * Checkpoint-seeded compact (adversarial #955 follow-up): the honesty
+     * row is in the span (index 0 is never a cut boundary). Fail-open
+     * reconstruction must pin it (`pinnedCount: 1`) so #944 drop-oldest
+     * cannot drop Goal 4. Absent/false = mm-seed compact (no pin).
+     */
+    pinSummaryRow?: boolean;
   };
 }
 
@@ -253,6 +260,9 @@ export async function turnWorkflow(
                 span: args.compact.span,
                 ...(typeof args.compact.budgetTokens === 'number'
                   ? { budgetTokens: args.compact.budgetTokens }
+                  : {}),
+                ...(args.compact.pinSummaryRow === true
+                  ? { pinSummaryRow: true }
                   : {}),
               },
             }

@@ -5820,4 +5820,91 @@ describe('runTurnLoop compaction (plan #950, source #552)', () => {
     expect(rows.some((r) => r.content === fatTail)).toBe(false);
     expect(rows[rows.length - 1]).toEqual({ role: 'user', content: 'continue' });
   });
+
+  it('fail-open without priorMessages pins the honesty row when pinSummaryRow (adversarial #955 follow-up)', async () => {
+    const { deps, closed } = wiredDeps();
+    let firstRoundMessages: unknown[] | undefined;
+    const modelStep = vi.fn(async (args: { messages: ReadonlyArray<unknown> }) => {
+      if (!firstRoundMessages) firstRoundMessages = [...args.messages];
+      return {
+        ok: true as const,
+        delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+      };
+    });
+    const compactionStep = vi.fn(async () => ({
+      ok: false as const,
+      code: 'summarize_failed',
+      error: 'boom',
+    }));
+    const honesty =
+      'Summary of earlier session (compacted, not live assistant prose): earlier work';
+    const fatTail = 'T'.repeat(2_000);
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionRetainedTail: [{ role: 'user', content: fatTail }],
+      },
+      {
+        userMessage: 'continue',
+        compact: {
+          span: [{ role: 'user', content: honesty }],
+          budgetTokens: 200,
+          pinSummaryRow: true,
+        },
+      },
+    );
+    expect(result.status).toBe('completed');
+    expect(firstRoundMessages).toBeDefined();
+    const rows = firstRoundMessages as Array<{ role: string; content?: string }>;
+    expect(rows[0]?.content).toBe(honesty);
+    expect(rows.some((r) => r.content === fatTail)).toBe(false);
+    expect(rows[rows.length - 1]).toEqual({ role: 'user', content: 'continue' });
+    expect(closed()).toBe(1);
+  });
+
+  it('checkpoint writer re-rails a fat live tail; this turn still survives (adversarial #955 follow-up)', async () => {
+    const { deps } = wiredDeps();
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+    }));
+    const compactionStep = vi.fn(async () => ({
+      ok: true as const,
+      summary: 'fresh summary text',
+    }));
+    const persistSpy = vi.fn(deps.persistStep);
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        persistStep: persistSpy,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionFilesTouched: ['lib/a.ts'],
+        compactionRetainedTail: [{ role: 'user', content: 'tail row' }],
+      },
+      {
+        userMessage: 'continue',
+        compact: { span: [{ role: 'user', content: 'old' }] },
+      },
+    );
+    expect(result.status).toBe('completed');
+    const folds = persistSpy.mock.calls
+      .map((c) => c[0].fold)
+      .filter((f) => f?.compactionCheckpoint !== undefined);
+    const ck = folds[0]!.compactionCheckpoint as {
+      summary: string;
+      filesTouched: string[];
+      retainedTail: unknown[];
+    };
+    // Wiring: boundCheckpointForPersist still keeps this turn on a small tail.
+    expect(ck.retainedTail).toEqual([
+      { role: 'user', content: 'tail row' },
+      { role: 'user', content: 'continue' },
+      { role: 'assistant', delta: { text: 'hi', toolCalls: [] } },
+    ]);
+  });
 });

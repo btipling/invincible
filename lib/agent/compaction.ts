@@ -28,13 +28,20 @@
  * `foldBudgetTokens` / `estimateTokens`) — consumed, never re-implemented.
  */
 import {
+  COMPACTION_CHECKPOINT_MAX_BYTES,
   COMPACTION_FILES_TOUCHED_MAX,
+  COMPACTION_START_MAX_BYTES,
   COMPACTION_SUMMARY_MAX_CHARS,
   CONTEXT_CHARS_PER_TOKEN,
   MODEL_MSG_SEED_MAX_BYTES,
   MODEL_MSG_SEED_MAX_ROWS,
 } from '../sessionCloudCaps';
-import { type ModelMessageRow, rePairModelMessages } from './modelMessages';
+import {
+  type ModelMessageRow,
+  rePairModelMessages,
+  trimModelMessagesToBudget,
+} from './modelMessages';
+
 
 export type { ModelMessageRow };
 
@@ -337,6 +344,61 @@ export function findCompactionCut(
     };
   }
   return null;
+}
+
+/**
+ * Combined `start()` compact-args payload rail (adversarial #955 follow-up).
+ * `span` + `retainedTail` is the full pre-trim seed; independently 2 MiB
+ * rails compose to 4 MiB against the 4.5 MB Function ceiling. Pure, never
+ * throws. `maxBytes` override is for tests.
+ */
+export function compactStartPayloadFits(
+  compact: {
+    span: unknown;
+    retainedTail: unknown;
+    filesTouched: unknown;
+    budgetTokens: number;
+  },
+  maxBytes: number = COMPACTION_START_MAX_BYTES,
+): boolean {
+  if (!Number.isFinite(maxBytes) || maxBytes <= 0) return false;
+  try {
+    return utf8Bytes(JSON.stringify(compact)) <= maxBytes;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Re-rail a live post-compact checkpoint so its JSON fits
+ * `COMPACTION_CHECKPOINT_MAX_BYTES` (adversarial #955 follow-up). Drop-oldest
+ * on `retainedTail` (keep newest = this turn) so the persist write succeeds
+ * rather than fail-closing and leaving prefer-checkpoint on the prior
+ * pointer (Goal 2 miss on re-compact). Pure, never throws.
+ */
+export function boundCheckpointForPersist(
+  input: CompactionSummaryInput & { retainedTail: ReadonlyArray<ModelMessageRow> },
+  maxBytes: number = COMPACTION_CHECKPOINT_MAX_BYTES,
+): CompactionCheckpoint {
+  const built = buildCheckpoint(input, input.retainedTail);
+  if (!Number.isFinite(maxBytes) || maxBytes <= 0) return built;
+  const serialize = (tail: ReadonlyArray<ModelMessageRow>): string =>
+    JSON.stringify({
+      summary: built.summary,
+      filesTouched: built.filesTouched,
+      retainedTail: tail,
+    });
+  if (utf8Bytes(serialize(built.retainedTail)) <= maxBytes) return built;
+  const envelope = utf8Bytes(serialize([]));
+  const maxTailBytes = Math.max(1, maxBytes - envelope);
+  const trimmed = trimModelMessagesToBudget(built.retainedTail, Number.MAX_SAFE_INTEGER, {
+    maxBytes: maxTailBytes,
+  });
+  return {
+    summary: built.summary,
+    filesTouched: built.filesTouched,
+    retainedTail: trimmed.rows,
+  };
 }
 
 /**
