@@ -5699,6 +5699,57 @@ describe('runTurnLoop compaction (plan #950, source #552)', () => {
     expect(closed()).toBe(1);
   });
 
+  it('plan #951 — summarize_failed on the compact path fail-opens: turn completes, no fabricated checkpoint fold', async () => {
+    // Plan #951 hardening (parent #947 row 7) — the workflow-boundary contract:
+    // a failed summarizer must (a) complete the turn from the un-compacted
+    // projection and (b) persist folds that carry NO compactionCheckpoint (a
+    // partial/fabricated summary must never become the next turn's
+    // prefer-checkpoint seed).
+    const { deps, closed } = wiredDeps();
+    let firstRoundMessages: unknown[] | undefined;
+    const modelStep = vi.fn(async (args: { messages: ReadonlyArray<unknown> }) => {
+      if (!firstRoundMessages) firstRoundMessages = [...args.messages];
+      return {
+        ok: true as const,
+        delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+      };
+    });
+    const compactionStep = vi.fn(async () => ({
+      ok: false as const,
+      code: 'summarize_failed',
+      error: 'boom',
+    }));
+    const persistSpy = vi.fn(deps.persistStep);
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        persistStep: persistSpy,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionFilesTouched: ['src/a.ts'],
+        compactionRetainedTail: [{ role: 'user', content: 'tail row' }],
+      },
+      {
+        userMessage: 'continue',
+        priorMessages: [{ role: 'user', content: 'plain prior row' }],
+        compact: { span: [{ role: 'user', content: 'old turn' }] },
+      },
+    );
+    // (a) fail-open: the turn completes from the plain projection.
+    expect(result.status).toBe('completed');
+    expect(firstRoundMessages).toHaveLength(2);
+    expect(
+      (firstRoundMessages as Array<{ content?: string }>)[0].content,
+    ).toBe('plain prior row');
+    // (b) NO fold anywhere in this run carries a fabricated compactionCheckpoint.
+    const ckFolds = persistSpy.mock.calls
+      .map((c) => c[0].fold)
+      .filter((f) => f?.compactionCheckpoint !== undefined);
+    expect(ckFolds).toHaveLength(0);
+    expect(closed()).toBe(1);
+  });
+
   it('fail-open: a THROWING summarizer never fails the turn', async () => {
     const { deps } = wiredDeps();
     const modelStep = vi.fn(async () => ({
