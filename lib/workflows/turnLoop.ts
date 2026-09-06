@@ -604,12 +604,16 @@ export function derivePersistFold(
   /**
    * Index of this run's first row in `messages` (plan #941 adversarial
    * CONCERNS on PR #943). `runTurnLoop` seeds
-   * `[...priorMessages, user, …this run]`; the reminder names THIS run's
-   * committed `read_file` paths only. `#936` prior rows keep
-   * `assistant.delta.toolCalls[].args.path` — walking the full array would
-   * re-derive last turn's paths on a zero-read chat and break Goal 3
-   * volatility. Default 0 keeps existing unit fixtures that pass a
-   * this-run-only array.
+   * `[...priorMessages, user, …this run]` (or `[summaryRow, ...tail, user]`
+   * after a compact). The reminder names THIS run's committed `read_file`
+   * paths only. `#936` prior rows keep `assistant.delta.toolCalls[].args.path`
+   * — walking the full array would re-derive last turn's paths on a zero-read
+   * chat and break Goal 3 volatility. The display `checkpoint` (transcript
+   * `content`) is sliced at the same index (adversarial #955 follow-up 4):
+   * a Goal 4 honesty row lives in the seed, was never live-painted, and
+   * `mergeCheckpointOntoPrior` matches a prefix of incoming — painting it
+   * would append the labeled row + duplicate the retained tail. Default 0
+   * keeps existing unit fixtures that pass a this-run-only array.
    */
   thisRunStart = 0,
   /**
@@ -627,12 +631,23 @@ export function derivePersistFold(
     retainedTail: unknown[];
   },
 ): PersistStepFold | undefined {
+  // Display checkpoint + freshness share this index: seed rows (prior
+  // history, Goal 4 honesty) must not leak into transcript `content`.
+  const start = Math.max(
+    0,
+    Math.min(Number.isFinite(thisRunStart) ? Math.floor(thisRunStart) : 0, messages.length),
+  );
   const checkpoint: Array<{ role: string; content: string }> = [];
   let cwd: string | undefined = runBind?.cwd;
   let activeSandboxId: string | undefined = runBind?.activeSandboxId;
-  for (const m of messages) {
-    const row = checkpointRow(m);
-    if (row) checkpoint.push(row);
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    // Bind walk stays over the full array — a seed `change_dir` is still
+    // this session's cwd. Display checkpoint is this-run only.
+    if (i >= start) {
+      const row = checkpointRow(m);
+      if (row) checkpoint.push(row);
+    }
     const bind = toolRowBind(m);
     if (bind.cwd !== undefined) cwd = bind.cwd;
     if (bind.activeSandboxId !== undefined) activeSandboxId = bind.activeSandboxId;
@@ -647,10 +662,6 @@ export function derivePersistFold(
   // the volatile list). Possibly `[]`. ALWAYS carried when the fold
   // exists: a zero-read turn writes `{paths:[]}` and VOLATILE-CLEARS
   // the prior turn's reminder (the next turn folds nothing).
-  const start = Math.max(
-    0,
-    Math.min(Number.isFinite(thisRunStart) ? Math.floor(thisRunStart) : 0, messages.length),
-  );
   const freshnessReminderPaths = buildFreshnessReminder(messages.slice(start)).paths;
   if (
     checkpoint.length === 0 &&

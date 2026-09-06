@@ -932,6 +932,39 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(fold?.freshnessReminder).toEqual([]);
   });
 
+  it('adversarial #955 follow-up 4 — display checkpoint slices at thisRunStart (Goal 4 honesty is seed, not paint)', () => {
+    const honesty =
+      'Summary of earlier session (compacted, not live assistant prose): earlier work';
+    const seed = [
+      { role: 'user', content: honesty },
+      { role: 'user', content: 'resume from tail' },
+    ];
+    const thisRun = [
+      { role: 'user', content: 'continue' },
+      { role: 'assistant', delta: { text: 'hi', toolCalls: [] } },
+    ];
+    const fold = derivePersistFold(
+      [...seed, ...thisRun],
+      undefined,
+      undefined,
+      undefined,
+      seed.length,
+    );
+    expect(fold?.checkpoint).toEqual([
+      { role: 'user', content: 'continue' },
+      { role: 'assistant', content: 'hi' },
+    ]);
+    expect(
+      fold?.checkpoint?.some((r) => r.content.includes('Summary of earlier session')),
+    ).toBe(false);
+    // Warehouse still carries the seed (next-turn modelMessages).
+    expect(
+      (fold?.modelMessages ?? []).some(
+        (r) => (r as { content?: string }).content === honesty,
+      ),
+    ).toBe(true);
+  });
+
   it('plan #941 adversarial #943 — this-run read is kept; prior read_file paths are not', () => {
     const prior = [
       { role: 'user', content: 'read a' },
@@ -5586,6 +5619,46 @@ describe('runTurnLoop compaction (plan #950, source #552)', () => {
     expect(tailRow).toEqual({ role: 'user', content: 'resume from tail' });
     expect(userRow).toEqual({ role: 'user', content: 'continue' });
     expect(closed()).toBe(1);
+  });
+
+  it('display checkpoint is this-run only — honesty + cut tail do not paint (adversarial #955 follow-up 4)', async () => {
+    const { deps } = wiredDeps();
+    const persistSpy = vi.fn(deps.persistStep);
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+    }));
+    const compactionStep = vi.fn(async () => ({
+      ok: true as const,
+      summary: 'earlier work summarized',
+    }));
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        persistStep: persistSpy,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionFilesTouched: ['src/a.ts'],
+        compactionRetainedTail: [{ role: 'user', content: 'resume from tail' }],
+      },
+      {
+        userMessage: 'continue',
+        compact: { span: [{ role: 'user', content: 'old turn' }] },
+      },
+    );
+    expect(result.status).toBe('completed');
+    const folds = persistSpy.mock.calls
+      .map((c) => c[0].fold)
+      .filter((f) => f?.checkpoint !== undefined);
+    expect(folds.length).toBeGreaterThan(0);
+    const ckpt = folds[0]!.checkpoint as Array<{ role: string; content?: string }>;
+    expect(ckpt.some((r) => r.content?.includes('Summary of earlier session'))).toBe(
+      false,
+    );
+    expect(ckpt.some((r) => r.content === 'resume from tail')).toBe(false);
+    expect(ckpt.some((r) => r.role === 'user' && r.content === 'continue')).toBe(true);
+    expect(ckpt.some((r) => r.role === 'assistant' && r.content === 'hi')).toBe(true);
   });
 
   it('fail-open: a failing summarizer never blocks the turn — plain priorMessages seed (parent edge-case lock)', async () => {
