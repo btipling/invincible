@@ -391,10 +391,50 @@ describe('findCompactionCut (plan #948 row 1 + 2)', () => {
     const cut = findCompactionCut(rows, budget);
     expect(cut).toBeNull();
   });
+
+  it('adversarial #955 follow-up 12 — default-window rails clip span to fold-budget chars, keep ANCIENT_PREFIX', () => {
+    // Warehouse bigger than the 20k-token fold-budget char ceiling (~80 KiB)
+    // so the old always-2-MiB span rail would have handed the summarizer a
+    // prompt the 20k/200k model cannot ingest. Rails now min with budget×4.
+    const budget = 20_000;
+    const rails = compactionCutRails(budget);
+    expect(rails.maxSpanBytes).toBe(budget * CONTEXT_CHARS_PER_TOKEN);
+    const fill = `FILL ${'H'.repeat(rails.maxSpanBytes)}`;
+    const rows: ModelMessageRow[] = [
+      user('ANCIENT_PREFIX goal of the session'),
+      assistant('old'),
+      user(fill),
+      assistant('mid'),
+      user('newest boundary'),
+      assistant('new'),
+    ];
+    const newestTailJson = JSON.stringify(rows.slice(4));
+    expect(Math.ceil(newestTailJson.length / 4)).toBeLessThan(rails.budgetTokens);
+    const cut = findCompactionCut(rows, rails.budgetTokens, {
+      maxSpanBytes: rails.maxSpanBytes,
+      maxBytes: rails.maxBytes,
+      maxRows: rails.maxRows,
+    });
+    expect(cut).not.toBeNull();
+    expect(cut!.clipped).toBe(true);
+    const spanJson = JSON.stringify(cut!.span);
+    expect(new TextEncoder().encode(spanJson).length).toBeLessThanOrEqual(
+      rails.maxSpanBytes,
+    );
+    expect(
+      cut!.span.some(
+        (r) => r.role === 'user' && r.content === 'ANCIENT_PREFIX goal of the session',
+      ),
+    ).toBe(true);
+    expect(cut!.span.some((r) => r.role === 'user' && r.content === fill)).toBe(
+      false,
+    );
+    expect(cut!.tail[0]).toEqual(rows[4]);
+  });
 });
 
-describe('compactionCutRails (adversarial #955 follow-up 6)', () => {
-  it('subtracts the max honesty row from token/byte/row rails; span cap unchanged', () => {
+describe('compactionCutRails (adversarial #955 follow-up 6 / 12)', () => {
+  it('subtracts the max honesty row from token/byte/row rails; span cap is min(2 MiB, fold-budget chars)', () => {
     const full = 20_000;
     const rails = compactionCutRails(full);
     const reserveChars =
@@ -407,7 +447,24 @@ describe('compactionCutRails (adversarial #955 follow-up 6)', () => {
     expect(rails.budgetTokens).toBe(full - reserveTokens);
     expect(rails.maxRows).toBe(MODEL_MSG_SEED_MAX_ROWS - 1);
     expect(rails.maxBytes).toBe(MODEL_MSG_SEED_MAX_BYTES - reserveChars);
+    // Follow-up 12: 20k-token budget × 4 chars = 80 KiB, under the 2 MiB
+    // Workflow rail — summarizer is the same model as the turn.
+    expect(rails.maxSpanBytes).toBe(full * CONTEXT_CHARS_PER_TOKEN);
+    expect(rails.maxSpanBytes).toBeLessThan(COMPACTION_SPAN_MAX_BYTES);
+  });
+
+  it('adversarial #955 follow-up 12 — default-window fold budget caps span under 2 MiB', () => {
+    const budget = 170_000;
+    const rails = compactionCutRails(budget);
+    expect(rails.maxSpanBytes).toBe(budget * CONTEXT_CHARS_PER_TOKEN);
+    expect(rails.maxSpanBytes).toBeLessThan(COMPACTION_SPAN_MAX_BYTES);
+  });
+
+  it('adversarial #955 follow-up 12 — 1M-class fold budget still returns the 2 MiB Workflow rail', () => {
+    const budget = 850_000;
+    const rails = compactionCutRails(budget);
     expect(rails.maxSpanBytes).toBe(COMPACTION_SPAN_MAX_BYTES);
+    expect(budget * CONTEXT_CHARS_PER_TOKEN).toBeGreaterThan(COMPACTION_SPAN_MAX_BYTES);
   });
 
   it('degenerate budget still returns positive rails (never compact-on-a-lie zero)', () => {
@@ -415,6 +472,7 @@ describe('compactionCutRails (adversarial #955 follow-up 6)', () => {
     expect(rails.budgetTokens).toBeGreaterThanOrEqual(1);
     expect(rails.maxRows).toBeGreaterThanOrEqual(1);
     expect(rails.maxBytes).toBeGreaterThanOrEqual(1);
+    expect(rails.maxSpanBytes).toBeGreaterThanOrEqual(1);
   });
 });
 

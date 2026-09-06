@@ -508,6 +508,14 @@ function clipSpanToMaxBytes(
  * `Files read/modified:` list. A maxed `COMPACTION_FILES_TOUCHED_MAX`
  * long-path list can still overflow — pin-miss fail-open / combined-seed
  * trim, never a silent honesty drop.
+ *
+ * `maxSpanBytes` is `min(COMPACTION_SPAN_MAX_BYTES, fold-budget chars)`
+ * (adversarial #955 follow-up 12). The summarizer is the same model as
+ * the turn; a 2 MiB span is ~524k estimator tokens and will 400 a 200k
+ * (or 20k) window, fail-open, and drop Goal 1. The Workflow 2 MiB rail
+ * still binds for 1M-window models. Honesty reserve is NOT subtracted
+ * from the span — that reserve is for `[summary, ...tail]`, not the
+ * summarizer prompt.
  */
 export function compactionCutRails(budgetTokens: number): {
   budgetTokens: number;
@@ -524,11 +532,12 @@ export function compactionCutRails(budgetTokens: number): {
   const reserveTokens = Math.ceil(reserveChars / CONTEXT_CHARS_PER_TOKEN);
   const budget =
     Number.isFinite(budgetTokens) && budgetTokens > 0 ? budgetTokens : 1;
+  const spanFromBudget = Math.max(1, budget * CONTEXT_CHARS_PER_TOKEN);
   return {
     budgetTokens: Math.max(1, budget - reserveTokens),
     maxRows: Math.max(1, MODEL_MSG_SEED_MAX_ROWS - 1),
     maxBytes: Math.max(1, MODEL_MSG_SEED_MAX_BYTES - reserveChars),
-    maxSpanBytes: COMPACTION_SPAN_MAX_BYTES,
+    maxSpanBytes: Math.min(COMPACTION_SPAN_MAX_BYTES, spanFromBudget),
   };
 }
 

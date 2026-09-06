@@ -1868,15 +1868,17 @@ describe('POST /api/turns', () => {
     // A projection that overflows the #944 fold budget (window 20 000 →
     // budget = 20 000 − 16 384 = 3 616 tokens ≈ 14.4k chars at chars/4),
     // ending in a user boundary so the cut walk finds a clean split: the
-    // span (rows before the boundary, ~20k chars) overflows; the newest
-    // boundary row + retained tail fit.
-    const fat = 'b'.repeat(10_000);
+    // span (rows before the boundary) overflows the seed but still fits
+    // the summarizer window rail (adversarial #955 follow-up 12:
+    // maxSpanBytes = min(2 MiB, budget×4) ≈ 14.4k); the newest boundary
+    // row + retained tail fit the honesty-reduced tail rails.
+    const fat = 'b'.repeat(6_000);
     const projection = [
       { role: 'user', content: fat },
       { role: 'user', content: 'middle turn ' + fat },
       { role: 'assistant', delta: { text: 'worked', toolCalls: [{ toolName: 'read_file', toolCallId: 'c1', args: { path: 'src/a.ts' } }] } },
       { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'bytes' },
-      { role: 'user', content: 'old turn two (newest boundary)' },
+      { role: 'user', content: 'old turn two (newest boundary) ' + 'c'.repeat(2_500) },
     ];
     readEnvelopeMock.mockResolvedValue({
       updatedAt: FUTURE_UPDATED_AT,
@@ -1887,8 +1889,9 @@ describe('POST /api/turns', () => {
       },
     });
     blobReadMock.mockResolvedValue(JSON.stringify(projection));
-    // Window 20 000 → budget 3 616 tokens: the ~20k-char pre-trim projection
-    // (~5k tokens) overflows → shouldCompact true.
+    // Window 20 000 → budget 3 616 tokens: the ~15k-char pre-trim projection
+    // (~3.8k tokens) overflows → shouldCompact true. Span still fits the
+    // follow-up 12 summarizer-window rail so this stays a complete partition.
     vi.doMock('../../../lib/gateway/modelCatalog', () => ({
       effortValuesForModel: async () => [],
       getJoinedWindowMap: async () => new Map([['anthropic/claude-a', 20_000]]),
@@ -1950,7 +1953,7 @@ describe('POST /api/turns', () => {
     standardHarness();
     mockAuthedSession();
     mockStart();
-    const fat = 'b'.repeat(10_000);
+    const fat = 'b'.repeat(6_000);
     const checkpoint = {
       summary: 'earlier session summarized',
       filesTouched: ['src/a.ts'],
@@ -1967,7 +1970,7 @@ describe('POST /api/turns', () => {
           },
         },
         { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'bytes' },
-        { role: 'user', content: 'old turn two (newest boundary)' },
+        { role: 'user', content: 'old turn two (newest boundary) ' + 'c'.repeat(2_500) },
       ],
     };
     readEnvelopeMock.mockResolvedValue({

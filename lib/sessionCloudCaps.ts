@@ -692,8 +692,12 @@ export const COMPACTION_CHECKPOINT_MAX_BYTES =
  * #950 Caps / adversarial #955 follow-up 5 + 6). Combined `start()` over
  * `COMPACTION_START_MAX_BYTES` prefix-clips the span (adversarial #955
  * follow-up 11) instead of yielding to the #944 trim after a legal cut
- * (the turn is never blocked). **NEW generous cap**; no existing cap
- * value changed → no human gate. Enforced in the cut walk
+ * (the turn is never blocked). `compactionCutRails` further mins this
+ * with the selected model's fold-budget chars (adversarial #955 follow-up
+ * 12) so the summarizer — the same model as the turn — can actually read
+ * the span; this constant stays the Workflow-arg ceiling (1M-window).
+ * **NEW generous cap**; no existing cap value changed → no human gate.
+ * Enforced in the cut walk
  * (`lib/agent/compaction.ts` `maxSpanBytes`, passed from
  * `app/api/turns/route.ts`).
  */

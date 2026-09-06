@@ -521,6 +521,9 @@ export async function POST(req: Request): Promise<Response> {
                   // so success trim does not drop unsummarized tail.
                   // Follow-up 9: pin row 0 so checkpoint clip **success**
                   // re-summarizes Goal 4 honesty instead of dropping it.
+                  // Follow-up 12: `rails.maxSpanBytes` is min(2 MiB,
+                  // fold-budget chars) so the summarizer (same model) can
+                  // actually read the span.
                   maxSpanBytes: rails.maxSpanBytes,
                   maxBytes: rails.maxBytes,
                   maxRows: rails.maxRows,
