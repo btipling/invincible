@@ -511,13 +511,16 @@ export async function POST(req: Request): Promise<Response> {
             // seed — whichever pointer actually built it. `shouldCompact`
             // consumes the #944 fold budget (reserve already subtracted;
             // never subtracted again — adversarial #953).
-            const rails = compactionCutRails(budget);
+            const rails = compactionCutRails(budget, {
+              currentUserContent: parsed.prompt,
+            });
             const cut = shouldCompact(preTrimSeed, budget)
               ? findCompactionCut(preTrimSeed, rails.budgetTokens, {
-                  // Plan #950 Caps / adversarial #955 follow-up 5 + 6: over-cap
-                  // span continues to a larger tail; when that tail misses,
-                  // clip the last fitting tail's span instead of yielding to
-                  // `#944` trim. Cut rails leave room for the max honesty row
+                  // Plan #950 Caps / adversarial #955 follow-up 5 + 6 + 14:
+                  // over-cap span continues to a larger tail; when that tail
+                  // misses, clip the last fitting tail's span instead of
+                  // yielding to `#944` trim. Cut rails leave room for the
+                  // max honesty row AND the current ask (`parsed.prompt`)
                   // so success trim does not drop unsummarized tail.
                   // Follow-up 9: pin row 0 so checkpoint clip **success**
                   // re-summarizes Goal 4 honesty instead of dropping it.

@@ -49,7 +49,8 @@ import {
   TURN_WALL_CLOCK_WRAPUP_SYSTEM,
 } from '../agent/modelFinish';
 import { STEP_BUDGET_WRAPUP_SYSTEM } from '../agent/modelFinish';
-import { TURN_WALL_CLOCK_MAX_MS, TURN_WALL_CLOCK_WRAPUP_MAX_MS } from '../sessionCloudCaps';
+import { TURN_WALL_CLOCK_MAX_MS, TURN_WALL_CLOCK_WRAPUP_MAX_MS, CONTEXT_CHARS_PER_TOKEN } from '../sessionCloudCaps';
+import { compactionCutRails } from '../agent/compaction';
 
 const LOOP_SCOPE: ObjectScope = { tenantId: 't', userId: 'u', sessionId: 's_loop' };
 
@@ -6188,5 +6189,46 @@ describe('runTurnLoop compaction (plan #950, source #552)', () => {
     expect(rows[0]?.content).toContain(fatSummary);
     expect(rows.some((r) => r.content === tailContent)).toBe(true);
     expect(rows[rows.length - 1]).toEqual({ role: 'user', content: 'continue' });
+  });
+
+  it('reserved cut tail survives a maxed summary AND a fat ask (adversarial #955 follow-up 14)', async () => {
+    const { deps } = wiredDeps();
+    let firstRoundMessages: unknown[] | undefined;
+    const modelStep = vi.fn(async (args: { messages: ReadonlyArray<unknown> }) => {
+      if (!firstRoundMessages) firstRoundMessages = [...args.messages];
+      return {
+        ok: true as const,
+        delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+      };
+    });
+    const budget = 3_616;
+    const ask = 'A'.repeat(4_000);
+    const fatSummary = 'S'.repeat(8_000);
+    const rails = compactionCutRails(budget, { currentUserContent: ask });
+    const tailContent = 'T'.repeat(
+      Math.max(80, rails.budgetTokens * CONTEXT_CHARS_PER_TOKEN - 80),
+    );
+    const compactionStep = vi.fn(async () => ({
+      ok: true as const,
+      summary: fatSummary,
+    }));
+    await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        compactionStep,
+        compactionScope: COMPACT_SCOPE,
+        compactionRetainedTail: [{ role: 'user', content: tailContent }],
+      },
+      {
+        userMessage: ask,
+        compact: { span: [{ role: 'user', content: 'old' }], budgetTokens: budget },
+      },
+    );
+    const rows = firstRoundMessages as Array<{ role: string; content?: string }>;
+    expect(rows[0]?.content).toContain('Summary of earlier session');
+    expect(rows[0]?.content).toContain(fatSummary);
+    expect(rows.some((r) => r.content === tailContent)).toBe(true);
+    expect(rows[rows.length - 1]).toEqual({ role: 'user', content: ask });
   });
 });

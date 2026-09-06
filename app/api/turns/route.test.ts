@@ -2269,4 +2269,53 @@ describe('POST /api/turns', () => {
     ).toBe(true);
   });
 
+  it('adversarial #955 follow-up 14 — fat ask shrinks the cut rail; yield to #944 instead of compact-then-drop-tail', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    // Same overflowing 20k warehouse as plan #950 row 1: newest tail (~2.5k
+    // chars) fits honesty-only rails and would compact. A 4k ask eats that
+    // room; cutting anyway would success-trim the tail off. Yield instead.
+    const fat = 'b'.repeat(6_000);
+    const newest = 'old turn two (newest boundary) ' + 'c'.repeat(2_500);
+    const projection = [
+      { role: 'user', content: fat },
+      { role: 'user', content: 'middle turn ' + fat },
+      {
+        role: 'assistant',
+        delta: {
+          text: 'worked',
+          toolCalls: [
+            { toolName: 'read_file', toolCallId: 'c1', args: { path: 'src/a.ts' } },
+          ],
+        },
+      },
+      { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'bytes' },
+      { role: 'user', content: newest },
+    ];
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(JSON.stringify(projection));
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      effortValuesForModel: async () => [],
+      getJoinedWindowMap: async () => new Map([['anthropic/claude-a', 20_000]]),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'A'.repeat(4_000), sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.compact).toBeUndefined();
+    expect(startArgs.priorMessages).toBeDefined();
+    expect(
+      startArgs.priorMessages.some((r: { content?: string }) => r.content === newest),
+    ).toBe(true);
+  });
+
 });

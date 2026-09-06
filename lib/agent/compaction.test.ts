@@ -467,6 +467,37 @@ describe('findCompactionCut (plan #948 row 1 + 2)', () => {
     });
     expect(cut).toBeNull();
   });
+
+  it('adversarial #955 follow-up 14 — ask-reduced rails yield rather than cut a tail the success trim would drop', () => {
+    // Same 20k-window warehouse as the route row-1 fixture: newest tail
+    // (~2.5k chars) fits honesty-only rails (~1k tokens) and would compact.
+    // A 4k ask eats that room; cutting anyway then success-trims the tail
+    // off (rows on neither side). Yield to `#944` instead — `#944` keeps
+    // the newest window.
+    const budget = 3_616;
+    const ask = 'A'.repeat(4_000);
+    const honestyOnly = compactionCutRails(budget);
+    const withAsk = compactionCutRails(budget, { currentUserContent: ask });
+    const newest = user('newest boundary ' + 'c'.repeat(2_500));
+    const rows: ModelMessageRow[] = [
+      user('b'.repeat(6_000)),
+      user('middle ' + 'b'.repeat(6_000)),
+      newest,
+    ];
+    const without = findCompactionCut(rows, honestyOnly.budgetTokens, {
+      maxSpanBytes: honestyOnly.maxSpanBytes,
+      maxBytes: honestyOnly.maxBytes,
+      maxRows: honestyOnly.maxRows,
+    });
+    expect(without).not.toBeNull();
+    expect(without!.tail[0]).toEqual(newest);
+    const cut = findCompactionCut(rows, withAsk.budgetTokens, {
+      maxSpanBytes: withAsk.maxSpanBytes,
+      maxBytes: withAsk.maxBytes,
+      maxRows: withAsk.maxRows,
+    });
+    expect(cut).toBeNull();
+  });
 });
 
 describe('compactionCutRails (adversarial #955 follow-up 6 / 12)', () => {
@@ -509,6 +540,30 @@ describe('compactionCutRails (adversarial #955 follow-up 6 / 12)', () => {
     expect(rails.maxRows).toBeGreaterThanOrEqual(1);
     expect(rails.maxBytes).toBeGreaterThanOrEqual(1);
     expect(rails.maxSpanBytes).toBeGreaterThanOrEqual(1);
+  });
+
+  it('adversarial #955 follow-up 14 — ask tokens are reserved from the tail budget; span/byte rails unchanged', () => {
+    const budget = 3_616;
+    const ask = 'x'.repeat(4_000);
+    const noAsk = compactionCutRails(budget);
+    const withAsk = compactionCutRails(budget, { currentUserContent: ask });
+    const askTokens = Math.ceil(ask.length / CONTEXT_CHARS_PER_TOKEN);
+    expect(withAsk.budgetTokens).toBe(noAsk.budgetTokens - askTokens);
+    expect(withAsk.budgetTokens).toBeGreaterThanOrEqual(1);
+    // Summarizer does not see the ask; byte rail does not count askChars.
+    expect(withAsk.maxSpanBytes).toBe(noAsk.maxSpanBytes);
+    expect(withAsk.maxBytes).toBe(noAsk.maxBytes);
+    expect(withAsk.maxRows).toBe(noAsk.maxRows);
+  });
+
+  it('adversarial #955 follow-up 14 — no-ask / empty-ask call is unchanged', () => {
+    const budget = 20_000;
+    expect(compactionCutRails(budget)).toEqual(
+      compactionCutRails(budget, { currentUserContent: undefined }),
+    );
+    expect(compactionCutRails(budget, { currentUserContent: '' }).budgetTokens).toBe(
+      compactionCutRails(budget).budgetTokens,
+    );
   });
 });
 

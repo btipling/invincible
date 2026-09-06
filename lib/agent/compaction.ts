@@ -509,28 +509,34 @@ function clipSpanToMaxBytes(
 }
 
 /**
- * Tail rails for the phase-3 cut walk (adversarial #955 follow-up 6 / 7).
+ * Tail rails for the phase-3 cut walk (adversarial #955 follow-up 6 / 7 / 14).
  * Subtracts the worst-case Goal 4 honesty row (`COMPACTION_SUMMARY_MAX_CHARS`
- * + label + files-line slack) from the token/byte/row ceilings so
- * `[max-summary, ...tail]` fits the combined seed by construction. The
- * overflow lands in the span (summarized) instead of being drop-oldest'd
- * off the tail after success. `shouldCompact` still uses the full fold
- * budget. Pure, never throws.
+ * + label + files-line slack) **and** the current ask (`currentUserContent`,
+ * same `askChars` the #944 trim adds to the token rail) from the token
+ * ceiling so `[max-summary, ...tail]` + ask fits the combined seed by
+ * construction. Follow-up 6 reserved only honesty; the loop always appends
+ * the ask (`trimModelMessagesToBudget(..., currentUserContent)`), so a
+ * maxed summary + a few-KiB prompt drop-oldest'd the retained-tail head —
+ * rows `#944` would have kept, on neither side of the compact (adversarial
+ * #955 follow-up 14). The overflow lands in the span (summarized) instead
+ * of being drop-oldest'd off the tail after success. `shouldCompact` still
+ * uses the full fold budget. Pure, never throws.
  *
  * Files-line slack (`HONESTY_FILES_LINE_SLACK_CHARS`) covers a typical
  * `Files read/modified:` list. A maxed `COMPACTION_FILES_TOUCHED_MAX`
  * long-path list can still overflow — pin-miss fail-open / combined-seed
  * trim, never a silent honesty drop.
  *
- * `maxSpanBytes` is `min(COMPACTION_SPAN_MAX_BYTES, fold-budget chars)`
- * (adversarial #955 follow-up 12). The summarizer is the same model as
- * the turn; a 2 MiB span is ~524k estimator tokens and will 400 a 200k
- * (or 20k) window, fail-open, and drop Goal 1. The Workflow 2 MiB rail
- * still binds for 1M-window models. Honesty reserve is NOT subtracted
- * from the span — that reserve is for `[summary, ...tail]`, not the
- * summarizer prompt.
+ * `maxBytes` stays honesty-only: the #944 byte rail does not include
+ * `askChars` (the ask is a sibling `userMessage` start() arg, not seed
+ * JSON). `maxSpanBytes` is `min(COMPACTION_SPAN_MAX_BYTES, fold-budget
+ * chars)` (adversarial #955 follow-up 12) — the summarizer does not see
+ * the ask; honesty reserve is NOT subtracted from the span either.
  */
-export function compactionCutRails(budgetTokens: number): {
+export function compactionCutRails(
+  budgetTokens: number,
+  opts?: { currentUserContent?: string },
+): {
   budgetTokens: number;
   maxRows: number;
   maxBytes: number;
@@ -543,11 +549,15 @@ export function compactionCutRails(budgetTokens: number): {
     HONESTY_ROW_JSON_SLACK_CHARS +
     HONESTY_FILES_LINE_SLACK_CHARS;
   const reserveTokens = Math.ceil(reserveChars / CONTEXT_CHARS_PER_TOKEN);
+  const askChars =
+    typeof opts?.currentUserContent === 'string' ? opts.currentUserContent.length : 0;
+  const askTokens =
+    askChars > 0 ? Math.ceil(askChars / CONTEXT_CHARS_PER_TOKEN) : 0;
   const budget =
     Number.isFinite(budgetTokens) && budgetTokens > 0 ? budgetTokens : 1;
   const spanFromBudget = Math.max(1, budget * CONTEXT_CHARS_PER_TOKEN);
   return {
-    budgetTokens: Math.max(1, budget - reserveTokens),
+    budgetTokens: Math.max(1, budget - reserveTokens - askTokens),
     maxRows: Math.max(1, MODEL_MSG_SEED_MAX_ROWS - 1),
     maxBytes: Math.max(1, MODEL_MSG_SEED_MAX_BYTES - reserveChars),
     maxSpanBytes: Math.min(COMPACTION_SPAN_MAX_BYTES, spanFromBudget),
