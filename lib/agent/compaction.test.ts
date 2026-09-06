@@ -28,6 +28,8 @@ import {
   compactStartPayloadFits,
   compactionCutRails,
   findCompactionCut,
+  fitCompactionCutToStartPayload,
+  isCompactionHonestyRow,
   livePostCompactTail,
   renderSummaryRow,
   COMPACTION_SUMMARY_LABEL,
@@ -645,6 +647,137 @@ describe('compactStartPayloadFits (adversarial #955 follow-up)', () => {
     };
     expect(compactStartPayloadFits(base)).toBe(true);
     expect(compactStartPayloadFits({ ...base, failOpenSeed })).toBe(false);
+  });
+});
+
+describe('fitCompactionCutToStartPayload (adversarial #955 follow-up 11)', () => {
+  it('returns the cut unchanged when span+tail already fits', () => {
+    const cut = {
+      cutIndex: 2,
+      span: [user('oldest'), assistant('a')],
+      tail: [user('newest'), assistant('b')],
+    };
+    const fitted = fitCompactionCutToStartPayload(cut, {
+      filesTouched: [],
+      budgetTokens: 170_000,
+    });
+    expect(fitted).toBe(cut);
+    expect(fitted!.clipped).toBeUndefined();
+  });
+
+  it('prefix-clips an over-rail partition so oldest overflow stays in span', () => {
+    // Full span+tail misses a tight rail; oldest prefix + tail fits.
+    const oldest = user('ANCIENT_PREFIX goal of the session');
+    const middle = user('MIDDLE_DROPPED ' + 'm'.repeat(80));
+    const newest = user('newest tail');
+    const cut = {
+      cutIndex: 4,
+      span: [oldest, assistant('old'), middle, assistant('mid')],
+      tail: [newest, assistant('new')],
+    };
+    const args = { filesTouched: [] as string[], budgetTokens: 170_000 };
+    const encoder = new TextEncoder();
+    const payload = (
+      span: typeof cut.span,
+      extra?: { clipped?: boolean },
+    ) =>
+      encoder.encode(
+        JSON.stringify({
+          span,
+          filesTouched: args.filesTouched,
+          retainedTail: cut.tail,
+          budgetTokens: args.budgetTokens,
+          ...extra,
+        }),
+      ).length;
+    const oldestPrefix = [oldest, assistant('old')];
+    const cap = payload(oldestPrefix, { clipped: true }) + 8;
+    expect(payload(cut.span)).toBeGreaterThan(cap);
+    const fitted = fitCompactionCutToStartPayload(cut, args, cap);
+    expect(fitted).not.toBeNull();
+    expect(fitted!.clipped).toBe(true);
+    expect(fitted!.tail).toEqual(cut.tail);
+    expect(fitted!.span[0]).toEqual(oldest);
+    expect(
+      fitted!.span.some((r) => r.role === 'user' && r.content === 'ANCIENT_PREFIX goal of the session'),
+    ).toBe(true);
+    expect(
+      fitted!.span.some((r) => r.role === 'user' && r.content.startsWith('MIDDLE_DROPPED')),
+    ).toBe(false);
+    expect(
+      compactStartPayloadFits(
+        {
+          span: fitted!.span,
+          retainedTail: fitted!.tail,
+          filesTouched: args.filesTouched,
+          budgetTokens: args.budgetTokens,
+          clipped: true,
+        },
+        cap,
+      ),
+    ).toBe(true);
+  });
+
+  it('keeps the Goal 4 pin when shrinking a checkpoint clip', () => {
+    const honesty = user(`${COMPACTION_SUMMARY_LABEL} earlier session`);
+    const oldest = user('ANCIENT_PREFIX');
+    const middle = user('MIDDLE ' + 'x'.repeat(120));
+    const cut = {
+      cutIndex: 4,
+      span: [honesty, oldest, assistant('a'), middle],
+      tail: [user('newest')],
+      clipped: true as const,
+    };
+    const args = {
+      filesTouched: ['src/a.ts'],
+      budgetTokens: 170_000,
+      pinSummaryRow: true as const,
+    };
+    const encoder = new TextEncoder();
+    const fullBytes = encoder.encode(
+      JSON.stringify({
+        span: cut.span,
+        filesTouched: args.filesTouched,
+        retainedTail: cut.tail,
+        budgetTokens: args.budgetTokens,
+        pinSummaryRow: true,
+        clipped: true,
+      }),
+    ).length;
+    const pinOldestBytes = encoder.encode(
+      JSON.stringify({
+        span: [honesty, oldest, assistant('a')],
+        filesTouched: args.filesTouched,
+        retainedTail: cut.tail,
+        budgetTokens: args.budgetTokens,
+        pinSummaryRow: true,
+        clipped: true,
+      }),
+    ).length;
+    const cap = pinOldestBytes + 8;
+    expect(fullBytes).toBeGreaterThan(cap);
+    const fitted = fitCompactionCutToStartPayload(cut, args, cap);
+    expect(fitted).not.toBeNull();
+    expect(fitted!.clipped).toBe(true);
+    expect(fitted!.span[0]).toEqual(honesty);
+    expect(isCompactionHonestyRow(fitted!.span[0])).toBe(true);
+    expect(
+      fitted!.span.some((r) => r.role === 'user' && r.content === 'ANCIENT_PREFIX'),
+    ).toBe(true);
+    expect(
+      fitted!.span.some((r) => r.role === 'user' && r.content.startsWith('MIDDLE')),
+    ).toBe(false);
+  });
+
+  it('returns null when even the min prefix + tail misses the rail', () => {
+    const cut = {
+      cutIndex: 2,
+      span: [user('fat-span ' + 'S'.repeat(200))],
+      tail: [user('fat-tail ' + 'T'.repeat(200))],
+    };
+    expect(
+      fitCompactionCutToStartPayload(cut, { filesTouched: [], budgetTokens: 1 }, 80),
+    ).toBeNull();
   });
 });
 

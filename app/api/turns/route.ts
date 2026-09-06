@@ -64,7 +64,7 @@ import {
   buildModelMessages,
   trimModelMessagesToBudget,
 } from '../../../lib/agent/modelMessages';
-import { buildCheckpoint, findCompactionCut, renderSummaryRow, compactStartPayloadFits, compactionCutRails, isCompactionHonestyRow } from '../../../lib/agent/compaction';
+import { buildCheckpoint, findCompactionCut, renderSummaryRow, fitCompactionCutToStartPayload, compactionCutRails, isCompactionHonestyRow } from '../../../lib/agent/compaction';
 import { shouldCompact } from '../../../lib/agent/compactionBudget';
 import { foldBudgetTokens } from '../../../lib/agent/contextBudget';
 import {
@@ -562,23 +562,24 @@ export async function POST(req: Request): Promise<Response> {
               }
               // Combined start() payload rail (adversarial #955 follow-up):
               // independently 2 MiB rails compose toward the 4.5 MB Function
-              // ceiling; over COMPACTION_START_MAX_BYTES yield to the #944
-              // trim (never a 413 that blocks the turn).
-              // Prefix clip (follow-up 10): span is the oldest overflow
-              // (Goal 1); tail is the newest window. Middle is on neither
-              // side. Fail-open reconstructs pin+tail — no third seed-sized
-              // `failOpenSeed` array.
-              const candidate = {
-                span: cut.span,
+              // ceiling. Over COMPACTION_START_MAX_BYTES **prefix-clip the
+              // span** (keep tail) so a legal cut of a warehouse > 3 MiB
+              // still Goal-1-summarizes the oldest prefix — do not yield to
+              // `#944` after a legal cut (adversarial #955 follow-up 11).
+              // Empty / pin-only miss still yields (never a 413).
+              const fitted = fitCompactionCutToStartPayload(cut, {
                 filesTouched,
-                retainedTail: cut.tail,
                 budgetTokens: budget,
-                ...(cut.clipped === true ? { clipped: true } : {}),
-              };
-              if (compactStartPayloadFits(candidate)) {
+                ...(pinSummaryRow ? { pinSummaryRow: true } : {}),
+              });
+              if (fitted) {
                 compactArgs = {
-                  ...candidate,
+                  span: fitted.span,
+                  filesTouched,
+                  retainedTail: fitted.tail,
+                  budgetTokens: budget,
                   ...(pinSummaryRow ? { pinSummaryRow: true } : {}),
+                  ...(fitted.clipped === true ? { clipped: true } : {}),
                 };
               }
             }

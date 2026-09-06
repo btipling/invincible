@@ -689,11 +689,13 @@ export const COMPACTION_CHECKPOINT_MAX_BYTES =
  * fitting tail's span to this ceiling (oldest prefix — parent Goal 1 —
  * not the newest suffix adjacent to the tail; adversarial #955 follow-up
  * 10 restores the follow-up 8 inversion) instead of returning null (plan
- * #950 Caps / adversarial #955 follow-up 5 + 6). Combined `start()`
- * over `COMPACTION_START_MAX_BYTES` still yields to the #944 trim (the turn
- * is never blocked). **NEW generous cap**; no existing cap value changed →
- * no human gate. Enforced in the cut walk (`lib/agent/compaction.ts`
- * `maxSpanBytes`, passed from `app/api/turns/route.ts`).
+ * #950 Caps / adversarial #955 follow-up 5 + 6). Combined `start()` over
+ * `COMPACTION_START_MAX_BYTES` prefix-clips the span (adversarial #955
+ * follow-up 11) instead of yielding to the #944 trim after a legal cut
+ * (the turn is never blocked). **NEW generous cap**; no existing cap
+ * value changed → no human gate. Enforced in the cut walk
+ * (`lib/agent/compaction.ts` `maxSpanBytes`, passed from
+ * `app/api/turns/route.ts`).
  */
 export const COMPACTION_SPAN_MAX_BYTES = 2 * 1024 * 1024;
 
@@ -704,10 +706,12 @@ export const COMPACTION_SPAN_MAX_BYTES = 2 * 1024 * 1024;
  * they can still compose toward the 4.5 MB Function payload ceiling;
  * `start()` throw → route 503, which compaction must never do (parent
  * forbidden / Goal 6). 3 MiB leaves ~1.5 MB for the SDK envelope + the rest
- * of the `TurnWorkflowArgs`. Over this ceiling the route yields to the #944
- * trim. Clipped fail-open does not ship a third `failOpenSeed` array
- * (pin+tail reconstructs the newest window). **NEW generous cap**; no
- * existing cap value changed → no human gate.
+ * of the `TurnWorkflowArgs`. Over this ceiling the route **prefix-clips
+ * the span** (keep tail) until the candidate fits — it does not yield to
+ * `#944` after a legal cut (adversarial #955 follow-up 11). Clipped
+ * fail-open does not ship a third `failOpenSeed` array (pin+tail
+ * reconstructs the newest window). **NEW generous cap**; no existing cap
+ * value changed → no human gate.
  * Enforced at the route trigger (`app/api/turns/route.ts`).
  */
 export const COMPACTION_START_MAX_BYTES = 3 * 1024 * 1024;

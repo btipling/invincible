@@ -538,6 +538,11 @@ export function compactionCutRails(budgetTokens: number): {
  * hole in the middle). `failOpenSeed` is unused — clipped fail-open seeds
  * pin+tail instead of a third array. Pure, never throws. `maxBytes`
  * override is for tests.
+ *
+ * Over this ceiling the route does **not** yield to `#944` (adversarial
+ * #955 follow-up 11): `fitCompactionCutToStartPayload` prefix-clips the
+ * span until the candidate fits, so a legal cut of a warehouse > 3 MiB
+ * still Goal-1-summarizes the oldest prefix.
  */
 export function compactStartPayloadFits(
   compact: {
@@ -559,6 +564,69 @@ export function compactStartPayloadFits(
   } catch {
     return false;
   }
+}
+
+/**
+ * Shrink a legal cut so the combined `start()` compact args fit
+ * `COMPACTION_START_MAX_BYTES` (adversarial #955 follow-up 11).
+ *
+ * Partition `span.concat(tail)` **is the warehouse**. A warehouse > 3 MiB
+ * (1M-window first overflow, or a 2 MiB span + 2 MiB byte-rail tail clip)
+ * used to veto compact and yield to `#944` — Goal 1 dead for the session
+ * size this plan exists for. Prefix-clip the span (keep tail; oldest
+ * overflow stays in the summarizer) until the candidate fits. Empty /
+ * pin-only miss → `null` (then the route yields). Pure, never throws.
+ * `maxBytes` override is for tests.
+ */
+export function fitCompactionCutToStartPayload(
+  cut: CompactionCut,
+  args: {
+    filesTouched: ReadonlyArray<unknown>;
+    budgetTokens: number;
+    pinSummaryRow?: boolean;
+  },
+  maxBytes: number = COMPACTION_START_MAX_BYTES,
+): CompactionCut | null {
+  const pin = args.pinSummaryRow === true ? 1 : 0;
+  const candidate = (
+    span: ReadonlyArray<ModelMessageRow>,
+    clipped: boolean,
+  ) => ({
+    span,
+    filesTouched: args.filesTouched,
+    retainedTail: cut.tail,
+    budgetTokens: args.budgetTokens,
+    ...(pin > 0 ? { pinSummaryRow: true as const } : {}),
+    ...(clipped ? { clipped: true as const } : {}),
+  });
+  const alreadyClipped = cut.clipped === true;
+  if (compactStartPayloadFits(candidate(cut.span, alreadyClipped), maxBytes)) {
+    return cut;
+  }
+  const n = cut.span.length;
+  if (n === 0) return null;
+  // Non-empty span required (phase-1 contract). Honesty pin stays in the
+  // prefix so clip success still re-summarizes Goal 4.
+  const minEnd = Math.max(1, pin);
+  const prefix = (end: number): ModelMessageRow[] => cut.span.slice(0, end);
+  const fits = (end: number): boolean =>
+    compactStartPayloadFits(candidate(prefix(end), true), maxBytes);
+  if (!fits(minEnd)) return null;
+  let lo = minEnd;
+  let hi = n - 1;
+  while (lo < hi) {
+    const mid = lo + Math.floor((hi - lo + 1) / 2);
+    if (fits(mid)) lo = mid;
+    else hi = mid - 1;
+  }
+  const span = rePairModelMessages(prefix(lo));
+  if (span.length === 0) return null;
+  return {
+    cutIndex: cut.cutIndex,
+    span,
+    tail: cut.tail,
+    clipped: true,
+  };
 }
 
 /**

@@ -2104,6 +2104,57 @@ describe('POST /api/turns', () => {
     expect(startArgs.priorMessages).toBeUndefined();
   });
 
+  it('adversarial #955 follow-up 11 — 1M-window warehouse > 3 MiB still start()s compact (span shrink, not yield)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    // Two ~1.7 MiB turns so the warehouse is > COMPACTION_START_MAX_BYTES
+    // while each side of a partition still fits the 2 MiB span/tail rails.
+    // 1M window fold budget ≈ 850k tokens ≈ 3.4 MiB — shouldCompact fires.
+    // Combined span+tail would veto; fitCompactionCutToStartPayload keeps
+    // ANCIENT_PREFIX in the span instead of yielding to #944.
+    const spanFill = `SPAN ${'S'.repeat(1.7 * 1024 * 1024)}`;
+    const tailFill = `TAIL ${'T'.repeat(1.6 * 1024 * 1024)}`;
+    const projection = [
+      { role: 'user', content: 'ANCIENT_PREFIX goal of the session' },
+      { role: 'assistant', delta: { text: 'old' } },
+      { role: 'user', content: spanFill },
+      { role: 'assistant', delta: { text: 'span-asst' } },
+      { role: 'user', content: tailFill },
+      { role: 'assistant', delta: { text: 'tail-asst' } },
+      { role: 'user', content: 'newest boundary' },
+      { role: 'assistant', delta: { text: 'new' } },
+    ];
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(JSON.stringify(projection));
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      effortValuesForModel: async () => [],
+      getJoinedWindowMap: async () => new Map([['anthropic/claude-a', 1_000_000]]),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'continue', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.compact).toBeDefined();
+    expect(startArgs.priorMessages).toBeUndefined();
+    const span = startArgs.compact.span as Array<{ content?: string }>;
+    expect(span.some((r) => r.content === 'ANCIENT_PREFIX goal of the session')).toBe(
+      true,
+    );
+    expect(span.some((r) => r.content === spanFill)).toBe(false);
+    expect(startArgs.compact.clipped).toBe(true);
+    const tail = startArgs.compact.retainedTail as Array<{ content?: string }>;
+    expect(tail.some((r) => r.content === 'newest boundary')).toBe(true);
+  });
+
   it('adversarial #955 follow-up 9 — honesty-prefixed live mm extends a stale checkpoint (Goal 2)', async () => {
     standardHarness();
     mockAuthedSession();
