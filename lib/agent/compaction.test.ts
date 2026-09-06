@@ -324,6 +324,45 @@ describe('findCompactionCut (plan #948 row 1 + 2)', () => {
     );
   });
 
+  it('adversarial #955 follow-up 9 — pinnedCount keeps rows[0] in a suffix clip', () => {
+    const honesty = user(`${COMPACTION_SUMMARY_LABEL} earlier session`);
+    const rows: ModelMessageRow[] = [
+      honesty,
+      user('t1-span-head'),
+      assistant('a'.repeat(40)),
+      user('t2-middle'),
+      assistant('b'.repeat(40)),
+      user('t3-newest'),
+      assistant('c'),
+    ];
+    const newestTailJson = JSON.stringify(rows.slice(5));
+    const olderTailJson = JSON.stringify(rows.slice(3));
+    const budget = Math.ceil(newestTailJson.length / 4) + 1;
+    expect(Math.ceil(olderTailJson.length / 4)).toBeGreaterThan(budget);
+    const encoder = new TextEncoder();
+    const fullSpanBytes = encoder.encode(JSON.stringify(rows.slice(0, 5))).length;
+    // Cap fits honesty + t2-middle turn, not honesty + ancient t1 prefix.
+    const pinPlusMiddle = encoder.encode(
+      JSON.stringify([honesty, rows[3], rows[4]]),
+    ).length;
+    const cap = pinPlusMiddle + 8;
+    expect(fullSpanBytes).toBeGreaterThan(cap);
+    const cut = findCompactionCut(rows, budget, {
+      maxSpanBytes: cap,
+      pinnedCount: 1,
+    });
+    expect(cut).not.toBeNull();
+    expect(cut!.clipped).toBe(true);
+    expect(cut!.span[0]).toEqual(honesty);
+    expect(
+      cut!.span.some((r) => r.role === 'user' && r.content === 't1-span-head'),
+    ).toBe(false);
+    const covered = [...cut!.span, ...cut!.tail];
+    expect(
+      covered.some((r) => r.role === 'user' && r.content === 't2-middle'),
+    ).toBe(true);
+  });
+
   it('adversarial #955 follow-up 6 — clip empty when even the last span row exceeds maxSpanBytes → null', () => {
     const rows: ModelMessageRow[] = [
       user('only-span ' + 'x'.repeat(80)),

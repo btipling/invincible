@@ -73,12 +73,11 @@ export type CompactionCut = {
   tail: ModelMessageRow[];
   /**
    * True when the span is a **suffix clip** of `rows[0:cutIndex]`
-   * (adversarial #955 follow-up 8). `span.concat(tail)` is then the newest
-   * contiguous suffix of the input, NOT the full rows — the oldest prefix
-   * is on neither side. mm fail-open MAY reconstruct span+tail (that suffix
-   * is the `#944` keep-window, then trim). Checkpoint-seeded clip still
-   * needs `failOpenSeed` with `pinSummaryRow`: Goal 4 honesty sits at
-   * index 0 and a suffix clip drops it.
+   * (adversarial #955 follow-up 8 / 9). `span.concat(tail)` is then not
+   * the full input — the oldest unpinned prefix is on neither side.
+   * `pinnedCount` keeps `rows[0..pin)` (Goal 4 honesty) in the span so
+   * clip **success** re-summarizes it; fail-open reconstructs span+tail
+   * (honesty is in the span) without a third `failOpenSeed` array.
    */
   clipped?: boolean;
 };
@@ -92,6 +91,17 @@ const SUMMARY_TRUNCATION_MARKER = '… [summary truncated]';
 /** The honesty label (parent #947 Goal 4 — locked copy, phase 1 renders it). */
 export const COMPACTION_SUMMARY_LABEL =
   'Summary of earlier session (compacted, not live assistant prose):';
+
+/** True when `row` is the Goal 4 labeled summary (`user` + locked prefix). */
+export function isCompactionHonestyRow(row: unknown): boolean {
+  if (!row || typeof row !== 'object') return false;
+  const r = row as { role?: unknown; content?: unknown };
+  return (
+    r.role === 'user' &&
+    typeof r.content === 'string' &&
+    r.content.startsWith(COMPACTION_SUMMARY_LABEL)
+  );
+}
 
 /** The files line prefix rendered under the summary in the labeled row. */
 const FILES_TOUCHED_PREFIX = 'Files read/modified:';
@@ -352,6 +362,13 @@ export function findCompactionCut(
      * Absent / non-positive → no span rail (phase-1 tests unchanged).
      */
     maxSpanBytes?: number;
+    /**
+     * Keep `rows[0..pinnedCount)` in a suffix clip (adversarial #955
+     * follow-up 9). Goal 4 honesty is index 0 on a checkpoint seed and is
+     * not a cut boundary; without a pin, suffix clip drops it from the
+     * span and compact **success** re-summarizes only the recent overflow.
+     */
+    pinnedCount?: number;
   },
 ): CompactionCut | null {
   if (!Number.isFinite(budgetTokens) || budgetTokens <= 0) return null;
@@ -367,6 +384,10 @@ export function findCompactionCut(
     opts.maxSpanBytes > 0
       ? opts.maxSpanBytes
       : undefined;
+  const pinnedCount = Math.max(
+    0,
+    Number.isFinite(opts?.pinnedCount) ? Math.floor(opts!.pinnedCount as number) : 0,
+  );
 
   const n = rows.length;
   if (n === 0) return null;
@@ -385,7 +406,12 @@ export function findCompactionCut(
 
   const clipFit = (): CompactionCut | null => {
     if (spanOverFit === undefined || maxSpanBytes === undefined) return null;
-    const clipped = clipSpanToMaxBytes(rows, spanOverFit.cutIndex, maxSpanBytes);
+    const clipped = clipSpanToMaxBytes(
+      rows,
+      spanOverFit.cutIndex,
+      maxSpanBytes,
+      pinnedCount,
+    );
     if (clipped.length === 0) return null;
     return {
       cutIndex: spanOverFit.cutIndex,
@@ -424,30 +450,42 @@ export function findCompactionCut(
 }
 
 /**
- * Longest **suffix** of `rows[0:cutIndex]` whose JSON is `≤ maxSpanBytes`.
- * Newest over-cap bytes adjacent to the tail (adversarial #955 follow-up 8)
- * — the region `#944` drop-oldest would delete — not the oldest prefix.
- * Empty when even the last span row overflows (yield to trim). Pure, never throws.
+ * Longest **suffix** of `rows[0:cutIndex]` whose JSON is `≤ maxSpanBytes`,
+ * with `rows[0..pinnedCount)` kept as a prefix (adversarial #955 follow-up 9).
+ * Newest over-cap bytes adjacent to the tail (follow-up 8) — the region
+ * `#944` drop-oldest would delete — not the oldest unpinned prefix.
+ * Empty when even the pinned prefix overflows (yield to trim). Pure, never throws.
  */
 function clipSpanToMaxBytes(
   rows: ReadonlyArray<ModelMessageRow>,
   cutIndex: number,
   maxSpanBytes: number,
+  pinnedCount = 0,
 ): ModelMessageRow[] {
   if (cutIndex <= 0) return [];
+  const pin = Math.max(0, Math.min(pinnedCount, cutIndex));
+  const pinned = pin > 0 ? rows.slice(0, pin) : [];
+  if (pin > 0 && utf8Bytes(JSON.stringify(pinned)) > maxSpanBytes) return [];
+  if (cutIndex <= pin) return pinned;
+
+  const candidate = (start: number): ModelMessageRow[] =>
+    pin > 0
+      ? [...pinned, ...rows.slice(start, cutIndex)]
+      : rows.slice(start, cutIndex);
   const suffixFits = (start: number): boolean =>
-    utf8Bytes(JSON.stringify(rows.slice(start, cutIndex))) <= maxSpanBytes;
-  if (!suffixFits(cutIndex - 1)) return [];
-  if (suffixFits(0)) return rows.slice(0, cutIndex);
-  // Smallest start such that suffixFits(start) — longest suffix.
-  let lo = 0;
+    utf8Bytes(JSON.stringify(candidate(start))) <= maxSpanBytes;
+
+  if (suffixFits(pin)) return rows.slice(0, cutIndex);
+  // start=cutIndex → suffix empty → pinned only (already known to fit).
+  if (!suffixFits(cutIndex - 1)) return pinned;
+  let lo = pin;
   let hi = cutIndex - 1;
   while (lo < hi) {
     const mid = lo + ((hi - lo) >> 1);
     if (suffixFits(mid)) hi = mid;
     else lo = mid + 1;
   }
-  return rows.slice(lo, cutIndex);
+  return candidate(lo);
 }
 
 /**
@@ -489,10 +527,10 @@ export function compactionCutRails(budgetTokens: number): {
 
 /**
  * Combined `start()` compact-args payload rail (adversarial #955 follow-up).
- * `span` + `retainedTail` on a suffix clip is the newest contiguous suffix,
- * not two views of the full seed. `failOpenSeed` rides only on
- * checkpoint-seeded clip (Goal 4 honesty). Pure, never throws. `maxBytes`
- * override is for tests.
+ * `span` + `retainedTail` on a suffix clip is the newest contiguous suffix
+ * (mm) or `[honesty, …suffix, …tail]` (checkpoint pin). `failOpenSeed` is
+ * unused once the clip pins row 0 — kept optional for older callers. Pure,
+ * never throws. `maxBytes` override is for tests.
  */
 export function compactStartPayloadFits(
   compact: {
@@ -528,12 +566,7 @@ export function compactStartPayloadFits(
 export function livePostCompactTail(
   rows: ReadonlyArray<ModelMessageRow>,
 ): ModelMessageRow[] {
-  const first = rows[0];
-  if (
-    first &&
-    first.role === 'user' &&
-    first.content.startsWith(COMPACTION_SUMMARY_LABEL)
-  ) {
+  if (isCompactionHonestyRow(rows[0])) {
     return rows.slice(1);
   }
   return [...rows];

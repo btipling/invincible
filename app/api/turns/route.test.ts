@@ -1539,9 +1539,10 @@ describe('POST /api/turns', () => {
       { role: 'tool', toolName: 'read_file', toolCallId: 'kept', result: 'bytes' },
     ]);
     expect(startArgs.userMessage).toBe('continue');
-    // The checkpoint read wins over the projection read — exactly one blob read.
-    expect(blobReadMock).toHaveBeenCalledTimes(1);
+    // Checkpoint wins when mm is the pre-compact dump (empty / no honesty).
+    // Follow-up 9 still *reads* mm to detect a live honesty-prefixed warehouse.
     expect(blobReadMock).toHaveBeenCalledWith('t_cp_s1_abc');
+    expect(blobReadMock).toHaveBeenCalledWith('t_mm_s1_abc');
   });
 
   it('plan #949 row 2b — malformed checkpoint body (wrong shape) → falls back to modelMessagesPointer, no 5xx', async () => {
@@ -1997,9 +1998,9 @@ describe('POST /api/turns', () => {
     expect(startArgs.priorMessages).toBeUndefined();
     // Checkpoint seed: fail-open must pin the honesty row (adversarial #955 follow-up).
     expect(startArgs.compact.pinSummaryRow).toBe(true);
-    // Prefer-checkpoint: the mm pointer is not read when the checkpoint seeds.
-    expect(blobReadMock).toHaveBeenCalledTimes(1);
+    // Follow-up 9: mm is still read (empty dump → checkpoint seed).
     expect(blobReadMock).toHaveBeenCalledWith('t_cp_s1_abc');
+    expect(blobReadMock).toHaveBeenCalledWith('t_mm_s1_abc');
   });
 
   it('adversarial #955 follow-up 8 — clipped cut suffix-summarizes the middle; mm omits failOpenSeed', async () => {
@@ -2065,7 +2066,7 @@ describe('POST /api/turns', () => {
     expect(startArgs.priorMessages).toBeUndefined();
   });
 
-  it('adversarial #955 follow-up 8 — checkpoint clip still attaches pinned failOpenSeed (Goal 4 honesty)', async () => {
+  it('adversarial #955 follow-up 8 — checkpoint clip pins honesty in the span (no failOpenSeed)', async () => {
     standardHarness();
     mockAuthedSession();
     mockStart();
@@ -2116,14 +2117,80 @@ describe('POST /api/turns', () => {
     const startArgs = startMock.mock.calls[0][1][0];
     expect(startArgs.compact).toBeDefined();
     expect(startArgs.compact.pinSummaryRow).toBe(true);
-    expect(Array.isArray(startArgs.compact.failOpenSeed)).toBe(true);
-    const seed = startArgs.compact.failOpenSeed as Array<{
-      role?: string;
-      content?: string;
-    }>;
-    expect(seed[0]?.role).toBe('user');
-    expect(seed[0]?.content?.startsWith(COMPACTION_SUMMARY_LABEL)).toBe(true);
+    const span = startArgs.compact.span as Array<{ role?: string; content?: string }>;
+    expect(span[0]?.role).toBe('user');
+    expect(span[0]?.content?.startsWith(COMPACTION_SUMMARY_LABEL)).toBe(true);
+    expect(span.some((r) => r.content === 'MIDDLE_MARKER')).toBe(true);
+    const covered = [
+      ...span,
+      ...(startArgs.compact.retainedTail as Array<{ content?: string }>),
+    ];
+    expect(covered.some((r) => r.content === ancient)).toBe(false);
+    expect(startArgs.compact.failOpenSeed).toBeUndefined();
     expect(startArgs.priorMessages).toBeUndefined();
+  });
+
+  it('adversarial #955 follow-up 9 — honesty-prefixed live mm extends a stale checkpoint (Goal 2)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    const checkpoint = {
+      summary: 'earlier session summarized',
+      filesTouched: ['src/a.ts'],
+      retainedTail: [
+        { role: 'user', content: 'resume here' },
+        { role: 'assistant', delta: { text: 'compacted-turn reply' } },
+      ],
+    };
+    const honesty = {
+      role: 'user',
+      content: `${COMPACTION_SUMMARY_LABEL} earlier session summarized\n\nFiles read/modified: src/a.ts`,
+    };
+    const liveMm = [
+      honesty,
+      { role: 'user', content: 'resume here' },
+      { role: 'assistant', delta: { text: 'compacted-turn reply' } },
+      { role: 'user', content: 'the turn after compact' },
+      { role: 'assistant', delta: { text: 'N+1 must survive' } },
+    ];
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        compactionPointer: 't_cp_s1_abc',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockImplementation(async (id: string) =>
+      id === 't_cp_s1_abc' ? JSON.stringify(checkpoint) : JSON.stringify(liveMm),
+    );
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      effortValuesForModel: async () => [],
+      getJoinedWindowMap: async () =>
+        new Map([['anthropic/claude-a', 2_000_000]]),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'continue', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.compact).toBeUndefined();
+    expect(startArgs.priorMessages[0].content.startsWith(COMPACTION_SUMMARY_LABEL)).toBe(
+      true,
+    );
+    expect(
+      startArgs.priorMessages.some(
+        (r: { content?: string }) => r.content === 'the turn after compact',
+      ),
+    ).toBe(true);
+    expect(
+      startArgs.priorMessages.some(
+        (r: { delta?: { text?: string } }) => r.delta?.text === 'N+1 must survive',
+      ),
+    ).toBe(true);
+    expect(blobReadMock).toHaveBeenCalledWith('t_cp_s1_abc');
+    expect(blobReadMock).toHaveBeenCalledWith('t_mm_s1_abc');
   });
 
 });

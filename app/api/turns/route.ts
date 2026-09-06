@@ -64,7 +64,7 @@ import {
   buildModelMessages,
   trimModelMessagesToBudget,
 } from '../../../lib/agent/modelMessages';
-import { buildCheckpoint, findCompactionCut, renderSummaryRow, compactStartPayloadFits, compactionCutRails } from '../../../lib/agent/compaction';
+import { buildCheckpoint, findCompactionCut, renderSummaryRow, compactStartPayloadFits, compactionCutRails, isCompactionHonestyRow } from '../../../lib/agent/compaction';
 import { shouldCompact } from '../../../lib/agent/compactionBudget';
 import { foldBudgetTokens } from '../../../lib/agent/contextBudget';
 import {
@@ -396,32 +396,25 @@ export async function POST(req: Request): Promise<Response> {
           // Major: GET overlay sidecar-stops without reading this sibling Blob,
           // so a bound miss + no sidecar must not start a history-less turn.
           //
-          // Plan #949 (A4 compaction phase 2) — seed preference is LOCKED:
-          // compactionPointer → modelMessagesPointer → legacy `promptHistory`
-          // sidecar. The compaction checkpoint (`{summary, filesTouched,
-          // retainedTail}`, written by the persist seam when a compaction ran)
-          // is preferred: the route re-validates the shape, re-runs
-          // `buildCheckpoint` (summary / filesTouched caps + omitted-count
-          // honesty), re-pairs the retained tail via `buildModelMessages`,
-          // and seeds `[renderSummaryRow(...), ...retainedTail]` — the
-          // honesty-labeled summary row rides FIRST (a `user` row, never
-          // live assistant prose; parent #947 Goal 4). A malformed/unbound/
-          // missing checkpoint falls through to `modelMessagesPointer` (the
-          // #936 path below); when a bound pointer exists but NO seed is
-          // readable and the host sent no `promptHistory`, the #937
-          // fail-closed 503 still applies (shared across both pointers).
-          // Same DI surface — `services.createBlobTranscriptStore()` (the
-          // #936 read), never a new seam.
+          // Plan #949 (A4 compaction phase 2) — seed preference:
+          // compactionPointer is the **compressed prefix**, not the exclusive
+          // seed. After compact persist, `modelMessages` is the honesty-
+          // prefixed live warehouse (this PR's producer + every later
+          // persist). Prefer that mm when `rows[0]` is Goal 4 honesty so
+          // non-compacting turns after the first compact are not dropped
+          // (adversarial #955 follow-up 9 / parent Goal 2). Pre-compact mm
+          // (no honesty prefix) or an unreadable mm still falls back to the
+          // checkpoint. Malformed/unbound checkpoint falls through to mm
+          // (plan fallback chain). Bound pointer + no readable seed + no
+          // `promptHistory` → #937 fail-closed 503.
           const cpPointer = boundSeedPointer(envelope.meta?.compactionPointer);
           const mmPointer = boundSeedPointer(envelope.meta?.modelMessagesPointer);
-          // Pre-trim seed from the locked preference chain. The #950 trigger
-          // runs on THIS array (checkpoint **or** mm) — a trimmed seed always
-          // fits and would mask the overflow compaction resolves (parent
-          // review-note 1). After the first compact, prefer-checkpoint is the
-          // seed the model will actually get; skipping the trigger there
-          // never re-compacts (adversarial #955).
-          let preTrimSeed: ReturnType<typeof buildModelMessages>['rows'] | undefined;
-          let pinSummaryRow = false;
+          // Pre-trim seed from the preference chain. The #950 trigger runs
+          // on THIS array (live mm **or** checkpoint **or** mm dump) — a
+          // trimmed seed always fits and would mask the overflow compaction
+          // resolves (parent review-note 1).
+          let checkpointSeed: ReturnType<typeof buildModelMessages>['rows'] | undefined;
+          let mmSeed: ReturnType<typeof buildModelMessages>['rows'] | undefined;
           if (cpPointer) {
             try {
               const blobStore = services.createBlobTranscriptStore();
@@ -473,18 +466,17 @@ export async function POST(req: Request): Promise<Response> {
                       checkpoint.summary,
                       checkpoint.filesTouched,
                     );
-                    preTrimSeed = [summaryRow, ...checkpoint.retainedTail];
-                    pinSummaryRow = true;
+                    checkpointSeed = [summaryRow, ...checkpoint.retainedTail];
                   }
                 }
               }
             } catch {
               // Fail-closed: unreadable/missing/malformed checkpoint →
               // fall back (modelMessagesPointer, then legacy sidecar).
-              preTrimSeed = undefined;
+              checkpointSeed = undefined;
             }
           }
-          if (preTrimSeed === undefined && mmPointer) {
+          if (mmPointer) {
             try {
               const blobStore = services.createBlobTranscriptStore();
               const raw = await blobStore.read(mmPointer);
@@ -494,14 +486,23 @@ export async function POST(req: Request): Promise<Response> {
                   // Rebuild (re-pair + caps) so a planted/stale blob cannot
                   // seed an unpaired tool-result at a strict provider
                   // (adversarial-review #937).
-                  preTrimSeed = buildModelMessages(parsedProjection).rows;
+                  mmSeed = buildModelMessages(parsedProjection).rows;
                 }
               }
             } catch {
-              // Fail-closed: unreadable/missing/malformed projection → no seed.
-              preTrimSeed = undefined;
+              // Fail-closed: unreadable/missing/malformed projection → no mm.
+              mmSeed = undefined;
             }
           }
+          // Live honesty-prefixed mm is the post-compact warehouse (Goal 2).
+          // Checkpoint-only when mm is the pre-compact dump or missing.
+          const preTrimSeed =
+            mmSeed !== undefined && isCompactionHonestyRow(mmSeed[0])
+              ? mmSeed
+              : checkpointSeed !== undefined
+                ? checkpointSeed
+                : mmSeed;
+          const pinSummaryRow = isCompactionHonestyRow(preTrimSeed?.[0]);
           if (preTrimSeed !== undefined) {
             const windowMap = await windowPromise;
             const budget = foldBudgetTokens(windowMap, byok.modelId);
@@ -517,9 +518,12 @@ export async function POST(req: Request): Promise<Response> {
                   // clip the last fitting tail's span instead of yielding to
                   // `#944` trim. Cut rails leave room for the max honesty row
                   // so success trim does not drop unsummarized tail.
+                  // Follow-up 9: pin row 0 so checkpoint clip **success**
+                  // re-summarizes Goal 4 honesty instead of dropping it.
                   maxSpanBytes: rails.maxSpanBytes,
                   maxBytes: rails.maxBytes,
                   maxRows: rails.maxRows,
+                  ...(pinSummaryRow ? { pinnedCount: 1 } : {}),
                 })
               : null;
             if (cut) {
@@ -559,24 +563,15 @@ export async function POST(req: Request): Promise<Response> {
               // independently 2 MiB rails compose toward the 4.5 MB Function
               // ceiling; over COMPACTION_START_MAX_BYTES yield to the #944
               // trim (never a 413 that blocks the turn).
-              // Suffix clip (follow-up 8): span+tail is a contiguous newest
-              // suffix — mm fail-open reconstructs it. Checkpoint clip still
-              // attaches failOpenSeed (pinnedCount 1) so Goal 4 honesty at
-              // index 0 is not dropped; mm clip must NOT ship a third
-              // seed-sized array (default-window 2+0.64+0.68 MiB > 3 MiB).
-              const failOpenSeed =
-                cut.clipped === true && pinSummaryRow
-                  ? trimModelMessagesToBudget(preTrimSeed, budget, {
-                      currentUserContent: parsed.prompt,
-                      pinnedCount: 1,
-                    }).rows
-                  : undefined;
+              // Suffix clip (follow-up 8 / 9): span+tail is a contiguous
+              // newest suffix (mm) or `[honesty, …suffix, …tail]` when row 0
+              // is pinned. Fail-open reconstructs span+tail — no third
+              // seed-sized `failOpenSeed` array (default-window rail).
               const candidate = {
                 span: cut.span,
                 filesTouched,
                 retainedTail: cut.tail,
                 budgetTokens: budget,
-                ...(failOpenSeed !== undefined ? { failOpenSeed } : {}),
               };
               if (compactStartPayloadFits(candidate)) {
                 compactArgs = {

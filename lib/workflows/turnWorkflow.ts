@@ -121,10 +121,11 @@ export interface TurnWorkflowArgs {
      */
     budgetTokens?: number;
     /**
-     * Checkpoint-seeded compact (adversarial #955 follow-up): the honesty
-     * row is in the span (index 0 is never a cut boundary). Fail-open
-     * reconstruction must pin it (`pinnedCount: 1`) so #944 drop-oldest
-     * cannot drop Goal 4. Absent/false = mm-seed compact (no pin).
+     * Checkpoint-seeded / honesty-prefixed compact (adversarial #955
+     * follow-up 9): the honesty row is pinned in the span (`pinnedCount: 1`
+     * on the cut). Fail-open reconstruction pins it (`pinnedCount: 1`) so
+     * #944 drop-oldest cannot drop Goal 4. Absent/false = mm-seed compact
+     * (no pin).
      */
     pinSummaryRow?: boolean;
     /**
