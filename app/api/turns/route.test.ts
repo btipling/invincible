@@ -2095,6 +2095,9 @@ describe('POST /api/turns', () => {
     const span = startArgs.compact.span as Array<{ role?: string; content?: string }>;
     expect(span[0]?.role).toBe('user');
     expect(span[0]?.content?.startsWith(COMPACTION_SUMMARY_LABEL)).toBe(true);
+    // Adversarial #955 follow-up 17: honesty files line is in the fitted
+    // span — scrape it even when the overflow prefix has no file tools.
+    expect(startArgs.compact.filesTouched).toContain('src/a.ts');
     expect(
       span.some((r) => r.content === 'ANCIENT_PREFIX goal of the session'),
     ).toBe(true);

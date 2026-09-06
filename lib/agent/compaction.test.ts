@@ -32,6 +32,7 @@ import {
   isCompactionHonestyRow,
   livePostCompactTail,
   renderSummaryRow,
+  scrapeCompactionFilesTouched,
   COMPACTION_SUMMARY_LABEL,
 } from './compaction';
 import { rePairModelMessages, type ModelMessageRow } from './modelMessages';
@@ -1026,5 +1027,41 @@ describe('livePostCompactTail (adversarial #955 follow-up 3)', () => {
     );
     const out = livePostCompactTail([summary, collidingAsk, assistant('ok')]);
     expect(out).toEqual([collidingAsk, assistant('ok')]);
+  });
+});
+
+describe('scrapeCompactionFilesTouched (adversarial #955 follow-up 16/17)', () => {
+  it('collects read_file / str_replace / write_file args.path from assistant rows', () => {
+    const span: ModelMessageRow[] = [
+      user('ask'),
+      assistant('working', [
+        { toolName: 'read_file', toolCallId: 'c1', args: { path: 'src/a.ts' } },
+        { toolName: 'list_dir', toolCallId: 'c2', args: { path: 'src' } },
+        { toolName: 'str_replace', toolCallId: 'c3', args: { path: 'lib/b.ts' } },
+        { toolName: 'write_file', toolCallId: 'c4', args: { path: 'out.ts' } },
+      ]),
+      toolOk('read_file', 'c1', 'bytes'),
+    ];
+    expect(scrapeCompactionFilesTouched(span)).toEqual([
+      'src/a.ts',
+      'lib/b.ts',
+      'out.ts',
+    ]);
+  });
+
+  it('peels the Goal 4 honesty files line; skips the omitted-count marker', () => {
+    const honesty = renderSummaryRow('earlier work', ['src/a.ts', 'lib/b.ts']);
+    const span: ModelMessageRow[] = [
+      honesty,
+      user('overflow with no file tools'),
+      assistant('chat'),
+    ];
+    expect(scrapeCompactionFilesTouched(span)).toEqual(['src/a.ts', 'lib/b.ts']);
+    const withOmitted: ModelMessageRow = {
+      role: 'user',
+      content:
+        `${COMPACTION_SUMMARY_LABEL} s\nFiles read/modified: … (3 earlier paths omitted)\n\nFiles read/modified: kept.ts`,
+    };
+    expect(scrapeCompactionFilesTouched([withOmitted])).toEqual(['kept.ts']);
   });
 });

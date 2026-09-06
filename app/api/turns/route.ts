@@ -64,7 +64,7 @@ import {
   buildModelMessages,
   trimModelMessagesToBudget,
 } from '../../../lib/agent/modelMessages';
-import { buildCheckpoint, findCompactionCut, renderSummaryRow, fitCompactionCutToStartPayload, compactionCutRails, isCompactionHonestyRow } from '../../../lib/agent/compaction';
+import { buildCheckpoint, findCompactionCut, renderSummaryRow, fitCompactionCutToStartPayload, compactionCutRails, isCompactionHonestyRow, scrapeCompactionFilesTouched } from '../../../lib/agent/compaction';
 import { shouldCompact } from '../../../lib/agent/compactionBudget';
 import { foldBudgetTokens } from '../../../lib/agent/contextBudget';
 import {
@@ -534,48 +534,14 @@ export async function POST(req: Request): Promise<Response> {
                 })
               : null;
             if (cut) {
-              // `filesTouched` for the checkpoint summary row: derive
-              // from the span's `read_file` / edit tool rows (phase-1
-              // `boundFilesTouched` caps + sanitizes in `buildCheckpoint`
-              // — pass the raw paths through). Paths live on the
-              // assistant call, not the tool-result row. Scrape the
-              // **fitted** span (adversarial #955 follow-up 16) so a
-              // start-rail shrink cannot list files the summarizer never
-              // saw. The pre-fit list is only the combined-payload size
-              // hint (conservative).
-              const filesTouchedFromSpan = (
-                span: ReadonlyArray<(typeof cut.span)[number]>,
-              ): string[] => {
-                const out: string[] = [];
-                for (const row of span) {
-                  if (!row || typeof row !== 'object') continue;
-                  const o = row as {
-                    role?: unknown;
-                    delta?: {
-                      toolCalls?: Array<{
-                        toolName?: unknown;
-                        args?: { path?: unknown };
-                      }>;
-                    };
-                  };
-                  if (o.role === 'assistant' && o.delta?.toolCalls) {
-                    for (const call of o.delta.toolCalls) {
-                      if (typeof call.toolName !== 'string') continue;
-                      const path = call.args?.path;
-                      if (
-                        (call.toolName === 'read_file' ||
-                          call.toolName === 'str_replace' ||
-                          call.toolName === 'write_file') &&
-                        typeof path === 'string'
-                      ) {
-                        out.push(path);
-                      }
-                    }
-                  }
-                }
-                return out;
-              };
-              const filesTouched = filesTouchedFromSpan(cut.span);
+              // `filesTouched` for the checkpoint summary row: paths the
+              // summarizer actually saw in the span (tool `args.path` + the
+              // Goal 4 honesty files line — adversarial #955 follow-up 16 /
+              // 17). Cap/sanitize in `buildCheckpoint`. Scrape the **fitted**
+              // span so a start-rail shrink cannot list files the summarizer
+              // never saw. The pre-fit list is only the combined-payload
+              // size hint (conservative).
+              const filesTouched = scrapeCompactionFilesTouched(cut.span);
               // Combined start() payload rail (adversarial #955 follow-up):
               // independently 2 MiB rails compose toward the 4.5 MB Function
               // ceiling. Over COMPACTION_START_MAX_BYTES **prefix-clip the
@@ -591,7 +557,7 @@ export async function POST(req: Request): Promise<Response> {
               if (fitted) {
                 compactArgs = {
                   span: fitted.span,
-                  filesTouched: filesTouchedFromSpan(fitted.span),
+                  filesTouched: scrapeCompactionFilesTouched(fitted.span),
                   retainedTail: fitted.tail,
                   budgetTokens: budget,
                   ...(pinSummaryRow ? { pinSummaryRow: true } : {}),

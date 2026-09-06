@@ -5724,7 +5724,7 @@ describe('runTurnLoop compaction (plan #950, source #552)', () => {
     expect(result.status).toBe('completed');
   });
 
-  it('adversarial #955 follow-up 16 — cancelled summarizer is G22 Stop, not fail-open', async () => {
+  it('adversarial #955 follow-up 16/17 — cancelled summarizer is G22 Stop + terminal persist (no fold)', async () => {
     const { deps, closed } = wiredDeps();
     const modelStep = vi.fn(async () => ({
       ok: true as const,
@@ -5753,11 +5753,13 @@ describe('runTurnLoop compaction (plan #950, source #552)', () => {
     expect(result.status).toBe('cancelled');
     expect(result.error).toBe('Request cancelled.');
     expect(modelStep).not.toHaveBeenCalled();
-    expect(persistSpy).not.toHaveBeenCalled();
+    expect(persistSpy).toHaveBeenCalledTimes(1);
+    expect(persistSpy.mock.calls[0]?.[0]?.fold).toBeUndefined();
+    expect(persistSpy.mock.calls[0]?.[0]?.terminal).not.toBe(false);
     expect(closed()).toBe(1);
   });
 
-  it('adversarial #955 follow-up 16 — AbortError from summarizer is G22 Stop', async () => {
+  it('adversarial #955 follow-up 16/17 — AbortError from summarizer is G22 Stop + terminal persist (no fold)', async () => {
     const { deps } = wiredDeps();
     const modelStep = vi.fn(async () => ({
       ok: true as const,
@@ -5785,7 +5787,8 @@ describe('runTurnLoop compaction (plan #950, source #552)', () => {
     expect(result.status).toBe('cancelled');
     expect(result.error).toBe('Request cancelled.');
     expect(modelStep).not.toHaveBeenCalled();
-    expect(persistSpy).not.toHaveBeenCalled();
+    expect(persistSpy).toHaveBeenCalledTimes(1);
+    expect(persistSpy.mock.calls[0]?.[0]?.fold).toBeUndefined();
   });
 
   it('empty summary → no compacted seed (plain projection); fold carries NO compactionCheckpoint', async () => {

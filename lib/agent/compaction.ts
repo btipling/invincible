@@ -107,6 +107,9 @@ export function isCompactionHonestyRow(row: unknown): boolean {
 /** The files line prefix rendered under the summary in the labeled row. */
 const FILES_TOUCHED_PREFIX = 'Files read/modified:';
 
+/** FS tools whose `args.path` belongs on the Goal 4 files line. */
+const COMPACTION_FILE_TOOLS = new Set(['read_file', 'str_replace', 'write_file']);
+
 /** JSON-key slack for the honesty `{role, content}` row (adversarial #955). */
 const HONESTY_ROW_JSON_SLACK_CHARS = 64;
 
@@ -302,6 +305,59 @@ export function renderSummaryRow(
     lines.push(`${FILES_TOUCHED_PREFIX} ${cleaned.join(', ')}`);
   }
   return { role: 'user', content: lines.join('\n\n') };
+}
+
+/**
+ * Paths the summarizer actually saw in `span` (adversarial #955 follow-up 16
+ * + 17). Assistant `read_file` / `str_replace` / `write_file` `args.path`,
+ * plus the Goal 4 honesty `Files read/modified:` line when that row is in
+ * the span (re-compact clip keeps honesty; scrape-only-tools wiped it).
+ * Omitted-count honesty (`… (N earlier paths omitted)`) is not a path list.
+ * Pure, never throws. Cap/sanitize happens in `buildCheckpoint`.
+ */
+export function scrapeCompactionFilesTouched(
+  span: ReadonlyArray<unknown>,
+): string[] {
+  const out: string[] = [];
+  for (const row of span) {
+    if (!row || typeof row !== 'object') continue;
+    if (isCompactionHonestyRow(row)) {
+      const content = (row as { content: string }).content;
+      const lines = content.split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i]!.trim();
+        if (!line.startsWith(FILES_TOUCHED_PREFIX)) continue;
+        if (/\bearlier paths omitted\b/.test(line)) continue;
+        const rest = line.slice(FILES_TOUCHED_PREFIX.length).trim();
+        if (!rest) break;
+        for (const p of rest.split(',')) {
+          const s = p.trim();
+          if (s) out.push(s);
+        }
+        break;
+      }
+      continue;
+    }
+    const o = row as {
+      role?: unknown;
+      delta?: {
+        toolCalls?: Array<{
+          toolName?: unknown;
+          args?: { path?: unknown };
+        }>;
+      };
+    };
+    if (o.role === 'assistant' && o.delta?.toolCalls) {
+      for (const call of o.delta.toolCalls) {
+        if (typeof call.toolName !== 'string') continue;
+        const path = call.args?.path;
+        if (COMPACTION_FILE_TOOLS.has(call.toolName) && typeof path === 'string') {
+          out.push(path);
+        }
+      }
+    }
+  }
+  return out;
 }
 
 /**

@@ -732,20 +732,22 @@ export async function runTurnLoop(
   // Fail-open — summarizer **model/BYOK/empty/pin-miss** proceeds UNCOMPACTED.
   // G22 `'cancelled'` (and AbortError from the step) is NOT fail-open
   // (adversarial #955 follow-up 16) — Stop must not start the first model
-  // round or persist a reconstructed seed. Production omits `priorMessages`
-  // on the compact path (adversarial #955 — do not ship three seed-sized
-  // arrays into `start()`, and do not overwrite the fail-open seed with an
-  // empty Goal 4 row): reconstruct from span+tail and trim with the
-  // route-computed budget. Tests may still pass a plain `priorMessages`.
-  // The summary row is a labeled `user` row (renderSummaryRow) — never live
-  // assistant prose (parent Goal 4).
+  // round or persist a reconstructed seed as `modelMessages`. Production
+  // omits `priorMessages` on the compact path (adversarial #955 — do not
+  // ship three seed-sized arrays into `start()`, and do not overwrite the
+  // fail-open seed with an empty Goal 4 row): reconstruct from span+tail
+  // and trim with the route-computed budget. Tests may still pass a plain
+  // `priorMessages`. The summary row is a labeled `user` row
+  // (`renderSummaryRow`) — never live assistant prose (parent Goal 4).
   let compactedSeed: unknown[] | undefined;
   let compactedCheckpoint:
     | { summary: string; filesTouched: string[]; retainedTail: unknown[] }
     | undefined;
   // G22 Stop during the pre-loop summarizer (adversarial #955 follow-up 16).
   // Model/BYOK/empty stay fail-open; `'cancelled'` must not start the first
-  // model round or persist a fail-open seed.
+  // model round or persist a fail-open seed as `modelMessages`. Follow-up 17:
+  // still terminal-persist with **no fold** so `'cancelling'` is superseded
+  // (`persistOverlayStatus` `'completed'`) — F5 must not cold-attach.
   let compactCancelled: string | undefined;
   if (input.compact !== undefined && deps.compactionStep !== undefined) {
     try {
@@ -1110,6 +1112,22 @@ export async function runTurnLoop(
 
   try {
     if (compactCancelled !== undefined) {
+      // G22: overlay `completed` so F5 cannot attach. Cancel-route
+      // `'cancelling'` is host-held liveness, always superseded by the
+      // run's terminal persist (`app/api/turns/[runId]/cancel/route.ts`).
+      // Omit `fold` — copy-forward mm / compactionPointer / freshness.
+      // An ask-only `messages` fold (loopSeed=[], thisRunStart=0) would
+      // clobber the warehouse (adversarial #955 follow-up 16 lock). Empty
+      // this-run transcript merge keeps the prior (#934).
+      try {
+        await deps.persistStep({
+          turnRunId: deps.turnRunId,
+          deltas,
+          terminal: true,
+        });
+      } catch {
+        // Persist must not skip the writable close on stream death.
+      }
       return fail('cancelled', 0, 0, compactCancelled);
     }
     while (steps < cap) {
