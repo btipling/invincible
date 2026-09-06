@@ -368,6 +368,14 @@ export interface TurnLoopInput {
      * reconstruction pins the honesty row at index 0. Absent = mm seed.
      */
     pinSummaryRow?: boolean;
+    /**
+     * `#944`-trimmed full pre-trim projection (adversarial #955 follow-up 7).
+     * Present when the route-side cut was a **clip** (`span.concat(tail)` is
+     * not the input rows). Fail-open MUST seed from this, not span+tail —
+     * reconstructing the hole persists the dropped middle as `modelMessages`.
+     * Absent = complete partition; fail-open reconstructs span+tail.
+     */
+    failOpenSeed?: ReadonlyArray<unknown>;
   };
 }
 
@@ -788,26 +796,34 @@ export async function runTurnLoop(
 
   // Seed: compacted `[summaryRow, ...tail]` on success; otherwise the
   // un-compacted projection. Compact-path fail-open with no `priorMessages`
-  // reconstructs span+tail (the full pre-trim cut) and applies #944 rails.
+  // uses `failOpenSeed` when the cut was a clip (full `#944` trim — the
+  // holey span+tail is not a projection); else reconstructs span+tail
+  // (complete partition) and applies #944 rails.
   let loopSeed: unknown[];
   if (compactedSeed !== undefined) {
     loopSeed = compactedSeed;
   } else if (input.priorMessages !== undefined) {
     loopSeed = [...input.priorMessages];
   } else if (input.compact !== undefined) {
-    const rebuilt = buildModelMessages([
-      ...input.compact.span,
-      ...(deps.compactionRetainedTail ?? []),
-    ]).rows;
-    const budget = input.compact.budgetTokens;
-    const pinCount = input.compact.pinSummaryRow === true ? 1 : 0;
-    loopSeed =
-      typeof budget === 'number'
-        ? trimModelMessagesToBudget(rebuilt, budget, {
-            currentUserContent: input.userMessage,
-            ...(pinCount > 0 ? { pinnedCount: pinCount } : {}),
-          }).rows
-        : rebuilt;
+    // Clip fail-open (adversarial #955 follow-up 7): span+tail has a hole.
+    // Prefer the route-computed `#944` trim of the FULL pre-trim seed.
+    if (input.compact.failOpenSeed !== undefined) {
+      loopSeed = buildModelMessages(input.compact.failOpenSeed).rows;
+    } else {
+      const rebuilt = buildModelMessages([
+        ...input.compact.span,
+        ...(deps.compactionRetainedTail ?? []),
+      ]).rows;
+      const budget = input.compact.budgetTokens;
+      const pinCount = input.compact.pinSummaryRow === true ? 1 : 0;
+      loopSeed =
+        typeof budget === 'number'
+          ? trimModelMessagesToBudget(rebuilt, budget, {
+              currentUserContent: input.userMessage,
+              ...(pinCount > 0 ? { pinnedCount: pinCount } : {}),
+            }).rows
+          : rebuilt;
+    }
   } else {
     loopSeed = [];
   }

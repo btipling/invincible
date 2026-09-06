@@ -127,6 +127,11 @@ export interface TurnWorkflowArgs {
      * cannot drop Goal 4. Absent/false = mm-seed compact (no pin).
      */
     pinSummaryRow?: boolean;
+    /**
+     * `#944`-trimmed full pre-trim projection (adversarial #955 follow-up 7).
+     * Clip fail-open only — see `TurnLoopInput.compact.failOpenSeed`.
+     */
+    failOpenSeed?: ReadonlyArray<unknown>;
   };
 }
 
@@ -263,6 +268,9 @@ export async function turnWorkflow(
                   : {}),
                 ...(args.compact.pinSummaryRow === true
                   ? { pinSummaryRow: true }
+                  : {}),
+                ...(args.compact.failOpenSeed !== undefined
+                  ? { failOpenSeed: args.compact.failOpenSeed }
                   : {}),
               },
             }

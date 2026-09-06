@@ -71,6 +71,14 @@ export type CompactionCut = {
   span: ModelMessageRow[];
   /** Rows from the boundary to the end — the retained tail. */
   tail: ModelMessageRow[];
+  /**
+   * True when the span is a **prefix clip** (adversarial #955 follow-up 6 / 7).
+   * `span.concat(tail)` is then NOT the input rows — the middle
+   * `rows[span.length : cutIndex]` is on neither side. Fail-open MUST NOT
+   * reconstruct from span+tail (that hole is persisted as `modelMessages`).
+   * The route passes a `#944`-trimmed full projection as `failOpenSeed`.
+   */
+  clipped?: boolean;
 };
 
 const encoder = new TextEncoder();
@@ -85,6 +93,18 @@ export const COMPACTION_SUMMARY_LABEL =
 
 /** The files line prefix rendered under the summary in the labeled row. */
 const FILES_TOUCHED_PREFIX = 'Files read/modified:';
+
+/** JSON-key slack for the honesty `{role, content}` row (adversarial #955). */
+const HONESTY_ROW_JSON_SLACK_CHARS = 64;
+
+/**
+ * Typical `Files read/modified:` list slack (adversarial #955 follow-up 7).
+ * `renderSummaryRow` always appends `filesTouched` (up to
+ * `COMPACTION_FILES_TOUCHED_MAX`). Follow-up 6 reserved only summary+label;
+ * a fat files line still overflow-trimmed the unpinned tail. 2 KiB covers a
+ * typical list; a maxed 256 long-path list can still pin-miss fail-open.
+ */
+const HONESTY_FILES_LINE_SLACK_CHARS = 2048;
 
 /** Suffix `boundSummary` appends after a dropped code point. */
 const TRUNCATION_SUFFIX = `\n${SUMMARY_TRUNCATION_MARKER}`;
@@ -367,6 +387,7 @@ export function findCompactionCut(
       cutIndex: spanOverFit.cutIndex,
       span: rePairModelMessages(clipped),
       tail: rePairModelMessages(spanOverFit.tail),
+      clipped: true,
     };
   };
 
@@ -423,12 +444,18 @@ function clipSpanToMaxBytes(
 }
 
 /**
- * Tail rails for the phase-3 cut walk (adversarial #955 follow-up 6).
+ * Tail rails for the phase-3 cut walk (adversarial #955 follow-up 6 / 7).
  * Subtracts the worst-case Goal 4 honesty row (`COMPACTION_SUMMARY_MAX_CHARS`
- * + label slack) from the token/byte/row ceilings so `[max-summary, ...tail]`
- * fits the combined seed by construction. The overflow lands in the span
- * (summarized) instead of being drop-oldest'd off the tail after success.
- * `shouldCompact` still uses the full fold budget. Pure, never throws.
+ * + label + files-line slack) from the token/byte/row ceilings so
+ * `[max-summary, ...tail]` fits the combined seed by construction. The
+ * overflow lands in the span (summarized) instead of being drop-oldest'd
+ * off the tail after success. `shouldCompact` still uses the full fold
+ * budget. Pure, never throws.
+ *
+ * Files-line slack (`HONESTY_FILES_LINE_SLACK_CHARS`) covers a typical
+ * `Files read/modified:` list. A maxed `COMPACTION_FILES_TOUCHED_MAX`
+ * long-path list can still overflow — pin-miss fail-open / combined-seed
+ * trim, never a silent honesty drop.
  */
 export function compactionCutRails(budgetTokens: number): {
   budgetTokens: number;
@@ -437,7 +464,11 @@ export function compactionCutRails(budgetTokens: number): {
   maxSpanBytes: number;
 } {
   const reserveChars =
-    COMPACTION_SUMMARY_MAX_CHARS + COMPACTION_SUMMARY_LABEL.length + 64;
+    COMPACTION_SUMMARY_MAX_CHARS +
+    COMPACTION_SUMMARY_LABEL.length +
+    FILES_TOUCHED_PREFIX.length +
+    HONESTY_ROW_JSON_SLACK_CHARS +
+    HONESTY_FILES_LINE_SLACK_CHARS;
   const reserveTokens = Math.ceil(reserveChars / CONTEXT_CHARS_PER_TOKEN);
   const budget =
     Number.isFinite(budgetTokens) && budgetTokens > 0 ? budgetTokens : 1;
@@ -461,6 +492,9 @@ export function compactStartPayloadFits(
     retainedTail: unknown;
     filesTouched: unknown;
     budgetTokens: number;
+    /** `#944` trim of the full pre-trim seed — clip fail-open only. */
+    failOpenSeed?: unknown;
+    pinSummaryRow?: boolean;
   },
   maxBytes: number = COMPACTION_START_MAX_BYTES,
 ): boolean {

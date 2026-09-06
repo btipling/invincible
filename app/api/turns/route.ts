@@ -337,6 +337,7 @@ export async function POST(req: Request): Promise<Response> {
           retainedTail: ReadonlyArray<unknown>;
           budgetTokens: number;
           pinSummaryRow?: boolean;
+          failOpenSeed?: ReadonlyArray<unknown>;
         }
       | undefined;
     try {
@@ -558,11 +559,24 @@ export async function POST(req: Request): Promise<Response> {
               // span + tail is the full pre-trim seed. Independently 2 MiB
               // rails compose to 4 MiB; over COMPACTION_START_MAX_BYTES
               // yield to the #944 trim (never a 413 that blocks the turn).
+              // Clip (follow-up 7): span+tail has a hole — attach the
+              // `#944` trim of the FULL pre-trim seed as failOpenSeed so
+              // summarizer failure does not persist the dropped middle.
+              const failOpenSeed = cut.clipped
+                ? trimModelMessagesToBudget(
+                    preTrimSeed,
+                    budget,
+                    pinSummaryRow
+                      ? { currentUserContent: parsed.prompt, pinnedCount: 1 }
+                      : { currentUserContent: parsed.prompt },
+                  ).rows
+                : undefined;
               const candidate = {
                 span: cut.span,
                 filesTouched,
                 retainedTail: cut.tail,
                 budgetTokens: budget,
+                ...(failOpenSeed !== undefined ? { failOpenSeed } : {}),
               };
               if (compactStartPayloadFits(candidate)) {
                 compactArgs = {
@@ -725,6 +739,9 @@ export async function POST(req: Request): Promise<Response> {
                 budgetTokens: compactArgs.budgetTokens,
                 ...(compactArgs.pinSummaryRow === true
                   ? { pinSummaryRow: true }
+                  : {}),
+                ...(compactArgs.failOpenSeed !== undefined
+                  ? { failOpenSeed: compactArgs.failOpenSeed }
                   : {}),
               },
             }

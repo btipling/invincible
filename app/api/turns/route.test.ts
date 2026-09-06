@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AUTH_REQUIRED_ERROR } from '../../../lib/tenancy/errors';
 import {
   COMPACTION_FILES_TOUCHED_MAX,
+  COMPACTION_SPAN_MAX_BYTES,
   COMPACTION_SUMMARY_MAX_CHARS,
 } from '../../../lib/sessionCloudCaps';
 import { buildCheckpoint } from '../../../lib/agent/compaction';
@@ -1910,6 +1911,8 @@ describe('POST /api/turns', () => {
     // Adversarial #955: compact path omits priorMessages (no dummy empty
     // Goal 4 row as the fail-open seed; no third seed-sized start() array).
     expect(startArgs.priorMessages).toBeUndefined();
+    // Complete partition — failOpenSeed is clip-only (follow-up 7).
+    expect(startArgs.compact.failOpenSeed).toBeUndefined();
   });
 
   it('plan #950 row 2 — under-budget projection → NO compact arg (default #944 path unchanged)', async () => {
@@ -1997,6 +2000,71 @@ describe('POST /api/turns', () => {
     // Prefer-checkpoint: the mm pointer is not read when the checkpoint seeds.
     expect(blobReadMock).toHaveBeenCalledTimes(1);
     expect(blobReadMock).toHaveBeenCalledWith('t_cp_s1_abc');
+  });
+
+  it('adversarial #955 follow-up 7 — clipped cut attaches failOpenSeed that keeps the dropped middle', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    // Fat prefix just under COMPACTION_SPAN_MAX_BYTES so the newest-cut span
+    // overflows the cap, continue's older tail misses the 20k-window budget,
+    // and clip drops MIDDLE_MARKER from both span and tail.
+    const encoder = new TextEncoder();
+    const prefixBytes = (n: number): number =>
+      encoder.encode(
+        JSON.stringify([
+          { role: 'user', content: 'H'.repeat(n) },
+          { role: 'assistant', delta: { text: 'old' } },
+        ]),
+      ).length;
+    let lo = COMPACTION_SPAN_MAX_BYTES - 4096;
+    let hi = COMPACTION_SPAN_MAX_BYTES;
+    while (lo < hi) {
+      const mid = lo + ((hi - lo + 1) >> 1);
+      if (prefixBytes(mid) <= COMPACTION_SPAN_MAX_BYTES - 8) lo = mid;
+      else hi = mid - 1;
+    }
+    const projection = [
+      { role: 'user', content: 'H'.repeat(lo) },
+      { role: 'assistant', delta: { text: 'old' } },
+      { role: 'user', content: 'MIDDLE_MARKER' },
+      // ~8k-char assistant so the older tail (MIDDLE…) misses the reserved
+      // 20k-window cut rails (clip) but still fits the full #944 budget
+      // (failOpenSeed keeps MIDDLE). Tiny newest tail still fits the cut.
+      { role: 'assistant', delta: { text: 'T'.repeat(8_000) } },
+      { role: 'user', content: 'newest boundary' },
+    ];
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        modelMessagesPointer: 't_mm_s1_abc',
+      },
+    });
+    blobReadMock.mockResolvedValue(JSON.stringify(projection));
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      effortValuesForModel: async () => [],
+      getJoinedWindowMap: async () => new Map([['anthropic/claude-a', 20_000]]),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'continue', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.compact).toBeDefined();
+    const covered = [
+      ...(startArgs.compact.span as Array<{ content?: string }>),
+      ...(startArgs.compact.retainedTail as Array<{ content?: string }>),
+    ];
+    expect(covered.some((r) => r.content === 'MIDDLE_MARKER')).toBe(false);
+    expect(Array.isArray(startArgs.compact.failOpenSeed)).toBe(true);
+    expect(
+      (startArgs.compact.failOpenSeed as Array<{ content?: string }>).some(
+        (r) => r.content === 'MIDDLE_MARKER',
+      ),
+    ).toBe(true);
+    expect(startArgs.priorMessages).toBeUndefined();
   });
 
 });

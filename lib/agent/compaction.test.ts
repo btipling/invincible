@@ -272,6 +272,7 @@ describe('findCompactionCut (plan #948 row 1 + 2)', () => {
     expect(cut!.cutIndex).toBe(2);
     expect(cut!.span).toEqual(rows.slice(0, 2));
     expect(cut!.tail[0]).toEqual(rows[2]);
+    expect(cut!.clipped).toBeUndefined();
   });
 
   it('adversarial #955 follow-up 6 — span-over-cap of the only fitting tail clips the span, not null', () => {
@@ -305,6 +306,17 @@ describe('findCompactionCut (plan #948 row 1 + 2)', () => {
     expect(cut!.span.length).toBeLessThan(4);
     // Clipped span is a prefix of the original span (oldest history).
     expect(cut!.span).toEqual(rows.slice(0, cut!.span.length));
+    // Adversarial #955 follow-up 7: clip is not a partition. The middle
+    // (`t2-middle`) is on neither side; `clipped` flags the hole so the
+    // route can pass a `#944` fail-open seed instead of span+tail.
+    expect(cut!.clipped).toBe(true);
+    const covered = [...cut!.span, ...cut!.tail];
+    expect(
+      covered.some((r) => r.role === 'user' && r.content === 't2-middle'),
+    ).toBe(false);
+    expect(rows.some((r) => r.role === 'user' && r.content === 't2-middle')).toBe(
+      true,
+    );
   });
 
   it('adversarial #955 follow-up 6 — clip empty when even the first row exceeds maxSpanBytes → null', () => {
@@ -325,16 +337,16 @@ describe('compactionCutRails (adversarial #955 follow-up 6)', () => {
   it('subtracts the max honesty row from token/byte/row rails; span cap unchanged', () => {
     const full = 20_000;
     const rails = compactionCutRails(full);
-    const reserveTokens = Math.ceil(
-      (COMPACTION_SUMMARY_MAX_CHARS + COMPACTION_SUMMARY_LABEL.length + 64) /
-        CONTEXT_CHARS_PER_TOKEN,
-    );
+    const reserveChars =
+      COMPACTION_SUMMARY_MAX_CHARS +
+      COMPACTION_SUMMARY_LABEL.length +
+      'Files read/modified:'.length +
+      64 +
+      2048;
+    const reserveTokens = Math.ceil(reserveChars / CONTEXT_CHARS_PER_TOKEN);
     expect(rails.budgetTokens).toBe(full - reserveTokens);
     expect(rails.maxRows).toBe(MODEL_MSG_SEED_MAX_ROWS - 1);
-    expect(rails.maxBytes).toBe(
-      MODEL_MSG_SEED_MAX_BYTES -
-        (COMPACTION_SUMMARY_MAX_CHARS + COMPACTION_SUMMARY_LABEL.length + 64),
-    );
+    expect(rails.maxBytes).toBe(MODEL_MSG_SEED_MAX_BYTES - reserveChars);
     expect(rails.maxSpanBytes).toBe(COMPACTION_SPAN_MAX_BYTES);
   });
 
