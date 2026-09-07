@@ -41,6 +41,42 @@ click/tap scrolls the transcript so the message is back in view near the top.
 | Cache | `public, max-age=3600, stale-while-revalidate=86400` |
 | Build id | Baked short git SHA (`-Dbuild-id`); file `public/harness/build-id.txt`; shown as `h:…` in status bar line 1 — must match after deploy |
 
+## Bounded viewport recovery
+
+The opt-in `viewportVersion=1` backend read path prioritizes useful recent display
+over exact archive reconstruction. The current host's default restore remains
+unnegotiated. These **new recovery budgets do not change durable storage, model
+context, queue, turn or bridge limits**.
+
+| Recovery cap (`lib/sessionCloudCaps.ts`) | Value | Behavior |
+|---|---:|---|
+| `VIEWPORT_TAIL_MAX_FRAMES` | 2048 | Sample only the recent stored-frame interval, never full-origin history on a large run |
+| `VIEWPORT_RECOVERY_MAX_BYTES` | 8 MiB | Decoded sampled frame bytes, including reasoning that is discarded |
+| `VIEWPORT_RECOVERY_MAX_MS` | 5000 ms | Shared optional H0 + head/sample deadline; not a timeout/cancel of live inference |
+| `VIEWPORT_FINAL_PROBE_MAX_MS` | 1000 ms | One final tail probe; on timeout keep initial known tail, no chase loop |
+| `VIEWPORT_HEAD_READ_MAX_OBJECTS` | 1 | Current scoped head only; no `prev` reconstruction |
+| `VIEWPORT_RESPONSE_MAX_BYTES` | 2 MiB | Entire escaped JSON snapshot/control incl. carriers/rows, below real 4.5 MB Function ceiling; not lifetime SSE bytes |
+| Output ring/row | existing 2048 /262144 UTF-8 bytes | Newest rows and labeled UTF-8-safe display excerpts; source objects unchanged |
+
+Budget exhaustion omits history and resumes at a known tail, with incomplete/gap
+flags. Sample rows or stored head are selected, not expensively aligned/merged.
+One neutral note explains omissions; historical reasoning is never in the snapshot.
+A missing optional head does not turn into an origin replay or run cancellation.
+Missing/hanging live-tail metadata (`getTailIndex`) fails the live attach in-band
+after `viewport_state` + head snapshot — never an empty 503, never `open(0)`, and
+never a guessed `resumeIndex: 0` (the snapshot is display-only; the decoder does
+not jump).
+
+The SDK may decode one oversized frame before the byte check, and a Blob read
+returns one complete object (raw + parsed JS overhead is larger than wire bytes).
+Cancellation stops readers and app work; a provider call without abort support can
+finish late but cannot launch more recovery work or replace the selected view.
+Only finite head/probe/sample calls are launched. Time bounds cover asynchronous
+waits and checked loop boundaries, not preemption of one synchronous JSON parse.
+This is bounded best effort, not an exact heap/latency guarantee or a new physical
+history index. The real-Wasm durable int project tests the recovery/parser/ring
+path separately from the default unit suite.
+
 ## Keyboard & focus
 
 All harness chords are rows of one keymap table

@@ -10,6 +10,39 @@ How harness continuity works: **local-first** browser restore plus
 - Client must not use Node `fs`
 - Persistence I/O stays on the **DOM host** — Wasm never talks to storage or `/api/sessions*`
 
+## Bounded viewport read API
+
+The backend offers an explicitly **partial, read-only** display path; the current
+`HarnessHost` still uses the unnegotiated restore path described below.
+
+- `GET /api/sessions/:id/viewport` reads only the current session-bound Blob
+  **head**, keeps recent rows and safe host carriers, and never follows `prev`.
+  Missing/corrupt history returns `replace:false` so a consumer keeps cached paint.
+- `GET /api/turns/:runId/stream?sessionId=:id&viewportVersion=1&hydrate=tail`
+  sends a recovering-state record, one bounded recent snapshot, then indexed live
+  events on the **same response**. Recovering state is emitted before H0 / tail
+  metadata; a missing tail is in-band `viewport_error` after the head snapshot
+  (not an empty 503) and does **not** publish `resumeIndex: 0`. It samples at most 2048 recent stored frames,
+  8 MiB, and 5 seconds of optional recovery work. One final tail probe (1 second)
+  can skip a growing backlog; omitted gaps are explicit, never replayed at UI speed.
+- Sampled reasoning is discarded. Post-handoff reasoning is live, including a
+  continuation of an older segment. Older prompt/tool context may be absent,
+  fragmented or stale; this is a useful recent view, not exact reconstruction.
+- `historyComplete:false` is unconditional. `resumeIndex` is a transport position
+  when the tail is known, **not** proof that every preceding message is present,
+  and is omitted entirely when the tail cannot be captured. Consumers must not upload
+  these rows as a full transcript or use them as model seed/history.
+- No transcript/envelope writes, model/tool execution, run start or run cancel
+  occur during recovery. SDK failure or disconnect detaches the reader only.
+  A stored `done`/`error` on the negotiated live tail closes that reader
+  **without** a following `viewport_end`; EOF, `viewport_end`, and
+  `viewport_error` are the other terminal signals (see
+  [agent-stream.md](agent-stream.md)).
+
+The worker's existing durable transcript/model projections remain unchanged.
+See [agent-stream.md](agent-stream.md) for version negotiation and record grammar,
+and [harness-limits.md](harness-limits.md) for the bounded-work caveats.
+
 ## Local session (always)
 
 | Piece | Location | Notes |

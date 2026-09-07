@@ -17,6 +17,59 @@ Early failures (auth, grants, bad body, BYOK) always use **JSON** status respons
 Response hints: `Cache-Control: no-cache, no-transform`, `X-Accel-Buffering: no`.
 
 
+## Negotiated viewport stream (version 1)
+
+This is additive backend support; the current production host still uses the
+unnegotiated event stream. Clients must opt in and use `ViewportStreamDecoder`
+(`lib/viewportStreamProtocol.ts`), not feed these controls to the legacy parser.
+
+| Request | Behavior |
+|---|---|
+| GET existing run stream with `sessionId`, `viewportVersion=1`, `hydrate=tail` | Recovering state → one best-effort snapshot → live indexed events; `startIndex` is forbidden with hydrate |
+| GET with `sessionId`, `viewportVersion=1`, `startIndex=N` | Indexed hot resume from a same-heap applied raw cursor; no history read. `N=0` is an explicit origin replay (not the default). |
+| GET `viewportVersion=1` without `hydrate` and without `startIndex` | **400** — not an implicit `startIndex=0` origin replay |
+| POST `/api/turns?viewportVersion=1`, `Accept: text/event-stream` | New run's indexed events from origin; inference/start args unchanged |
+| No version | Existing SSE/JSON behavior unchanged |
+
+Unknown versions, duplicate/conflicting selectors and noncanonical indexed
+cursor syntax reject with 400. Negotiated responses include `x-viewport-version: 1`
+and `Cache-Control: private, no-store, no-transform`.
+
+Each block has an SSE `event:` name and JSON `data:` (all data carries `version:1`
+and `runId`). Only stored `turn_event` records have `id:`:
+
+| event | Additional fields / meaning |
+|---|---|
+| `viewport_state` | `status`, `phase:'recovering'`; restore Busy/Stop without erasing cached paint |
+| `viewport_snapshot` | `sessionId`, optional `resumeIndex`, `rows`, `replace`, `source`, `sampledRange:{start,end}`, `historyComplete:false`, `incomplete:true`, `gap`, `hasEarlier`, safe `carriers`. `resumeIndex` is omitted when the live tail is unknown (display-only; the decoder does not jump). A missing tail is never encoded as `resumeIndex:0`. |
+| `turn_event` | `nextIndex`, `event` (allowlisted AgentStreamEvent) and matching SSE `id: nextIndex`; a malformed known stored frame instead carries `skipped:true` with no event. A stored `done` or `error` **is producer-terminal**: the iterator closes after that record and **does not** emit `viewport_end` (cancelled inject is an `error` event, not a synthetic `failed`). Consumers must treat stored `done`/`error`, `viewport_end`, `viewport_error`, **and** reader EOF as terminal. |
+| `viewport_end` | Synthetic terminal `status` (`completed`, `failed`, `cancelled`) when the wrapper stops from `run.status` or readable EOF **without** a stored `done`/`error` (hang-class attach, completed drain that never wrote `done`). No raw index, no transcript-completeness promise |
+| `viewport_error` | Sanitized `code`; preserve last applied cursor and detach, never restart/cancel inference |
+
+Recovery samples only the recent raw-frame interval and chooses sampled display
+**or** the latest stored head, not an exact merge. Historical thinking is omitted.
+A single final tail probe establishes the handoff; new data produced while sampling
+may be skipped and marked `gap:true`. Post-handoff reasoning is live. No loop chases
+the producer. See [harness-limits.md](harness-limits.md) for recovery budgets.
+
+An explicit snapshot may jump the cursor; subsequent stored ids must be contiguous.
+UTF-8/CRLF network fragmentation does not create new stored positions. A transport
+or decoder failure that loses position closes the reader, rather than inventing a
+cursor. Synthetic terminal status never consumes an index. Completed-run buffered
+frames drain before a hung read is resolved from a **1 s** terminal status poll;
+the 0-delay first poll unsticks already-`cancelled`/`failed` only (not `completed`).
+Already-`cancelled`/`failed` attach never calls `getReadable` (same C16 gate as
+`bodyForRun`); cold hydrate still returns a head snapshot then `viewport_end`.
+Cold GET emits `viewport_state` **before** capturing H0 (under the same 5 s
+recovery clock as head+sample). Unavailable or hanging live-tail metadata is an
+in-band `viewport_error` after that head snapshot — never an empty 503, never
+`open(0)` origin replay, and never a guessed `resumeIndex: 0` cursor jump.
+
+All view rows are disposable and incomplete. Missing history may preserve the
+cached ring (`replace:false`); oversized rows carry a visible excerpt marker.
+Never turn these rows into a canonical full-snapshot upload or inference seed.
+No new producer metadata, checkpoint certificates, or storage writes are required.
+
 ## Request body (cwd)
 
 | Field | Required | Notes |

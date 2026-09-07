@@ -48,6 +48,29 @@ Never use `NEXT_PUBLIC_SANDBOX_*` (or any client-exposed sandbox secret).
 | Backfill | One-shot Postgres `harness_sessions` → Redis via GHA **`sessions-redis-backfill`** (per-`{tenant,user}` marker, idempotent); Postgres becomes a **read-only archive**; legacy `/api/session` write route removed |
 | Client bundle | Session repository is client-safe (`lib/sessionRepository.ts`); must **not** import server `db` / Drizzle modules |
 
+### Read-only partial viewport
+
+`GET /api/sessions/:id/viewport` and the negotiated `viewportVersion=1`
+durable stream mode require the same authenticated tenant/user session scope.
+A run stream must match the owned envelope's **current** run id before SDK access;
+cold handoff rechecks that binding before releasing recovered rows. A planted Blob
+pointer is read only if `isObjectIdBoundTo` matches the same session, and the decoded
+body's `id` must match. These routes never accept client URLs, read arbitrary old
+Workflow inputs, start/cancel runs, execute tools, or emit secrets, raw run
+inputs, or signed read URLs. The response is a **partial, disposable display
+view** for the owning session — not a canonical transcript and not a public
+dataset.
+
+Optional history is best effort, **authorization is not**. Missing/corrupt history
+can produce `replace:false`; a missing/foreign session/run fails closed. Carriers
+are allowlisted and exclude persona/notes/model/compaction bodies, raw metadata,
+keys and signed read URLs. Negotiated stream failures use sanitized codes, not
+backend connection details. Responses are private/no-store. Historical reasoning
+is omitted from snapshots; post-handoff live events keep the existing redacted
+producer contract. `historyComplete:false` must never be treated as a full
+transcript replacement or inference seed. A transport resume index does not
+certify that omitted history is visible.
+
 Product behavior: [docs/session-model.md](docs/session-model.md).
 
 ## Builtin HTTPS fetch (Vercel Sandbox)

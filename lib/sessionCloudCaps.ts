@@ -39,6 +39,15 @@ export const HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES = 2 * 1024 * 1024;
  */
 export const HARNESS_SESSION_MAX_BODY_BYTES = 8 * 1024 * 1024;
 
+/** Best-effort viewport recovery only; none of these change durable retention. */
+export const VIEWPORT_TAIL_MAX_FRAMES = 2048;
+export const VIEWPORT_RECOVERY_MAX_BYTES = 8 * 1024 * 1024;
+export const VIEWPORT_RECOVERY_MAX_MS = 5000;
+export const VIEWPORT_FINAL_PROBE_MAX_MS = 1000;
+export const VIEWPORT_HEAD_READ_MAX_OBJECTS = 1;
+/** Entire escaped JSON snapshot/control, not the lifetime of a live SSE stream. */
+export const VIEWPORT_RESPONSE_MAX_BYTES = HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES;
+
 /**
  * Max objects a transcript `prev` walk may visit (plan #886). Loop/DoS bound
  * on reconstruct **and** worker persist — not a message cap and not a change

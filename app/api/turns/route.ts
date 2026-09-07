@@ -133,6 +133,14 @@ function failClosed(err: unknown): string {
   return `Unable to start durable turn (fail closed): ${msg}`;
 }
 
+/** Negotiated v1 never interpolates SDK/connection details (GET stream parity). */
+function viewportStreamUnavailable(): Response {
+  return Response.json(
+    { error: 'Viewport stream unavailable.' },
+    { status: 503, headers: { 'Cache-Control': 'private, no-store, no-transform' } },
+  );
+}
+
 /** Hard deny when resolve returned no client AND there is no soft-path fallback. */
 function isHardSandboxDeny(
   res: ResolveAgentSandboxResult,
@@ -176,6 +184,15 @@ export async function POST(req: Request): Promise<Response> {
   if (!userId) {
     const { AUTH_REQUIRED_ERROR } = await import('../../../lib/tenancy/errors');
     return Response.json({ error: AUTH_REQUIRED_ERROR }, { status: 401 });
+  }
+
+  let indexedViewport = false;
+  const query = new URL(req.url);
+  if (query.searchParams.has('viewportVersion') || query.searchParams.has('hydrate')) {
+    const { parseViewportMode } = await import('../../../lib/viewportStreamProtocol');
+    const mode = parseViewportMode(query, 'POST');
+    if (!mode) return Response.json({ error: 'Invalid viewport negotiation.' }, { status: 400 });
+    indexedViewport = mode.kind === 'indexed';
   }
 
   let body: unknown;
@@ -377,6 +394,7 @@ export async function POST(req: Request): Promise<Response> {
               }
               // exists === false or terminal status → not live; allow start.
             } catch (err) {
+              if (indexedViewport) return viewportStreamUnavailable();
               return Response.json({ error: failClosed(err) }, { status: 503 });
             }
           }
@@ -783,6 +801,15 @@ export async function POST(req: Request): Promise<Response> {
       runHeaders['x-workflow-run-warning'] = runWarning;
     }
     if (wantsAgentStream(req)) {
+      if (indexedViewport) {
+        const { createViewportRunReader } = await import('../../../lib/workflows/viewportRunReader');
+        const { viewportStream } = await import('../../../lib/agent/viewportStream');
+        return new Response(viewportStream({ runId: run.runId, sessionId, startIndex: 0,
+          run: createViewportRunReader(run), signal: req.signal }), { headers: {
+          ...runHeaders, 'content-type': AGENT_STREAM_CONTENT_TYPE, 'x-viewport-version': '1',
+          'Cache-Control': 'private, no-store, no-transform', 'X-Accel-Buffering': 'no',
+        } });
+      }
       return new Response(await bodyForRun(run), {
         status: 200,
         headers: {
@@ -805,6 +832,7 @@ export async function POST(req: Request): Promise<Response> {
         // Ignore close errors.
       }
     }
+    if (indexedViewport) return viewportStreamUnavailable();
     return Response.json({ error: failClosed(err) }, { status: 503 });
   } finally {
     // Clear the in-flight flag on EVERY path — success, throw, or any early
