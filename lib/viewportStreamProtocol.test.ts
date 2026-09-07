@@ -24,6 +24,28 @@ describe('negotiated viewport codec', () => {
       type: 'turn_event', version: 1, runId: 'run', nextIndex: 1, event: { type: 'text_delta', text: 'x' },
     }))).toThrow('Invalid viewport cursor');
   });
+  it('drops extra snapshot keys and re-sanitizes encoded carriers', () => {
+    const decoder = new ViewportStreamDecoder('run');
+    const hostile = [
+      'event: viewport_snapshot',
+      `data: ${JSON.stringify({
+        version: 1, runId: 'run', sessionId: 'session', resumeIndex: 42,
+        sampledRange: { start: 0, end: 40 }, rows: [], replace: false,
+        source: 'unavailable', historyComplete: false, incomplete: true,
+        gap: true, hasEarlier: false,
+        carriers: { cwd: '/etc/passwd', workingNotes: 'secret notes', queue: ['next'] },
+        workingNotes: 'secret notes', personaSnapshot: 'persona body',
+      })}`,
+      '',
+      '',
+    ].join('\n');
+    const rec = decoder.push(new TextEncoder().encode(hostile))[0];
+    expect(rec).toMatchObject({ type: 'viewport_snapshot', resumeIndex: 42, carriers: { queue: ['next'] } });
+    expect(rec).not.toHaveProperty('workingNotes');
+    expect(rec).not.toHaveProperty('personaSnapshot');
+    expect(JSON.stringify(rec)).not.toMatch(/secret|persona body|\/etc/);
+    expect((rec as { carriers: { cwd?: string } }).carriers.cwd).toBeUndefined();
+  });
   it('known skipped frame advances; synthetic terminal does not need an index', () => {
     const decoder = new ViewportStreamDecoder('run', 3);
     expect(decoder.push(encodeViewportRecord({ type: 'turn_event', version: 1, runId: 'run', nextIndex: 4, skipped: true }))[0]).toMatchObject({ skipped: true });

@@ -63,6 +63,26 @@ export function viewportCarriers(meta: unknown, queue?: unknown): ViewportCarrie
   };
 }
 
+/** Re-sanitize encoded carriers (output shape: `cwd`, not envelope `logicalCwd`). */
+export function parseViewportCarriers(raw: unknown): ViewportCarriers {
+  const c = objectRecord(raw) ?? {};
+  const slugs = Array.isArray(c.attachedSlugs)
+    ? c.attachedSlugs.slice(0, HARNESS_SESSION_MAX_ATTACHED_SKILLS)
+      .filter((s): s is string => typeof s === 'string' && SKILL_SLUG_RE.test(s))
+    : undefined;
+  return {
+    cwd: normalizeSessionCwd(c.cwd),
+    activeSandboxId: isRedisSafeOpaqueId(c.activeSandboxId) ? c.activeSandboxId : undefined,
+    selectedModel: sanitizeModelId(c.selectedModel), reasoningEffort: sanitizeReasoningEffort(c.reasoningEffort),
+    resolvedProvider: sanitizeResolvedProvider(c.resolvedProvider),
+    personaId: isRedisSafeOpaqueId(c.personaId) ? c.personaId : undefined,
+    attachedSlugs: slugs?.length ? slugs : undefined,
+    usage: sanitizeUsageSummary(c.usage),
+    turnRunId: sanitizeTurnRunId(c.turnRunId), turnStatus: sanitizeTurnStatus(c.turnStatus),
+    queue: sanitizeQueue(c.queue),
+  };
+}
+
 export type ViewportView = {
   version: 1; sessionId: string; rows: SessionMessage[]; replace: boolean;
   source: 'stream_tail' | 'stored_head' | 'unavailable';

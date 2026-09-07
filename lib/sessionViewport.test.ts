@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { byteLength, fitViewportRows, parseViewportEvent, parseViewportRow, viewportCarriers, viewportExcerpt, ViewportReducer } from './sessionViewport';
+import { byteLength, fitViewportRows, parseViewportCarriers, parseViewportEvent, parseViewportRow, viewportCarriers, viewportExcerpt, ViewportReducer } from './sessionViewport';
 import { HARNESS_SESSION_MAX_MSG_BYTES, VIEWPORT_RESPONSE_MAX_BYTES } from './sessionCloudCaps';
 import { decodeToolRun } from './toolRun';
 
@@ -33,6 +33,15 @@ describe('bounded disposable viewport', () => {
     expect(carriers.queue).toEqual(['next']);
     expect(JSON.stringify(carriers)).not.toMatch(/private|persona body|randomSecret/);
     expect(carriers.activeSandboxId).toBeUndefined();
+    const encoded = parseViewportCarriers({
+      cwd: carriers.cwd, selectedModel: 'test/model', queue: ['next'],
+      workingNotes: 'private notes', personaSnapshot: 'persona body',
+      cwdHost: '/etc/passwd',
+    });
+    expect(encoded).toMatchObject({ cwd: 'src', selectedModel: 'test/model', queue: ['next'] });
+    expect(JSON.stringify(encoded)).not.toMatch(/private|persona body|\/etc/);
+    expect(parseViewportCarriers({ cwd: '/etc/passwd', workingNotes: 'secret' }).cwd).toBeUndefined();
+    expect(JSON.stringify(parseViewportCarriers({ cwd: '/etc/passwd', workingNotes: 'secret' }))).not.toContain('secret');
   });
   it('parses one stored frame, ignores unknown fields, rejects multiple/malformed frames', () => {
     expect(parseViewportEvent('data: {"type":"text_delta","text":"hi","secret":"hidden"}\r\n\r\n'))

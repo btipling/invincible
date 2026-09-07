@@ -2,7 +2,7 @@
 import type { AgentStreamEvent } from './agent/agentStream';
 import { HARNESS_SESSION_MAX_MSG_BYTES, VIEWPORT_RESPONSE_MAX_BYTES, sanitizeTurnRunId, sanitizeTurnStreamCursor } from './sessionCloudCaps';
 import { HARNESS_RING_MAX } from './sessionWindow';
-import { byteLength, objectRecord, parseViewportRow, validateViewportEvent, type ViewportView } from './sessionViewport';
+import { byteLength, objectRecord, parseViewportRow, parseViewportCarriers, validateViewportEvent, type ViewportView } from './sessionViewport';
 
 export type ViewportSnapshot = ViewportView & {
   runId: string; resumeIndex?: number; sampledRange: { start: number; end: number };
@@ -96,8 +96,24 @@ export class ViewportStreamDecoder {
         if (this.nextIndex !== undefined && index < this.nextIndex) throw new Error('Rewound viewport');
         this.nextIndex = index;
       }
-      const { resumeIndex: _ignored, ...rest } = o;
-      return { ...rest, type, rows, ...(index !== undefined ? { resumeIndex: index } : {}) } as ViewportRecord;
+      const start = sanitizeTurnStreamCursor(range.start)!;
+      const end = sanitizeTurnStreamCursor(range.end)!;
+      return {
+        type,
+        version: 1,
+        runId: this.runId,
+        sessionId: o.sessionId as string,
+        rows,
+        replace: o.replace as boolean,
+        source: String(o.source) as ViewportView['source'],
+        historyComplete: false,
+        incomplete: true,
+        gap: o.gap as boolean,
+        hasEarlier: o.hasEarlier as boolean,
+        carriers: parseViewportCarriers(o.carriers),
+        sampledRange: { start, end },
+        ...(index !== undefined ? { resumeIndex: index } : {}),
+      };
     }
     if (type === 'viewport_state' && o.phase === 'recovering' && typeof o.status === 'string')
       return { type, version: 1, runId: this.runId, status: o.status, phase: 'recovering' };
