@@ -178,6 +178,15 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ error: AUTH_REQUIRED_ERROR }, { status: 401 });
   }
 
+  let indexedViewport = false;
+  const query = new URL(req.url);
+  if (query.searchParams.has('viewportVersion') || query.searchParams.has('hydrate')) {
+    const { parseViewportMode } = await import('../../../lib/viewportStreamProtocol');
+    const mode = parseViewportMode(query, 'POST');
+    if (!mode) return Response.json({ error: 'Invalid viewport negotiation.' }, { status: 400 });
+    indexedViewport = mode.kind === 'indexed';
+  }
+
   let body: unknown;
   try {
     body = await req.json();
@@ -783,6 +792,15 @@ export async function POST(req: Request): Promise<Response> {
       runHeaders['x-workflow-run-warning'] = runWarning;
     }
     if (wantsAgentStream(req)) {
+      if (indexedViewport) {
+        const { createViewportRunReader } = await import('../../../lib/workflows/viewportRunReader');
+        const { viewportStream } = await import('../../../lib/agent/viewportStream');
+        return new Response(viewportStream({ runId: run.runId, sessionId, startIndex: 0,
+          run: createViewportRunReader(run), signal: req.signal }), { headers: {
+          ...runHeaders, 'content-type': AGENT_STREAM_CONTENT_TYPE, 'x-viewport-version': '1',
+          'Cache-Control': 'private, no-store, no-transform', 'X-Accel-Buffering': 'no',
+        } });
+      }
       return new Response(await bodyForRun(run), {
         status: 200,
         headers: {

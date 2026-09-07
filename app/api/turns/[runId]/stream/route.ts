@@ -96,6 +96,15 @@ export async function GET(
     return Response.json({ error: 'Invalid runId' }, { status: 400 });
   }
 
+  const query = new URL(req.url);
+  let viewportMode: import('../../../../../lib/viewportStreamProtocol').ViewportMode = { kind: 'legacy' };
+  if (query.searchParams.has('viewportVersion') || query.searchParams.has('hydrate')) {
+    const { parseViewportMode } = await import('../../../../../lib/viewportStreamProtocol');
+    const mode = parseViewportMode(query, 'GET');
+    if (!mode) return Response.json({ error: 'Invalid viewport negotiation.' }, { status: 400 });
+    viewportMode = mode;
+  }
+
   // Parse and validate startIndex query param.
   // - absent → default 0 (full replay)
   // - present → non-negative integer ≤ TURN_STREAM_CURSOR_MAX
@@ -179,10 +188,12 @@ export async function GET(
     );
   }
 
+  let envelopeMeta: Record<string, unknown> = {};
   // Read the session envelope — fail-closed (503) on read throw, 404 on
   // miss or turnRunId mismatch. Previously fail-open on read throw.
   try {
     const envelope = await envelopeStore.readEnvelope(sessionKey);
+    envelopeMeta = envelope?.meta ?? {};
     if (!envelope || envelope.meta?.turnRunId !== cleanRunId) {
       return Response.json(
         { error: `Run not found: ${cleanRunId}` },
@@ -220,11 +231,44 @@ export async function GET(
       'x-workflow-run-id': cleanRunId,
     };
 
+    if (viewportMode.kind !== 'legacy') {
+      const { createViewportRunReader, viewportWait } = await import('../../../../../lib/workflows/viewportRunReader');
+      const { viewportStream } = await import('../../../../../lib/agent/viewportStream');
+      const { readViewportHead, emptyViewport } = await import('../../../../../lib/sessions/viewportRead');
+      const { VIEWPORT_RECOVERY_MAX_MS } = await import('../../../../../lib/sessionCloudCaps');
+      const runReader = createViewportRunReader(run);
+      const cold = viewportMode.kind === 'cold';
+      const initial = viewportMode.kind === 'cold' ? await viewportWait(runReader.nextIndex(), VIEWPORT_RECOVERY_MAX_MS, req.signal) : viewportMode.startIndex;
+      const status = cold ? await viewportWait(runReader.status(), VIEWPORT_RECOVERY_MAX_MS, req.signal) : 'running';
+      const body = viewportStream({
+        runId: cleanRunId, sessionId, run: runReader, startIndex: initial, signal: req.signal,
+        ...(cold ? { cold: {
+          status: status === 'running' && envelopeMeta.turnStatus === 'cancelling' ? 'cancelling' : status,
+          readHead: async (deadline: number) => {
+            try {
+              return await readViewportHead({ scope: { tenantId: tenantRes.value, userId, sessionId },
+                meta: envelopeMeta, blob: services.createBlobTranscriptStore(), signal: req.signal, deadline });
+            } catch { return emptyViewport(sessionId, envelopeMeta); }
+          },
+        } } : {}),
+        stillOwned: async () => {
+          const current = await envelopeStore.readEnvelope(sessionKey);
+          return current?.meta?.turnRunId === cleanRunId;
+        },
+      });
+      return new Response(body, { headers: { ...headers, 'Cache-Control': 'private, no-store, no-transform', 'x-viewport-version': '1' } });
+    }
+
     return new Response(await bodyForRun(run, { startIndex }), {
       status: 200,
       headers,
     });
   } catch (err) {
+    if (viewportMode.kind !== 'legacy') {
+      return Response.json({ error: 'Viewport stream unavailable.' }, {
+        status: 503, headers: { 'Cache-Control': 'private, no-store, no-transform' },
+      });
+    }
     const msg = err instanceof Error ? err.message : String(err);
     return Response.json(
       { error: `Unable to attach to run stream (fail closed): ${msg}` },

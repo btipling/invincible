@@ -314,6 +314,34 @@ describe('POST /api/turns', () => {
     expect(patchCall.key).toEqual({ tenantId: 't1', userId: 'u1', sessionId: 's1' });
   });
 
+  it('negotiated POST uses indexed events without changing start args or replaying a snapshot', async () => {
+    standardHarness(); mockAuthedSession();
+    const { getReadable } = mockStart();
+    getReadable.mockImplementation(() => new ReadableStream({ start(c) {
+      c.enqueue('data: {"type":"reasoning_delta","text":"new thinking"}\n\n');
+      c.enqueue('data: {"type":"done","text":"new answer"}\n\n'); c.close();
+    } }));
+    ({ POST } = await import('./route'));
+    const res = await POST(new Request('https://x/api/turns?viewportVersion=1', {
+      method: 'POST', headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: 's1', prompt: 'hi' }),
+    }));
+    expect(res.status).toBe(200); expect(res.headers.get('x-viewport-version')).toBe('1');
+    const { ViewportStreamDecoder } = await import('../../../lib/viewportStreamProtocol');
+    const records = new ViewportStreamDecoder('wf_turn_123', 0).push(new Uint8Array(await res.arrayBuffer()), true);
+    expect(records).toHaveLength(2); expect(records[0]).toMatchObject({ type: 'turn_event', nextIndex: 1, event: { type: 'reasoning_delta' } });
+    expect(startMock).toHaveBeenCalledOnce(); expect(startMock.mock.calls[0][1][0].userMessage).toBe('hi');
+    expect(getReadable).toHaveBeenCalledWith({ startIndex: 0 });
+  });
+
+  it('invalid viewport negotiation rejects before starting a durable run', async () => {
+    standardHarness(); mockAuthedSession(); mockStart(); ({ POST } = await import('./route'));
+    const res = await POST(new Request('https://x/api/turns?viewportVersion=1&hydrate=tail', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId: 's1', prompt: 'hi' }),
+    }));
+    expect(res.status).toBe(400); expect(startMock).not.toHaveBeenCalled();
+  });
+
   it('body reasoning is passed to start() (plan #897)', async () => {
     standardHarness();
     mockAuthedSession();
