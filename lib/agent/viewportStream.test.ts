@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { viewportStream } from './viewportStream';
 import { emptyViewport } from '../sessions/viewportRead';
+import { VIEWPORT_HISTORY_NOTE } from '../sessionViewport';
 import { VIEWPORT_RECOVERY_MAX_MS, VIEWPORT_TAIL_MAX_FRAMES } from '../sessionCloudCaps';
 import { ViewportStreamDecoder, type ViewportRecord } from '../viewportStreamProtocol';
 import type { ViewportRunReader } from '../workflows/viewportRunReader';
@@ -26,6 +27,7 @@ describe('snapshot-first and indexed live transport',()=>{
     expect(records.map(r=>r.type)).toEqual(['viewport_state','viewport_snapshot','turn_event','turn_event','turn_event']);
     expect(records[0]).toMatchObject({status:'cancelling'});
     expect(records[1]).toMatchObject({resumeIndex:100,gap:true,source:'stream_tail'});
+    expect(JSON.stringify(records[1])).toContain(VIEWPORT_HISTORY_NOTE);
     expect(JSON.stringify(records)).not.toContain('old-secret-think');
     expect(records[2]).toMatchObject({nextIndex:101,event:{type:'reasoning_delta',text:'new live thinking'}});
     expect(run.open).toHaveBeenNthCalledWith(1,0); expect(run.open).toHaveBeenNthCalledWith(2,100);

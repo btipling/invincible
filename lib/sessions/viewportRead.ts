@@ -96,9 +96,11 @@ export async function recoverViewport(opts: {
   const sampled = reducer.snapshot();
   const rows = sampled.length ? sampled : head.rows;
   const snapshot: ViewportSnapshot = {
-    ...head, runId: opts.runId, resumeIndex, sampledRange: { start, end },
+    ...head, runId: opts.runId, sampledRange: { start, end },
     source: sampled.length ? 'stream_tail' : head.source, rows: [],
     gap, hasEarlier: gap || head.hasEarlier, replace: rows.length > 0,
+    // skipStream never captured a tail; do not mint a guessed transport cursor.
+    ...(opts.skipStream ? {} : { resumeIndex }),
   };
   if (rows.length) {
     const note: SessionMessage = { id: 'viewport_history_note', role: 'system', text: VIEWPORT_HISTORY_NOTE, at: 0 };

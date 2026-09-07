@@ -4,6 +4,7 @@ import { newBlobObjectId } from './blobStore';
 import { emptyViewport, readViewportHead, recoverViewport } from './viewportRead';
 import { VIEWPORT_RECOVERY_MAX_BYTES, VIEWPORT_RECOVERY_MAX_MS, VIEWPORT_FINAL_PROBE_MAX_MS } from '../sessionCloudCaps';
 import type { ViewportRunReader } from '../workflows/viewportRunReader';
+import { VIEWPORT_HISTORY_NOTE } from '../sessionViewport';
 
 const scope = { tenantId: 'tenant', userId: 'user', sessionId: 'session' };
 const line = (event: object) => `data: ${JSON.stringify(event)}\n\n`;
@@ -54,7 +55,8 @@ describe('bounded recent stream recovery', () => {
     expect(reads).toBeLessThanOrEqual(2049); expect(cancel).toHaveBeenCalledOnce();
     expect(view.sampledRange).toEqual({start:1000000-2048,end:1000000});
     expect(run.nextIndex).toHaveBeenCalledOnce(); expect(view.resumeIndex).toBe(1000050); expect(view.gap).toBe(true);
-    expect(view.rows.some(r=>r.text==='latest')).toBe(true); expect(JSON.stringify(view)).not.toContain('historic"');
+    expect(view.rows.some(r=>r.text==='latest')).toBe(true); expect(view.rows.some(r=>r.text===VIEWPORT_HISTORY_NOTE)).toBe(true);
+    expect(JSON.stringify(view)).not.toContain('historic"');
   });
   it('chooses sample OR head, never merges ambiguous history; thinking-only sample falls back', async () => {
     const h = {...emptyViewport('session'), source:'stored_head' as const, replace:true,
@@ -64,6 +66,7 @@ describe('bounded recent stream recovery', () => {
       const view = await recoverViewport({runId:'run',sessionId:'session',initialIndex:1,run,readHead:async()=>h});
       expect(view.rows[0].text).toBe(event.type==='text_delta'?'sample-only':'head-only');
       expect(view.source).toBe(event.type==='text_delta'?'stream_tail':'stored_head');
+      expect(view.rows.some(r=>r.text===VIEWPORT_HISTORY_NOTE)).toBe(true);
     }
   });
   it('oversized decoded frame ends optional sample but still attaches at tail', async () => {
@@ -100,6 +103,8 @@ describe('bounded recent stream recovery', () => {
       readHead: async () => stored, skipStream: true });
     expect(run.open).not.toHaveBeenCalled(); expect(run.nextIndex).not.toHaveBeenCalled();
     expect(view.source).toBe('stored_head'); expect(view.gap).toBe(true);
+    expect(view).not.toHaveProperty('resumeIndex');
     expect(view.rows.some(r => r.text === 'head-only')).toBe(true);
+    expect(view.rows.some(r => r.text === VIEWPORT_HISTORY_NOTE)).toBe(true);
   });
 });

@@ -8,6 +8,7 @@ import { readViewportHead } from '../lib/sessions/viewportRead';
 import { createViewportRunReader, type ViewportRun } from '../lib/workflows/viewportRunReader';
 import { viewportStream } from '../lib/agent/viewportStream';
 import { ViewportStreamDecoder } from '../lib/viewportStreamProtocol';
+import { VIEWPORT_HISTORY_NOTE } from '../lib/sessionViewport';
 
 const scope = { tenantId: 'int_tenant', userId: 'int_user', sessionId: 'int_session' };
 const line = (event: object) => `data: ${JSON.stringify(event)}\n\n`;
@@ -63,6 +64,7 @@ describe('bounded recovery → protocol → real Wasm display (backend foundatio
             text: row.text,
           })));
           expect(ringTexts(bridge)).toContain('most recent sampled assistant');
+          expect(ringTexts(bridge)).toContain(VIEWPORT_HISTORY_NOTE);
         } else if (record.type === 'turn_event') {
           expect(record.nextIndex).toBe(nextIndex + 1); nextIndex = record.nextIndex;
           if (record.event?.type === 'reasoning_delta') bridge.pushMessage(MessageKind.Thinking, record.event.text);
