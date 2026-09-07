@@ -827,10 +827,13 @@ function cloudBodyBytes(body: CloudPutBody): number {
  *   #515 envelope/Blob path, where the transcript object is ferried **client→Blob**
  *   and never through a Function body.
  */
+import { assertCompleteForCloudPut } from './viewportFirewall';
+
 export function trimForCloudPut(
   snapshot: SessionSnapshot,
   maxBytes: number = HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES,
 ): CloudPutBody {
+  assertCompleteForCloudPut(snapshot);
   const messages = snapshot.messages.map((m) => ({
     id: m.id,
     role: m.role,
@@ -1306,6 +1309,8 @@ export function createHttpSessionRepository(
     // Canonical identity (parent #415): a snapshot never stores under a different
     // resource id than its own persisted id.
     if (snapshot.id !== id) return;
+    // Plan #960 firewall — never queue a partial view snapshot for cloud persist.
+    if (snapshot.historyComplete === false) return;
     const c = channel(id);
     c.pending = snapshot;
     void drain(id, c);

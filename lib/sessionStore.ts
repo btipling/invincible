@@ -141,6 +141,14 @@ export type SessionSnapshot = {
    * host-observable without a protocol bump (documented residual on #815).
    */
   queue?: string[];
+  /**
+   * Plan #960 — explicit view marker: this snapshot is a partial (view-only) window
+   * rebuilt from a viewport snapshot (`historyComplete: false`). Cloud transcript
+   * persist (put/mint/upload/flatten) MUST skip it; metadata-only preferences
+   * (model/reasoning/queue mirror) ride the narrow PATCH channel. `undefined`/`true`
+   * = a fully restored session. Never inferred from length.
+   */
+  historyComplete?: boolean;
 };
 
 import {
