@@ -5,7 +5,7 @@ vi.mock('../../../../../lib/tenancy/session',()=>({requireSessionUser:mocks.auth
 vi.mock('../../../../../lib/di',()=>({createProdServices:()=>({harnessSessionsRedis:{resolveTenantIdForUser:mocks.tenant},createBlobTranscriptStore:()=>({read:mocks.read})})}));
 vi.mock('../../../../../lib/tenancy/harnessSessionsRedis',()=>({resolveSessionStore:mocks.store,sessionKeyFor:(tenantId:string,userId:string,sessionId:string)=>({tenantId,userId,sessionId})}));
 vi.mock('../../../../../lib/sessions/sessionStore',()=>({isEnvelopeStore:()=>true}));
-import {GET} from './route';
+import {GET, maxDuration} from './route';
 const scope={tenantId:'t',userId:'u',sessionId:'s'};
 beforeEach(()=>{vi.clearAllMocks();mocks.auth.mockResolvedValue({ok:true,user:{id:'u'}});mocks.tenant.mockResolvedValue({ok:true,value:'t'});
   mocks.store.mockResolvedValue({ok:true,value:{readEnvelope:mocks.envelope}});
@@ -13,9 +13,12 @@ beforeEach(()=>{vi.clearAllMocks();mocks.auth.mockResolvedValue({ok:true,user:{i
   mocks.read.mockResolvedValue(JSON.stringify({id:'s',prev:newBlobObjectId(scope),messages:[{role:'assistant',text:'recent'}],queue:['next']}));});
 const request=(query='')=>GET(new Request(`https://example.com/api/sessions/s/viewport${query}`),{params:Promise.resolve({id:'s'})});
 describe('head-only view route',()=>{
+  it('is a short JSON function, not a 1800s SSE attach',()=>{
+    expect(maxDuration).toBe(15);
+  });
   it('reads one head and safe carriers, no private meta or write surface',async()=>{
     const res=await request();expect(res.status).toBe(200);expect(res.headers.get('cache-control')).toContain('private');
-    const body=await res.json();expect(body).toMatchObject({historyComplete:false,replace:true,hasEarlier:true,rows:[{text:'recent'}],carriers:{queue:['next']}});
+    const body=await res.json();expect(body).toMatchObject({historyComplete:false,replace:true,hasEarlier:true,gap:false,rows:[{text:'recent'}],carriers:{queue:['next']}});
     expect(JSON.stringify(body)).not.toContain('secret');expect(mocks.read).toHaveBeenCalledOnce();
   });
   it('corrupt/missing head retains cached paint',async()=>{

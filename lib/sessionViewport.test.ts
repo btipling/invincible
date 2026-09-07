@@ -65,6 +65,15 @@ describe('bounded disposable viewport', () => {
     across.apply({ type: 'text_delta', text: ' world' });
     expect(across.snapshot().map(r => r.text)).toEqual(['Hello world']);
     expect(JSON.stringify(across)).not.toContain('hidden thinking');
+    const skills = new ViewportReducer();
+    skills.apply({ type: 'skill_attached', slug: 'create-plan', action: 'attach', ok: true });
+    skills.apply({ type: 'text_delta', text: 'after skill' });
+    expect(skills.snapshot().map(r => ({ role: r.role, text: r.text }))).toEqual([
+      { role: 'skill_attached', text: 'Skill attached: create-plan' },
+      { role: 'assistant', text: 'after skill' },
+    ]);
+    skills.apply({ type: 'skill_attached', slug: 'create-plan', action: 'detach', ok: true });
+    expect(skills.snapshot().at(-1)).toMatchObject({ role: 'skill_attached', text: 'Skill detached: create-plan' });
   });
   it('pairs tool ids within the visible group but does not name-pair an unrelated result', () => {
     const reducer = new ViewportReducer();

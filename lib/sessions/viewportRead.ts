@@ -40,7 +40,7 @@ export async function readViewportHead(opts: {
     }
     rows.reverse();
     const view: ViewportView = { ...fallback, source: rows.length ? 'stored_head' : 'unavailable',
-      carriers: viewportCarriers(opts.meta, body.queue), replace: rows.length > 0,
+      carriers: viewportCarriers(opts.meta, body.queue), replace: rows.length > 0, gap: false,
       hasEarlier: body.messages.length > rows.length ||
         (typeof body.prev === 'string' && isObjectIdBoundTo(body.prev, opts.scope)) };
     view.rows = fitViewportRows(rows, view);

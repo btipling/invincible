@@ -1,6 +1,6 @@
 /** Versioned viewport records. Synthetic lifecycle controls never occupy a stored cursor. */
 import type { AgentStreamEvent } from './agent/agentStream';
-import { HARNESS_SESSION_MAX_MSG_BYTES, VIEWPORT_RESPONSE_MAX_BYTES, sanitizeTurnRunId, sanitizeTurnStreamCursor } from './sessionCloudCaps';
+import { HARNESS_SESSION_MAX_MSG_BYTES, VIEWPORT_RESPONSE_MAX_BYTES, sanitizeTurnRunId, sanitizeTurnStreamCursor, isRedisSafeOpaqueId } from './sessionCloudCaps';
 import { HARNESS_RING_MAX } from './sessionWindow';
 import { byteLength, objectRecord, parseViewportRow, parseViewportCarriers, validateViewportEvent, type ViewportView } from './sessionViewport';
 
@@ -81,7 +81,7 @@ export class ViewportStreamDecoder {
       if ((hasResume && index === undefined) || !range || sanitizeTurnStreamCursor(range.start) === undefined ||
         sanitizeTurnStreamCursor(range.end) === undefined || (range.start as number) > (range.end as number) ||
         (index !== undefined && (range.end as number) > index) ||
-        typeof o.sessionId !== 'string' || !Array.isArray(o.rows) || o.rows.length > HARNESS_RING_MAX ||
+        typeof o.sessionId !== 'string' || !isRedisSafeOpaqueId(o.sessionId) || !Array.isArray(o.rows) || o.rows.length > HARNESS_RING_MAX ||
         o.historyComplete !== false || o.incomplete !== true || typeof o.replace !== 'boolean' ||
         typeof o.gap !== 'boolean' || typeof o.hasEarlier !== 'boolean' ||
         !['stream_tail', 'stored_head', 'unavailable'].includes(String(o.source)) ||

@@ -25,8 +25,17 @@ describe('one-head viewport source', () => {
     const view = await readViewportHead({scope, meta:{transcriptPointer:id, workingNotes:'hidden'}, blob});
     expect(read).toHaveBeenCalledExactlyOnceWith(id); expect(write).not.toHaveBeenCalled();
     expect(view.rows.at(-1)?.text).toBe('message2499'); expect(view.rows).toHaveLength(2048);
-    expect(view.hasEarlier).toBe(true); expect(view.carriers.queue).toEqual(['next']);
+    expect(view.hasEarlier).toBe(true); expect(view.gap).toBe(false); expect(view.carriers.queue).toEqual(['next']);
     expect(JSON.stringify(view)).not.toContain('hidden');
+  });
+  it('a complete small head is stored_head with gap false and hasEarlier false', async () => {
+    const blob = new MemoryBlobTranscriptStore();
+    const id = newBlobObjectId(scope);
+    await blob.writeSegment({ objectId: id, maxBytes: 8*1024*1024, content: JSON.stringify({
+      id: 'session', messages: [{ role: 'assistant', text: 'only' }] }) });
+    const view = await readViewportHead({ scope, meta: { transcriptPointer: id }, blob });
+    expect(view).toMatchObject({ source: 'stored_head', replace: true, gap: false, hasEarlier: false });
+    expect(view.rows).toEqual([expect.objectContaining({ text: 'only' })]);
   });
   it('foreign pointer is not read; corrupt/wrong-id/missing heads are optional misses', async () => {
     const read = vi.fn(async () => null as string|null);
@@ -36,7 +45,7 @@ describe('one-head viewport source', () => {
     for (const raw of ['bad-json', JSON.stringify({id:'wrong',messages:[{role:'assistant',text:'foreign'}]}), null]) {
       read.mockResolvedValue(raw);
       const view = await readViewportHead({scope, meta:{transcriptPointer:newBlobObjectId(scope)},blob:{read}});
-      expect(view.replace).toBe(false);
+      expect(view.replace).toBe(false); expect(view.gap).toBe(true); expect(view.source).toBe('unavailable');
     }
   });
 });

@@ -191,6 +191,13 @@ export class ViewportReducer {
       this.row('tool_run', encodeToolRun(this.group) ?? 'Tool activity (incomplete)', reuse);
       this.lastKind = 'tool';
     } else if (ev.type === 'error') { this.row('error', ev.error); this.lastKind = ''; }
+    else if (ev.type === 'skill_attached') {
+      // Same display strings as skillRowText (lib/harnessChat.ts) — do not import the host.
+      const text = ev.ok
+        ? (ev.action === 'detach' ? `Skill detached: ${ev.slug}` : `Skill attached: ${ev.slug}`)
+        : `Skill not attached: ${ev.slug}`;
+      this.row('skill_attached', text); this.lastKind = '';
+    }
     else if (ev.type === 'done' && !this.sawAssistant && ev.text) {
       this.row('assistant', ev.text); this.sawAssistant = true; this.lastKind = '';
     }

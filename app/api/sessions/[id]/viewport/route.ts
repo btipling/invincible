@@ -9,7 +9,8 @@ import { viewportWait } from '../../../../../lib/workflows/viewportRunReader';
 
 const services = createProdServices();
 export const runtime = 'nodejs';
-export const maxDuration = 1800;
+/** JSON 5 s recovery budget — not a long-lived SSE attach. */
+export const maxDuration = 15;
 const headers = { 'Cache-Control': 'private, no-store, no-transform' };
 
 export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }): Promise<Response> {
