@@ -133,6 +133,14 @@ function failClosed(err: unknown): string {
   return `Unable to start durable turn (fail closed): ${msg}`;
 }
 
+/** Negotiated v1 never interpolates SDK/connection details (GET stream parity). */
+function viewportStreamUnavailable(): Response {
+  return Response.json(
+    { error: 'Viewport stream unavailable.' },
+    { status: 503, headers: { 'Cache-Control': 'private, no-store, no-transform' } },
+  );
+}
+
 /** Hard deny when resolve returned no client AND there is no soft-path fallback. */
 function isHardSandboxDeny(
   res: ResolveAgentSandboxResult,
@@ -386,6 +394,7 @@ export async function POST(req: Request): Promise<Response> {
               }
               // exists === false or terminal status → not live; allow start.
             } catch (err) {
+              if (indexedViewport) return viewportStreamUnavailable();
               return Response.json({ error: failClosed(err) }, { status: 503 });
             }
           }
@@ -823,6 +832,7 @@ export async function POST(req: Request): Promise<Response> {
         // Ignore close errors.
       }
     }
+    if (indexedViewport) return viewportStreamUnavailable();
     return Response.json({ error: failClosed(err) }, { status: 503 });
   } finally {
     // Clear the in-flight flag on EVERY path — success, throw, or any early

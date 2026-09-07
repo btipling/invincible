@@ -342,6 +342,38 @@ describe('POST /api/turns', () => {
     expect(res.status).toBe(400); expect(startMock).not.toHaveBeenCalled();
   });
 
+  it('negotiated POST start throw is sanitized 503, never SDK details', async () => {
+    standardHarness(); mockAuthedSession(); mockStart();
+    startMock.mockRejectedValueOnce(new Error('provider URL/token-private-detail'));
+    ({ POST } = await import('./route'));
+    const res = await POST(new Request('https://x/api/turns?viewportVersion=1', {
+      method: 'POST', headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: 's1', prompt: 'hi' }),
+    }));
+    expect(res.status).toBe(503);
+    expect(res.headers.get('cache-control')).toBe('private, no-store, no-transform');
+    expect(await res.json()).toEqual({ error: 'Viewport stream unavailable.' });
+    expect(startMock).toHaveBeenCalledOnce();
+  });
+
+  it('negotiated POST live-guard getRun throw is sanitized 503, never SDK details', async () => {
+    standardHarness(); mockAuthedSession(); mockStart();
+    getRunMock.mockImplementation(() => { throw new Error('provider URL/token-private-detail'); });
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: { turnStatus: 'running', turnRunId: 'wf_live_1' },
+    });
+    ({ POST } = await import('./route'));
+    const res = await POST(new Request('https://x/api/turns?viewportVersion=1', {
+      method: 'POST', headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: 's1', prompt: 'hi' }),
+    }));
+    expect(res.status).toBe(503);
+    expect(res.headers.get('cache-control')).toBe('private, no-store, no-transform');
+    expect(await res.json()).toEqual({ error: 'Viewport stream unavailable.' });
+    expect(startMock).not.toHaveBeenCalled();
+  });
+
   it('body reasoning is passed to start() (plan #897)', async () => {
     standardHarness();
     mockAuthedSession();
