@@ -56,7 +56,8 @@ An explicit snapshot may jump the cursor; subsequent stored ids must be contiguo
 UTF-8/CRLF network fragmentation does not create new stored positions. A transport
 or decoder failure that loses position closes the reader, rather than inventing a
 cursor. Synthetic terminal status never consumes an index. Completed-run buffered
-frames drain before a hung read is resolved from a terminal status poll.
+frames drain before a hung read is resolved from a **1 s** terminal status poll;
+the 0-delay first poll unsticks already-`cancelled`/`failed` only (not `completed`).
 Already-`cancelled`/`failed` attach never calls `getReadable` (same C16 gate as
 `bodyForRun`); cold hydrate still returns a head snapshot then `viewport_end`.
 Cold GET emits `viewport_state` **before** capturing H0 (under the same 5 s

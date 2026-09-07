@@ -154,7 +154,7 @@ export class ViewportReducer {
     }
   }
   apply(ev: AgentStreamEvent): void {
-    if (ev.type === 'reasoning_delta') { this.lastKind = ''; return; }
+    if (ev.type === 'reasoning_delta') return;
     if (ev.type === 'text_delta') {
       const grow = this.lastKind === 'assistant' && this.rows.at(-1)?.role === 'assistant';
       this.row('assistant', (grow ? this.rows.at(-1)!.text : '') + viewportExcerpt(ev.text), grow);

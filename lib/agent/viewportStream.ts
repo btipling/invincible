@@ -22,20 +22,27 @@ function nextFrame(reader: ReadableStreamDefaultReader<string | Uint8Array>, sta
       settled = true; clearTimeout(timer); signal.removeEventListener('abort', abort); fn();
     };
     const abort = () => finish(() => reject(new Error('Viewport detached')));
-    const poll = () => {
+    const consider = (status: string, allowCompleted: boolean): boolean => {
+      if (isHangClassStatus(status) || (allowCompleted && status === 'completed')) {
+        finish(() => resolve({ kind: 'terminal', status }));
+        return true;
+      }
+      return false;
+    };
+    const poll = (allowCompleted: boolean) => {
       if (settled) return;
       // No overlapping status calls, even if the provider never settles.
       void statusProbe().then(status => {
         if (settled) return;
-        if (isTerminalRunStatus(status)) finish(() => resolve({ kind: 'terminal', status }));
-        else timer = setTimeout(poll, TURN_STREAM_STATUS_POLL_MS);
-      }, () => { if (!settled) timer = setTimeout(poll, TURN_STREAM_STATUS_POLL_MS); });
+        if (!consider(status, allowCompleted)) timer = setTimeout(() => poll(true), TURN_STREAM_STATUS_POLL_MS);
+      }, () => { if (!settled) timer = setTimeout(() => poll(true), TURN_STREAM_STATUS_POLL_MS); });
     };
     signal.addEventListener('abort', abort, { once: true });
     void reader.read().then(result => finish(() => resolve({ kind: 'frame', result })), error => finish(() => reject(error)));
-    // Let buffered stored frames drain before considering a synthetic terminal.
-    // 0-delay first poll matches pipeRunReadable: unstick cancelled/failed hung readables.
-    timer = setTimeout(poll, 0);
+    // 0-delay: hang-class cancelled/failed only (unstick C16 hung readables).
+    // completed drains buffered/in-flight frames; synthetic end after a 1s hung
+    // read or EOF — same discipline as pipeRunReadable.
+    timer = setTimeout(() => poll(false), 0);
     if (signal.aborted) abort();
   });
 }

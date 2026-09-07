@@ -50,6 +50,12 @@ describe('bounded disposable viewport', () => {
     reducer.apply({ type: 'done', text: 'earlier a b' });
     expect(reducer.snapshot().map(r => r.text)).toEqual(['a b']);
     expect(JSON.stringify(reducer)).not.toContain('historical thinking');
+    const across = new ViewportReducer();
+    across.apply({ type: 'text_delta', text: 'Hello' });
+    across.apply({ type: 'reasoning_delta', text: 'hidden thinking' });
+    across.apply({ type: 'text_delta', text: ' world' });
+    expect(across.snapshot().map(r => r.text)).toEqual(['Hello world']);
+    expect(JSON.stringify(across)).not.toContain('hidden thinking');
   });
   it('pairs tool ids within the visible group but does not name-pair an unrelated result', () => {
     const reducer = new ViewportReducer();

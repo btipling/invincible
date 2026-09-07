@@ -83,6 +83,32 @@ describe('snapshot-first and indexed live transport',()=>{
     expect(await result).toEqual([{type:'viewport_end',version:1,runId:'run',status}]);
     expect(cancel).toHaveBeenCalledOnce();expect(vi.getTimerCount()).toBe(0);
   });
+  it('completed + buffered frames drain; 0-delay poll does not inject completed ahead of a later chunk', async () => {
+    let pulls = 0;
+    const run: ViewportRunReader = {
+      status: async () => 'completed', nextIndex: async () => 0,
+      open: () => new ReadableStream({
+        pull(c) {
+          pulls++;
+          if (pulls === 1) { c.enqueue(line({ type: 'text_delta', text: 'Hi' })); return; }
+          if (pulls === 2) {
+            return new Promise<void>(resolve => {
+              setTimeout(() => {
+                c.enqueue(line({ type: 'text_delta', text: ' there' }));
+                c.close();
+                resolve();
+              }, 20);
+            });
+          }
+        },
+      }),
+    };
+    const records = await collect(viewportStream({ runId: 'run', sessionId: 'session', run, startIndex: 0 }), 0);
+    expect(records.map(r => r.type)).toEqual(['turn_event', 'turn_event', 'viewport_end']);
+    expect(records[0]).toMatchObject({ event: { type: 'text_delta', text: 'Hi' } });
+    expect(records[1]).toMatchObject({ event: { type: 'text_delta', text: ' there' } });
+    expect(records[2]).toMatchObject({ status: 'completed' });
+  });
   it.each(['failed','cancelled'])('already-%s never opens getReadable and emits viewport_end',async status=>{
     const open=vi.fn();const nextIndex=vi.fn();
     const run:ViewportRunReader={status:async()=>status,nextIndex,open};
