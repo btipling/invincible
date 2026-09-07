@@ -30,7 +30,8 @@ function nextFrame(reader: ReadableStreamDefaultReader<string | Uint8Array>, sta
     signal.addEventListener('abort', abort, { once: true });
     void reader.read().then(result => finish(() => resolve({ kind: 'frame', result })), error => finish(() => reject(error)));
     // Let buffered stored frames drain before considering a synthetic terminal.
-    timer = setTimeout(poll, TURN_STREAM_STATUS_POLL_MS);
+    // 0-delay first poll matches pipeRunReadable: unstick cancelled/failed hung readables.
+    timer = setTimeout(poll, 0);
     if (signal.aborted) abort();
   });
 }

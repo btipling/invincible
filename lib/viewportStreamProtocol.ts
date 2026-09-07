@@ -27,6 +27,9 @@ export function parseViewportMode(url: URL, method: 'GET' | 'POST'): ViewportMod
   if (['viewportVersion', 'hydrate', 'startIndex', 'sessionId'].some(k => q.getAll(k).length > 1) || q.get('viewportVersion') !== '1') return null;
   if (method === 'POST') return q.has('hydrate') || q.has('startIndex') ? null : { kind: 'indexed', startIndex: 0 };
   if (q.has('hydrate')) return q.get('hydrate') === 'tail' && !q.has('startIndex') ? { kind: 'cold' } : null;
+  // GET v1 must pick hydrate=tail (bounded recovery) or an explicit startIndex.
+  // Omitting both is not origin replay — that was the #924 class this path exists to avoid.
+  if (!q.has('startIndex')) return null;
   const raw = q.get('startIndex') ?? '0';
   const index = /^(0|[1-9]\d*)$/.test(raw) ? sanitizeTurnStreamCursor(Number(raw)) : undefined;
   return index === undefined ? null : { kind: 'indexed', startIndex: index };

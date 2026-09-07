@@ -26,7 +26,8 @@ unnegotiated event stream. Clients must opt in and use `ViewportStreamDecoder`
 | Request | Behavior |
 |---|---|
 | GET existing run stream with `sessionId`, `viewportVersion=1`, `hydrate=tail` | Recovering state → one best-effort snapshot → live indexed events; `startIndex` is forbidden with hydrate |
-| GET with `sessionId`, `viewportVersion=1`, `startIndex=N` | Indexed hot resume from a same-heap applied raw cursor; no history read |
+| GET with `sessionId`, `viewportVersion=1`, `startIndex=N` | Indexed hot resume from a same-heap applied raw cursor; no history read. `N=0` is an explicit origin replay (not the default). |
+| GET `viewportVersion=1` without `hydrate` and without `startIndex` | **400** — not an implicit `startIndex=0` origin replay |
 | POST `/api/turns?viewportVersion=1`, `Accept: text/event-stream` | New run's indexed events from origin; inference/start args unchanged |
 | No version | Existing SSE/JSON behavior unchanged |
 

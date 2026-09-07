@@ -56,7 +56,10 @@ A run stream must match the owned envelope's **current** run id before SDK acces
 cold handoff rechecks that binding before releasing recovered rows. A planted Blob
 pointer is read only if `isObjectIdBoundTo` matches the same session, and the decoded
 body's `id` must match. These routes never accept client URLs, read arbitrary old
-Workflow inputs, start/cancel runs, execute tools, or publish session/transcript data.
+Workflow inputs, start/cancel runs, execute tools, or emit secrets, raw run
+inputs, or signed read URLs. The response is a **partial, disposable display
+view** for the owning session — not a canonical transcript and not a public
+dataset.
 
 Optional history is best effort, **authorization is not**. Missing/corrupt history
 can produce `replace:false`; a missing/foreign session/run fails closed. Carriers

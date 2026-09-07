@@ -36,8 +36,9 @@ describe('negotiated viewport codec', () => {
     expect(mode('startIndex=2')).toEqual({ kind: 'legacy' });
     expect(mode('viewportVersion=1&hydrate=tail')).toEqual({ kind: 'cold' });
     expect(mode('viewportVersion=1&startIndex=42')).toEqual({ kind: 'indexed', startIndex: 42 });
+    expect(mode('viewportVersion=1&startIndex=0')).toEqual({ kind: 'indexed', startIndex: 0 });
     expect(mode('viewportVersion=1', 'POST')).toEqual({ kind: 'indexed', startIndex: 0 });
-    for (const query of ['hydrate=tail', 'viewportVersion=2', 'viewportVersion=1&viewportVersion=1', 'viewportVersion=1&hydrate=tail&startIndex=0', 'viewportVersion=1&startIndex=01', 'viewportVersion=1&startIndex=1e3', 'viewportVersion=1&startIndex=1000000001']) expect(mode(query)).toBeNull();
+    for (const query of ['hydrate=tail', 'viewportVersion=2', 'viewportVersion=1', 'viewportVersion=1&sessionId=s1', 'viewportVersion=1&viewportVersion=1', 'viewportVersion=1&hydrate=tail&startIndex=0', 'viewportVersion=1&startIndex=01', 'viewportVersion=1&startIndex=1e3', 'viewportVersion=1&startIndex=1000000001']) expect(mode(query)).toBeNull();
     expect(mode('viewportVersion=1&startIndex=1', 'POST')).toBeNull();
   });
 });

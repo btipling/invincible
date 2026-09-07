@@ -42,7 +42,7 @@ describe('negotiated route uses real bounded service/codec',()=>{
     expect(records[0]).toMatchObject({type:'turn_event',nextIndex:3});
     expect(mocks.read).not.toHaveBeenCalled();expect(open).toHaveBeenCalledExactlyOnceWith({startIndex:2});
   });
-  it.each(['sessionId=s1&viewportVersion=2','sessionId=s1&viewportVersion=1&hydrate=tail&startIndex=0','sessionId=s1&viewportVersion=1&startIndex=1e2','sessionId=s1&sessionId=s2&viewportVersion=1'])('rejects bad negotiation before SDK access: %s',async q=>{
+  it.each(['sessionId=s1&viewportVersion=2','sessionId=s1&viewportVersion=1','sessionId=s1&viewportVersion=1&hydrate=tail&startIndex=0','sessionId=s1&viewportVersion=1&startIndex=1e2','sessionId=s1&sessionId=s2&viewportVersion=1'])('rejects bad negotiation before SDK access: %s',async q=>{
     expect((await request(q)).status).toBe(400);expect(mocks.getRun).not.toHaveBeenCalled();
   });
   it('unauth and foreign run never reach SDK/Blob',async()=>{
