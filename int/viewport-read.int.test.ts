@@ -43,11 +43,11 @@ describe('bounded recovery → protocol → real Wasm display (backend foundatio
         }
       } }), { getTailIndex: async () => (probes++ === 0 ? H0 : H) - 1 });
     } };
-    const adapter = createViewportRunReader(run), initialIndex = await adapter.nextIndex();
-    const stream = viewportStream({ runId: 'run', sessionId: scope.sessionId, run: adapter, startIndex: initialIndex,
+    // Same composition as GET hydrate=tail: startIndex 0, H0 captured inside viewportStream.
+    const stream = viewportStream({ runId: 'run', sessionId: scope.sessionId, run: createViewportRunReader(run), startIndex: 0,
       cold: { status: 'cancelling', readHead: deadline => readViewportHead({ scope, meta: { transcriptPointer: pointer }, blob, deadline }) } });
     const parser = new ViewportStreamDecoder('run'), reader = stream.getReader();
-    let sawSnapshot = false, nextIndex = initialIndex;
+    let sawSnapshot = false, nextIndex = 0;
     for (;;) {
       const { value, done } = await reader.read(); if (done) break;
       for (const record of parser.push(value)) {

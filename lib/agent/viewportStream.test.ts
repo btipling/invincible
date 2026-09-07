@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { viewportStream } from './viewportStream';
 import { emptyViewport } from '../sessions/viewportRead';
-import { VIEWPORT_RECOVERY_MAX_MS } from '../sessionCloudCaps';
+import { VIEWPORT_RECOVERY_MAX_MS, VIEWPORT_TAIL_MAX_FRAMES } from '../sessionCloudCaps';
 import { ViewportStreamDecoder, type ViewportRecord } from '../viewportStreamProtocol';
 import type { ViewportRunReader } from '../workflows/viewportRunReader';
 const line = (e: object) => `data: ${JSON.stringify(e)}\n\n`;
@@ -156,5 +156,34 @@ describe('snapshot-first and indexed live transport',()=>{
     expect(records.map(r=>r.type)).toEqual(['viewport_state','viewport_snapshot','viewport_error']);
     expect(records[1]).not.toHaveProperty('resumeIndex');
     expect(open).not.toHaveBeenCalled();expect(vi.getTimerCount()).toBe(0);
+  });
+  it('samples from the first H0, not a later final-probe tail', async () => {
+    let probes = 0;
+    const H0 = 5000, H = 5070;
+    const run: ViewportRunReader = {
+      status: async () => 'running',
+      nextIndex: async () => (probes++ === 0 ? H0 : H),
+      open: vi.fn(start => new ReadableStream({ start(c) {
+        if (start === H0 - VIEWPORT_TAIL_MAX_FRAMES) {
+          c.enqueue(line({ type: 'text_delta', text: 'sampled-from-h0' }));
+          c.close();
+        } else if (start === H) {
+          c.enqueue(line({ type: 'text_delta', text: 'live-after-probe' }));
+          c.close();
+        } else { c.close(); }
+      } })),
+    };
+    const records = await collect(viewportStream({
+      runId: 'run', sessionId: 'session', startIndex: 0, run,
+      cold: { status: 'running', readHead: async () => emptyViewport('session') },
+    }));
+    expect(run.open).toHaveBeenCalledWith(H0 - VIEWPORT_TAIL_MAX_FRAMES);
+    expect(run.open).toHaveBeenCalledWith(H);
+    expect(run.open).not.toHaveBeenCalledWith(0);
+    expect(run.open).not.toHaveBeenCalledWith(H - VIEWPORT_TAIL_MAX_FRAMES);
+    expect(records[1]).toMatchObject({ type: 'viewport_snapshot', resumeIndex: H, source: 'stream_tail' });
+    expect(JSON.stringify(records)).toContain('sampled-from-h0');
+    expect(records.at(-2)).toMatchObject({ type: 'turn_event', nextIndex: H + 1, event: { type: 'text_delta', text: 'live-after-probe' } });
+    expect(probes).toBe(2);
   });
 });
