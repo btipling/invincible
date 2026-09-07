@@ -1633,9 +1633,25 @@ describe('envelope carrier (phase 0 #515)', () => {
       expect(mmWrite.envelope.meta.compactionPointer).toBe('t_cp_s_0001');
       expect(mmWrite.envelope.meta.modelMessagesPointer).toBe('t_mm_s_0001');
     }
-    // Read-back round-trips the copy-forwarded carrier.
+    // Worker-authored explicit value wins (the next compaction's pointer).
+    // Omit-copy-forward alone cannot catch wrap-order that applies stored
+    // meta last (`{...copyForward(input, existing), ...existing}`).
+    const explicit = await s.upsertEnvelope(k, {
+      id: 's',
+      userId: 'u',
+      tenantId: 't',
+      updatedAt: 40,
+      meta: { compactionPointer: 't_cp_s_0002' },
+    });
+    expect(explicit.status).toBe('stored');
+    if (explicit.status === 'stored') {
+      expect(explicit.envelope.meta.compactionPointer).toBe('t_cp_s_0002');
+      expect(explicit.envelope.meta.modelMessagesPointer).toBe('t_mm_s_0001');
+    }
+    // Read-back round-trips the winning worker pointer + copy-forwarded mm.
     const back = await s.readEnvelope(k);
-    expect(back?.meta.compactionPointer).toBe('t_cp_s_0001');
+    expect(back?.meta.compactionPointer).toBe('t_cp_s_0002');
+    expect(back?.meta.modelMessagesPointer).toBe('t_mm_s_0001');
   });
 
   it('meta.accepts attachedSkills as a JSON-encoded string of slugs (#514)', () => {

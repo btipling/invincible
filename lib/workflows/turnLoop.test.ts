@@ -5742,7 +5742,11 @@ describe('runTurnLoop compaction (plan #950, source #552)', () => {
     expect(
       (firstRoundMessages as Array<{ content?: string }>)[0].content,
     ).toBe('plain prior row');
-    // (b) NO fold anywhere in this run carries a fabricated compactionCheckpoint.
+    // (b) A fold DID persist (vacuity lock — length-0 on an empty call
+    // list would also pass) and NO fold carries a fabricated
+    // compactionCheckpoint.
+    const foldCall = persistSpy.mock.calls.find((c) => c[0].fold !== undefined);
+    expect(foldCall).toBeDefined();
     const ckFolds = persistSpy.mock.calls
       .map((c) => c[0].fold)
       .filter((f) => f?.compactionCheckpoint !== undefined);
