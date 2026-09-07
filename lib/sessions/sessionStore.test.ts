@@ -1590,6 +1590,70 @@ describe('envelope carrier (phase 0 #515)', () => {
     }
   });
 
+  it('plan #951 — RedisSessionStore.upsertEnvelope copy-forwards compactionPointer from LWW existing when a host flatten omit arrives (durable, no volatility)', async () => {
+    // The Memory path above proves the helper; this row proves the REDIS store —
+    // the implementation Production actually resolves through `resolveSessionStore`
+    // (`redisSessionStore.ts` wraps the same copy-forward helpers; a wrap-order
+    // regression would only show on this path).
+    const { client } = fakeClient();
+    const s = new RedisSessionStore({ client });
+    const k = { tenantId: 't', userId: 'u', sessionId: 's' };
+    await s.upsertEnvelope(k, {
+      id: 's',
+      userId: 'u',
+      tenantId: 't',
+      updatedAt: 10,
+      meta: { compactionPointer: 't_cp_s_0001', turnStatus: 'running' },
+    });
+    // A host flatten PUT (cloudMetaFor never emits compactionPointer) must
+    // keep the worker's latest checkpoint carrier — never clear it.
+    const hostOmit = await s.upsertEnvelope(k, {
+      id: 's',
+      userId: 'u',
+      tenantId: 't',
+      updatedAt: 20,
+      meta: { turnStatus: 'completed' },
+    });
+    expect(hostOmit.status).toBe('stored');
+    if (hostOmit.status === 'stored') {
+      expect(hostOmit.envelope.meta.compactionPointer).toBe('t_cp_s_0001');
+      expect(hostOmit.envelope.meta.turnStatus).toBe('completed');
+    }
+    // Sibling carriers coexist: a later worker mm write must not disturb the
+    // copy-forwarded compaction pointer (independent reserved keys).
+    const mmWrite = await s.upsertEnvelope(k, {
+      id: 's',
+      userId: 'u',
+      tenantId: 't',
+      updatedAt: 30,
+      meta: { modelMessagesPointer: 't_mm_s_0001' },
+    });
+    expect(mmWrite.status).toBe('stored');
+    if (mmWrite.status === 'stored') {
+      expect(mmWrite.envelope.meta.compactionPointer).toBe('t_cp_s_0001');
+      expect(mmWrite.envelope.meta.modelMessagesPointer).toBe('t_mm_s_0001');
+    }
+    // Worker-authored explicit value wins (the next compaction's pointer).
+    // Omit-copy-forward alone cannot catch wrap-order that applies stored
+    // meta last (`{...copyForward(input, existing), ...existing}`).
+    const explicit = await s.upsertEnvelope(k, {
+      id: 's',
+      userId: 'u',
+      tenantId: 't',
+      updatedAt: 40,
+      meta: { compactionPointer: 't_cp_s_0002' },
+    });
+    expect(explicit.status).toBe('stored');
+    if (explicit.status === 'stored') {
+      expect(explicit.envelope.meta.compactionPointer).toBe('t_cp_s_0002');
+      expect(explicit.envelope.meta.modelMessagesPointer).toBe('t_mm_s_0001');
+    }
+    // Read-back round-trips the winning worker pointer + copy-forwarded mm.
+    const back = await s.readEnvelope(k);
+    expect(back?.meta.compactionPointer).toBe('t_cp_s_0002');
+    expect(back?.meta.modelMessagesPointer).toBe('t_mm_s_0001');
+  });
+
   it('meta.accepts attachedSkills as a JSON-encoded string of slugs (#514)', () => {
     expect(validateMeta({ attachedSkills: ["create-plan"] }).ok).toBe(false);
     expect(validateMeta({ attachedSkills: '["create-plan","v11"]' }).ok).toBe(true);
