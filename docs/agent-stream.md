@@ -59,6 +59,10 @@ cursor. Synthetic terminal status never consumes an index. Completed-run buffere
 frames drain before a hung read is resolved from a terminal status poll.
 Already-`cancelled`/`failed` attach never calls `getReadable` (same C16 gate as
 `bodyForRun`); cold hydrate still returns a head snapshot then `viewport_end`.
+Cold GET emits `viewport_state` **before** capturing H0 (under the same 5 s
+recovery clock as head+sample). Unavailable or hanging live-tail metadata is an
+in-band `viewport_error` after that head snapshot — never an empty 503 and never
+`open(0)` origin replay.
 
 All view rows are disposable and incomplete. Missing history may preserve the
 cached ring (`replace:false`); oversized rows carry a visible excerpt marker.

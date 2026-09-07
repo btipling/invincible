@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { viewportStream } from './viewportStream';
 import { emptyViewport } from '../sessions/viewportRead';
+import { VIEWPORT_RECOVERY_MAX_MS } from '../sessionCloudCaps';
 import { ViewportStreamDecoder, type ViewportRecord } from '../viewportStreamProtocol';
 import type { ViewportRunReader } from '../workflows/viewportRunReader';
 const line = (e: object) => `data: ${JSON.stringify(e)}\n\n`;
@@ -101,5 +102,30 @@ describe('snapshot-first and indexed live transport',()=>{
     expect(records[1]).toMatchObject({source:'stored_head',gap:true});
     expect(JSON.stringify(records)).toContain('head-only');
     expect(records[2]).toMatchObject({status});
+  });
+  it('cold unavailable H0 emits state and head, never opens origin live',async()=>{
+    const open=vi.fn();
+    const run:ViewportRunReader={status:async()=>'running',nextIndex:async()=>{throw new Error('unavailable');},open};
+    const head={...emptyViewport('session'),source:'stored_head' as const,replace:true,
+      rows:[{id:'h',role:'assistant' as const,text:'head-only',at:0}]};
+    const records=await collect(viewportStream({runId:'run',sessionId:'session',run,startIndex:0,
+      cold:{status:'running',readHead:async()=>head}}));
+    expect(records.map(r=>r.type)).toEqual(['viewport_state','viewport_snapshot','viewport_error']);
+    expect(records[1]).toMatchObject({source:'stored_head'});
+    expect(JSON.stringify(records)).toContain('head-only');
+    expect(open).not.toHaveBeenCalled();
+  });
+  it('cold hanging H0 emits viewport_state before the recovery deadline and never origin-replays',async()=>{
+    vi.useFakeTimers();
+    const open=vi.fn();
+    const run:ViewportRunReader={status:async()=>'running',nextIndex:()=>new Promise<number>(()=>{}),open};
+    const result=collect(viewportStream({runId:'run',sessionId:'session',run,startIndex:0,
+      cold:{status:'running',readHead:async()=>emptyViewport('session')}}));
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(VIEWPORT_RECOVERY_MAX_MS);
+    const records=await result;
+    expect(records[0]).toMatchObject({type:'viewport_state',phase:'recovering'});
+    expect(records.map(r=>r.type)).toEqual(['viewport_state','viewport_snapshot','viewport_error']);
+    expect(open).not.toHaveBeenCalled();expect(vi.getTimerCount()).toBe(0);
   });
 });

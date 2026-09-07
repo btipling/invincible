@@ -55,9 +55,12 @@ export async function recoverViewport(opts: {
   readHead: (deadline: number) => Promise<ViewportView>; signal?: AbortSignal;
   /** Skip SDK sample + tail probe (cancelled/failed C16 hang class). Head-only. */
   skipStream?: boolean;
+  /** Shared recovery clock (H0 + head + sample). Defaults to now + VIEWPORT_RECOVERY_MAX_MS. */
+  deadline?: number;
 }): Promise<ViewportSnapshot> {
-  const deadline = Date.now() + VIEWPORT_RECOVERY_MAX_MS;
-  const headPromise = viewportWait(opts.readHead(deadline), VIEWPORT_RECOVERY_MAX_MS, opts.signal)
+  const deadline = opts.deadline ?? Date.now() + VIEWPORT_RECOVERY_MAX_MS;
+  const remaining = () => Math.max(0, deadline - Date.now());
+  const headPromise = viewportWait(opts.readHead(deadline), remaining(), opts.signal)
     .catch(() => emptyViewport(opts.sessionId));
   const start = Math.max(0, opts.initialIndex - VIEWPORT_TAIL_MAX_FRAMES);
   let end = start, bytes = 0, gap = opts.skipStream || start > 0;

@@ -65,9 +65,18 @@ describe('negotiated route uses real bounded service/codec',()=>{
     expect(await res.json()).toEqual({ error: 'Viewport stream unavailable.' });
     expect(res.headers.get('cache-control')).toContain('private');
   });
-  it('unavailable initial tail fails attach, never guesses zero',async()=>{
-    mocks.getRun.mockReturnValue({exists:Promise.resolve(true),status:'running',getReadable:()=>new ReadableStream()});
-    expect((await request()).status).toBe(503);
+  it('unavailable initial tail still emits recovering state and head; never origin-replays',async()=>{
+    const getReadable=vi.fn(()=>new ReadableStream());
+    mocks.getRun.mockReturnValue({exists:Promise.resolve(true),status:'running',getReadable});
+    const res=await request();expect(res.status).toBe(200);
+    const records=await decode(res);
+    expect(records.map(r=>r.type)).toEqual(['viewport_state','viewport_snapshot','viewport_error']);
+    expect(records[0]).toMatchObject({type:'viewport_state',phase:'recovering'});
+    expect(records[1]).toMatchObject({source:'stored_head'});
+    expect(JSON.stringify(records)).toContain('head');
+    expect(records[2]).toMatchObject({code:'STREAM_UNAVAILABLE'});
+    expect(getReadable).toHaveBeenCalledWith({startIndex:-1});
+    expect(getReadable).not.toHaveBeenCalledWith({startIndex:0});
   });
   it.each(['cancelled','failed'])('%s hanging getReadable is never opened on hydrate=tail; head snapshot still ships',async status=>{
     const getReadable=vi.fn(()=>new Promise<ReadableStream<string>>(()=>{}));

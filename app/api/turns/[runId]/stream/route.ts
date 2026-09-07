@@ -232,24 +232,17 @@ export async function GET(
     };
 
     if (viewportMode.kind !== 'legacy') {
-      const { createViewportRunReader, viewportWait } = await import('../../../../../lib/workflows/viewportRunReader');
+      const { createViewportRunReader } = await import('../../../../../lib/workflows/viewportRunReader');
       const { viewportStream } = await import('../../../../../lib/agent/viewportStream');
       const { readViewportHead, emptyViewport } = await import('../../../../../lib/sessions/viewportRead');
-      const { TURN_STREAM_STATUS_POLL_MS, VIEWPORT_RECOVERY_MAX_MS } = await import('../../../../../lib/sessionCloudCaps');
       const runReader = createViewportRunReader(run);
       const cold = viewportMode.kind === 'cold';
-      // Same C16 gate as bodyForRun: cancelled/failed can hang getReadable at the tail.
-      const hangStatus = await viewportWait(runReader.status(), TURN_STREAM_STATUS_POLL_MS, req.signal).catch(() => undefined);
-      const skipReadable = hangStatus === 'cancelled' || hangStatus === 'failed';
-      const initial = skipReadable ? 0
-        : viewportMode.kind === 'cold' ? await viewportWait(runReader.nextIndex(), VIEWPORT_RECOVERY_MAX_MS, req.signal)
-        : viewportMode.startIndex;
-      const status = skipReadable ? hangStatus
-        : cold ? await viewportWait(runReader.status(), VIEWPORT_RECOVERY_MAX_MS, req.signal) : 'running';
       const body = viewportStream({
-        runId: cleanRunId, sessionId, run: runReader, startIndex: initial, signal: req.signal,
+        runId: cleanRunId, sessionId, run: runReader,
+        startIndex: viewportMode.kind === 'indexed' ? viewportMode.startIndex : 0,
+        signal: req.signal,
         ...(cold ? { cold: {
-          status: status === 'running' && envelopeMeta.turnStatus === 'cancelling' ? 'cancelling' : (status ?? 'running'),
+          status: envelopeMeta.turnStatus === 'cancelling' ? 'cancelling' : 'running',
           readHead: async (deadline: number) => {
             try {
               return await readViewportHead({ scope: { tenantId: tenantRes.value, userId, sessionId },

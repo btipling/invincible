@@ -1,5 +1,5 @@
 /** Negotiated snapshot-first/indexed stream. Default legacy transport remains untouched. */
-import { TURN_STREAM_STATUS_POLL_MS, sanitizeTurnStreamCursor } from '../sessionCloudCaps';
+import { TURN_STREAM_STATUS_POLL_MS, sanitizeTurnStreamCursor, VIEWPORT_RECOVERY_MAX_MS } from '../sessionCloudCaps';
 import { parseViewportEvent, type ViewportView } from '../sessionViewport';
 import { encodeViewportRecord, type ViewportRecord } from '../viewportStreamProtocol';
 import { recoverViewport } from '../sessions/viewportRead';
@@ -74,16 +74,37 @@ export function viewportStream(opts: {
       const liveStatus = await viewportWait(statusProbe(), TURN_STREAM_STATUS_POLL_MS, aborter.signal).catch(() => undefined);
       const skipReadable = isHangClassStatus(liveStatus);
       if (opts.cold) {
-        yield { type: 'viewport_state', version: 1, runId: opts.runId, status: opts.cold.status, phase: 'recovering' };
+        const stateStatus = isHangClassStatus(liveStatus) ? liveStatus
+          : liveStatus === 'running' && opts.cold.status === 'cancelling' ? 'cancelling'
+          : (liveStatus ?? opts.cold.status);
+        yield { type: 'viewport_state', version: 1, runId: opts.runId, status: stateStatus, phase: 'recovering' };
+        const deadline = Date.now() + VIEWPORT_RECOVERY_MAX_MS;
+        const headInFlight = opts.cold.readHead(deadline);
+        let initialIndex = opts.startIndex;
+        let skipStream = skipReadable;
+        let h0Failed = false;
+        if (!skipStream) {
+          try {
+            initialIndex = await viewportWait(opts.run.nextIndex(), Math.max(0, deadline - Date.now()), aborter.signal);
+          } catch {
+            skipStream = true;
+            h0Failed = true;
+            initialIndex = 0;
+          }
+        }
         const snapshot = await recoverViewport({ runId: opts.runId, sessionId: opts.sessionId,
-          initialIndex: index, run: opts.run, readHead: opts.cold.readHead, signal: aborter.signal,
-          skipStream: skipReadable });
+          initialIndex, run: opts.run, readHead: async () => headInFlight, signal: aborter.signal,
+          skipStream, deadline });
         if (opts.stillOwned && !(await viewportWait(opts.stillOwned(), TURN_STREAM_STATUS_POLL_MS, aborter.signal)))
           throw new Error('Viewport session changed');
         index = snapshot.resumeIndex;
         yield { type: 'viewport_snapshot', ...snapshot };
         if (skipReadable) {
           yield { type: 'viewport_end', version: 1, runId: opts.runId, status: liveStatus };
+          return;
+        }
+        if (h0Failed) {
+          yield { type: 'viewport_error', version: 1, runId: opts.runId, code: 'STREAM_UNAVAILABLE' };
           return;
         }
       } else if (skipReadable) {

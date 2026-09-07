@@ -52,7 +52,7 @@ context, queue, turn or bridge limits**.
 |---|---:|---|
 | `VIEWPORT_TAIL_MAX_FRAMES` | 2048 | Sample only the recent stored-frame interval, never full-origin history on a large run |
 | `VIEWPORT_RECOVERY_MAX_BYTES` | 8 MiB | Decoded sampled frame bytes, including reasoning that is discarded |
-| `VIEWPORT_RECOVERY_MAX_MS` | 5000 ms | Shared optional head/sample deadline; not a timeout/cancel of live inference |
+| `VIEWPORT_RECOVERY_MAX_MS` | 5000 ms | Shared optional H0 + head/sample deadline; not a timeout/cancel of live inference |
 | `VIEWPORT_FINAL_PROBE_MAX_MS` | 1000 ms | One final tail probe; on timeout keep initial known tail, no chase loop |
 | `VIEWPORT_HEAD_READ_MAX_OBJECTS` | 1 | Current scoped head only; no `prev` reconstruction |
 | `VIEWPORT_RESPONSE_MAX_BYTES` | 2 MiB | Entire escaped JSON snapshot/control incl. carriers/rows, below real 4.5 MB Function ceiling; not lifetime SSE bytes |
@@ -62,6 +62,8 @@ Budget exhaustion omits history and resumes at a known tail, with incomplete/gap
 flags. Sample rows or stored head are selected, not expensively aligned/merged.
 One neutral note explains omissions; historical reasoning is never in the snapshot.
 A missing optional head does not turn into an origin replay or run cancellation.
+Missing/hanging live-tail metadata (`getTailIndex`) fails the live attach in-band
+after `viewport_state` + head snapshot — never an empty 503 and never `open(0)`.
 
 The SDK may decode one oversized frame before the byte check, and a Blob read
 returns one complete object (raw + parsed JS overhead is larger than wire bytes).

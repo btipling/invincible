@@ -20,7 +20,9 @@ The backend offers an explicitly **partial, read-only** display path; the curren
   Missing/corrupt history returns `replace:false` so a consumer keeps cached paint.
 - `GET /api/turns/:runId/stream?sessionId=:id&viewportVersion=1&hydrate=tail`
   sends a recovering-state record, one bounded recent snapshot, then indexed live
-  events on the **same response**. It samples at most 2048 recent stored frames,
+  events on the **same response**. Recovering state is emitted before H0 / tail
+  metadata; a missing tail is in-band `viewport_error` after the head snapshot
+  (not an empty 503). It samples at most 2048 recent stored frames,
   8 MiB, and 5 seconds of optional recovery work. One final tail probe (1 second)
   can skip a growing backlog; omitted gaps are explicit, never replayed at UI speed.
 - Sampled reasoning is discarded. Post-handoff reasoning is live, including a
