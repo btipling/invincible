@@ -73,6 +73,7 @@ describe('negotiated route uses real bounded service/codec',()=>{
     expect(records.map(r=>r.type)).toEqual(['viewport_state','viewport_snapshot','viewport_error']);
     expect(records[0]).toMatchObject({type:'viewport_state',phase:'recovering'});
     expect(records[1]).toMatchObject({source:'stored_head'});
+    expect(records[1]).not.toHaveProperty('resumeIndex');
     expect(JSON.stringify(records)).toContain('head');
     expect(records[2]).toMatchObject({code:'STREAM_UNAVAILABLE'});
     expect(getReadable).toHaveBeenCalledWith({startIndex:-1});
@@ -87,6 +88,7 @@ describe('negotiated route uses real bounded service/codec',()=>{
     expect(records.map(r=>r.type)).toEqual(['viewport_state','viewport_snapshot','viewport_end']);
     expect(records[0]).toMatchObject({status});
     expect(records[1]).toMatchObject({source:'stored_head'});
+    expect(records[1]).not.toHaveProperty('resumeIndex');
     expect(JSON.stringify(records)).toContain('head');
     expect(records[2]).toMatchObject({status});
   });

@@ -22,14 +22,15 @@ The backend offers an explicitly **partial, read-only** display path; the curren
   sends a recovering-state record, one bounded recent snapshot, then indexed live
   events on the **same response**. Recovering state is emitted before H0 / tail
   metadata; a missing tail is in-band `viewport_error` after the head snapshot
-  (not an empty 503). It samples at most 2048 recent stored frames,
+  (not an empty 503) and does **not** publish `resumeIndex: 0`. It samples at most 2048 recent stored frames,
   8 MiB, and 5 seconds of optional recovery work. One final tail probe (1 second)
   can skip a growing backlog; omitted gaps are explicit, never replayed at UI speed.
 - Sampled reasoning is discarded. Post-handoff reasoning is live, including a
   continuation of an older segment. Older prompt/tool context may be absent,
   fragmented or stale; this is a useful recent view, not exact reconstruction.
-- `historyComplete:false` is unconditional. `resumeIndex` is a transport position,
-  **not** proof that every preceding message is present. Consumers must not upload
+- `historyComplete:false` is unconditional. `resumeIndex` is a transport position
+  when the tail is known, **not** proof that every preceding message is present,
+  and is omitted entirely when the tail cannot be captured. Consumers must not upload
   these rows as a full transcript or use them as model seed/history.
 - No transcript/envelope writes, model/tool execution, run start or run cancel
   occur during recovery. SDK failure or disconnect detaches the reader only.

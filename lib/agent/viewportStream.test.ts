@@ -126,6 +126,7 @@ describe('snapshot-first and indexed live transport',()=>{
     expect(open).not.toHaveBeenCalled();expect(nextIndex).not.toHaveBeenCalled();
     expect(records.map(r=>r.type)).toEqual(['viewport_state','viewport_snapshot','viewport_end']);
     expect(records[1]).toMatchObject({source:'stored_head',gap:true});
+    expect(records[1]).not.toHaveProperty('resumeIndex');
     expect(JSON.stringify(records)).toContain('head-only');
     expect(records[2]).toMatchObject({status});
   });
@@ -138,6 +139,7 @@ describe('snapshot-first and indexed live transport',()=>{
       cold:{status:'running',readHead:async()=>head}}));
     expect(records.map(r=>r.type)).toEqual(['viewport_state','viewport_snapshot','viewport_error']);
     expect(records[1]).toMatchObject({source:'stored_head'});
+    expect(records[1]).not.toHaveProperty('resumeIndex');
     expect(JSON.stringify(records)).toContain('head-only');
     expect(open).not.toHaveBeenCalled();
   });
@@ -152,6 +154,7 @@ describe('snapshot-first and indexed live transport',()=>{
     const records=await result;
     expect(records[0]).toMatchObject({type:'viewport_state',phase:'recovering'});
     expect(records.map(r=>r.type)).toEqual(['viewport_state','viewport_snapshot','viewport_error']);
+    expect(records[1]).not.toHaveProperty('resumeIndex');
     expect(open).not.toHaveBeenCalled();expect(vi.getTimerCount()).toBe(0);
   });
 });

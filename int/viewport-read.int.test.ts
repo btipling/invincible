@@ -55,7 +55,8 @@ describe('bounded recovery → protocol → real Wasm display (backend foundatio
           bridge.setLifecycle(Lifecycle.Busy);
           expect(ringTexts(bridge)).toContain('cached tail must not rewind to prompt');
         } else if (record.type === 'viewport_snapshot') {
-          sawSnapshot = true; nextIndex = record.resumeIndex;
+          sawSnapshot = true;
+          if (record.resumeIndex !== undefined) nextIndex = record.resumeIndex;
           expect(record.gap).toBe(true); expect(record.historyComplete).toBe(false);
           if (record.replace) bridge.hydrateMessages(record.rows.map(row => ({
             kind: row.role === 'assistant' ? MessageKind.Assistant : row.role === 'tool_run' ? MessageKind.ToolRun : MessageKind.System,

@@ -14,6 +14,16 @@ describe('negotiated viewport codec', () => {
     expect(records).toHaveLength(2);
     expect(records[1]).toMatchObject({ nextIndex: 43, event: { text: '漢🙂' } });
   });
+  it('display-only snapshot (unknown tail) does not jump the cursor to origin', () => {
+    const decoder = new ViewportStreamDecoder('run');
+    const { resumeIndex: _ignored, ...display } = snap;
+    const rec = decoder.push(encodeViewportRecord({ ...display, type: 'viewport_snapshot' }))[0];
+    expect(rec).toMatchObject({ type: 'viewport_snapshot', sampledRange: { start: 0, end: 40 } });
+    expect(rec).not.toHaveProperty('resumeIndex');
+    expect(() => decoder.push(encodeViewportRecord({
+      type: 'turn_event', version: 1, runId: 'run', nextIndex: 1, event: { type: 'text_delta', text: 'x' },
+    }))).toThrow('Invalid viewport cursor');
+  });
   it('known skipped frame advances; synthetic terminal does not need an index', () => {
     const decoder = new ViewportStreamDecoder('run', 3);
     expect(decoder.push(encodeViewportRecord({ type: 'turn_event', version: 1, runId: 'run', nextIndex: 4, skipped: true }))[0]).toMatchObject({ skipped: true });

@@ -41,7 +41,7 @@ and `runId`). Only stored `turn_event` records have `id:`:
 | event | Additional fields / meaning |
 |---|---|
 | `viewport_state` | `status`, `phase:'recovering'`; restore Busy/Stop without erasing cached paint |
-| `viewport_snapshot` | `sessionId`, `resumeIndex`, `rows`, `replace`, `source`, `sampledRange:{start,end}`, `historyComplete:false`, `incomplete:true`, `gap`, `hasEarlier`, safe `carriers` |
+| `viewport_snapshot` | `sessionId`, optional `resumeIndex`, `rows`, `replace`, `source`, `sampledRange:{start,end}`, `historyComplete:false`, `incomplete:true`, `gap`, `hasEarlier`, safe `carriers`. `resumeIndex` is omitted when the live tail is unknown (display-only; the decoder does not jump). A missing tail is never encoded as `resumeIndex:0`. |
 | `turn_event` | `nextIndex`, `event` (allowlisted AgentStreamEvent) and matching SSE `id: nextIndex`; a malformed known stored frame instead carries `skipped:true` with no event |
 | `viewport_end` | Synthetic terminal `status` (`completed`, `failed`, `cancelled`); no raw index, no transcript-completeness promise |
 | `viewport_error` | Sanitized `code`; preserve last applied cursor and detach, never restart/cancel inference |
@@ -62,8 +62,8 @@ Already-`cancelled`/`failed` attach never calls `getReadable` (same C16 gate as
 `bodyForRun`); cold hydrate still returns a head snapshot then `viewport_end`.
 Cold GET emits `viewport_state` **before** capturing H0 (under the same 5 s
 recovery clock as head+sample). Unavailable or hanging live-tail metadata is an
-in-band `viewport_error` after that head snapshot — never an empty 503 and never
-`open(0)` origin replay.
+in-band `viewport_error` after that head snapshot — never an empty 503, never
+`open(0)` origin replay, and never a guessed `resumeIndex: 0` cursor jump.
 
 All view rows are disposable and incomplete. Missing history may preserve the
 cached ring (`replace:false`); oversized rows carry a visible excerpt marker.

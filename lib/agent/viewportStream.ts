@@ -90,13 +90,14 @@ export function viewportStream(opts: {
         let initialIndex = opts.startIndex;
         let skipStream = skipReadable;
         let h0Failed = false;
+        let resumeKnown = false;
         if (!skipStream) {
           try {
             initialIndex = await viewportWait(opts.run.nextIndex(), Math.max(0, deadline - Date.now()), aborter.signal);
+            resumeKnown = true;
           } catch {
             skipStream = true;
             h0Failed = true;
-            initialIndex = 0;
           }
         }
         const snapshot = await recoverViewport({ runId: opts.runId, sessionId: opts.sessionId,
@@ -104,7 +105,8 @@ export function viewportStream(opts: {
           skipStream, deadline });
         if (opts.stillOwned && !(await viewportWait(opts.stillOwned(), TURN_STREAM_STATUS_POLL_MS, aborter.signal)))
           throw new Error('Viewport session changed');
-        index = snapshot.resumeIndex;
+        if (!resumeKnown) delete snapshot.resumeIndex;
+        else index = snapshot.resumeIndex ?? initialIndex;
         yield { type: 'viewport_snapshot', ...snapshot };
         if (skipReadable) {
           yield { type: 'viewport_end', version: 1, runId: opts.runId, status: liveStatus };

@@ -5,7 +5,7 @@ import { HARNESS_RING_MAX } from './sessionWindow';
 import { byteLength, objectRecord, parseViewportRow, validateViewportEvent, type ViewportView } from './sessionViewport';
 
 export type ViewportSnapshot = ViewportView & {
-  runId: string; resumeIndex: number; sampledRange: { start: number; end: number };
+  runId: string; resumeIndex?: number; sampledRange: { start: number; end: number };
 };
 export type ViewportRecord =
   | { type: 'viewport_state'; version: 1; runId: string; status: string; phase: 'recovering' }
@@ -30,8 +30,8 @@ export function parseViewportMode(url: URL, method: 'GET' | 'POST'): ViewportMod
   // GET v1 must pick hydrate=tail (bounded recovery) or an explicit startIndex.
   // Omitting both is not origin replay — that was the #924 class this path exists to avoid.
   if (!q.has('startIndex')) return null;
-  const raw = q.get('startIndex') ?? '0';
-  const index = /^(0|[1-9]\d*)$/.test(raw) ? sanitizeTurnStreamCursor(Number(raw)) : undefined;
+  const raw = q.get('startIndex');
+  const index = raw !== null && /^(0|[1-9]\d*)$/.test(raw) ? sanitizeTurnStreamCursor(Number(raw)) : undefined;
   return index === undefined ? null : { kind: 'indexed', startIndex: index };
 }
 
@@ -75,10 +75,12 @@ export class ViewportStreamDecoder {
         : { type, version: 1, runId: this.runId, nextIndex: index, skipped: true };
     }
     if (type === 'viewport_snapshot') {
-      const index = sanitizeTurnStreamCursor(o.resumeIndex);
+      const hasResume = Object.prototype.hasOwnProperty.call(o, 'resumeIndex');
+      const index = hasResume ? sanitizeTurnStreamCursor(o.resumeIndex) : undefined;
       const range = objectRecord(o.sampledRange);
-      if (index === undefined || !range || sanitizeTurnStreamCursor(range.start) === undefined ||
-        sanitizeTurnStreamCursor(range.end) === undefined || (range.start as number) > (range.end as number) || (range.end as number) > index ||
+      if ((hasResume && index === undefined) || !range || sanitizeTurnStreamCursor(range.start) === undefined ||
+        sanitizeTurnStreamCursor(range.end) === undefined || (range.start as number) > (range.end as number) ||
+        (index !== undefined && (range.end as number) > index) ||
         typeof o.sessionId !== 'string' || !Array.isArray(o.rows) || o.rows.length > HARNESS_RING_MAX ||
         o.historyComplete !== false || o.incomplete !== true || typeof o.replace !== 'boolean' ||
         typeof o.gap !== 'boolean' || typeof o.hasEarlier !== 'boolean' ||
@@ -90,9 +92,12 @@ export class ViewportStreamDecoder {
         if (!parsed || typeof raw?.text !== 'string' || byteLength(raw.text) > HARNESS_SESSION_MAX_MSG_BYTES) throw new Error('Invalid viewport row');
         return parsed;
       });
-      if (this.nextIndex !== undefined && index < this.nextIndex) throw new Error('Rewound viewport');
-      this.nextIndex = index;
-      return { ...o, type, rows } as ViewportRecord;
+      if (index !== undefined) {
+        if (this.nextIndex !== undefined && index < this.nextIndex) throw new Error('Rewound viewport');
+        this.nextIndex = index;
+      }
+      const { resumeIndex: _ignored, ...rest } = o;
+      return { ...rest, type, rows, ...(index !== undefined ? { resumeIndex: index } : {}) } as ViewportRecord;
     }
     if (type === 'viewport_state' && o.phase === 'recovering' && typeof o.status === 'string')
       return { type, version: 1, runId: this.runId, status: o.status, phase: 'recovering' };

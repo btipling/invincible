@@ -63,7 +63,9 @@ flags. Sample rows or stored head are selected, not expensively aligned/merged.
 One neutral note explains omissions; historical reasoning is never in the snapshot.
 A missing optional head does not turn into an origin replay or run cancellation.
 Missing/hanging live-tail metadata (`getTailIndex`) fails the live attach in-band
-after `viewport_state` + head snapshot — never an empty 503 and never `open(0)`.
+after `viewport_state` + head snapshot — never an empty 503, never `open(0)`, and
+never a guessed `resumeIndex: 0` (the snapshot is display-only; the decoder does
+not jump).
 
 The SDK may decode one oversized frame before the byte check, and a Blob read
 returns one complete object (raw + parsed JS overhead is larger than wire bytes).
