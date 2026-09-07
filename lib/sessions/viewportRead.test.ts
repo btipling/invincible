@@ -92,4 +92,14 @@ describe('bounded recent stream recovery', () => {
     const view = await recoverViewport({runId:'run',sessionId:'session',initialIndex:4,run,readHead:head});
     expect(view.resumeIndex).toBe(5); expect(view.replace).toBe(false); expect(run.open).toHaveBeenCalledOnce();
   });
+  it('skipStream is head-only and never opens or probes the run', async () => {
+    const run: ViewportRunReader = { status: async () => 'cancelled', nextIndex: vi.fn(async () => 99), open: vi.fn() };
+    const stored = { ...emptyViewport('session'), source: 'stored_head' as const, replace: true,
+      rows: [{ id: 'h', role: 'assistant' as const, text: 'head-only', at: 0 }] };
+    const view = await recoverViewport({ runId: 'run', sessionId: 'session', initialIndex: 50, run,
+      readHead: async () => stored, skipStream: true });
+    expect(run.open).not.toHaveBeenCalled(); expect(run.nextIndex).not.toHaveBeenCalled();
+    expect(view.source).toBe('stored_head'); expect(view.gap).toBe(true);
+    expect(view.rows.some(r => r.text === 'head-only')).toBe(true);
+  });
 });

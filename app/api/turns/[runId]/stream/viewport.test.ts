@@ -69,4 +69,23 @@ describe('negotiated route uses real bounded service/codec',()=>{
     mocks.getRun.mockReturnValue({exists:Promise.resolve(true),status:'running',getReadable:()=>new ReadableStream()});
     expect((await request()).status).toBe(503);
   });
+  it.each(['cancelled','failed'])('%s hanging getReadable is never opened on hydrate=tail; head snapshot still ships',async status=>{
+    const getReadable=vi.fn(()=>new Promise<ReadableStream<string>>(()=>{}));
+    mocks.getRun.mockReturnValue({exists:Promise.resolve(true),status:Promise.resolve(status),getReadable});
+    const res=await request();expect(res.status).toBe(200);
+    const records=await decode(res);
+    expect(getReadable).not.toHaveBeenCalled();expect(mocks.read).toHaveBeenCalledOnce();
+    expect(records.map(r=>r.type)).toEqual(['viewport_state','viewport_snapshot','viewport_end']);
+    expect(records[0]).toMatchObject({status});
+    expect(records[1]).toMatchObject({source:'stored_head'});
+    expect(JSON.stringify(records)).toContain('head');
+    expect(records[2]).toMatchObject({status});
+  });
+  it.each(['cancelled','failed'])('%s hanging getReadable is never opened on indexed GET',async status=>{
+    const getReadable=vi.fn(()=>new Promise<ReadableStream<string>>(()=>{}));
+    mocks.getRun.mockReturnValue({exists:Promise.resolve(true),status:Promise.resolve(status),getReadable});
+    const records=await decode(await request('sessionId=s1&viewportVersion=1&startIndex=2'),2);
+    expect(getReadable).not.toHaveBeenCalled();expect(mocks.read).not.toHaveBeenCalled();
+    expect(records).toEqual([{type:'viewport_end',version:1,runId:'run',status}]);
+  });
 });

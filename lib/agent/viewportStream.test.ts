@@ -50,7 +50,8 @@ describe('snapshot-first and indexed live transport',()=>{
       open:()=>new ReadableStream({cancel})};
     const controller=new AbortController();
     const result=collect(viewportStream({runId:'run',sessionId:'session',run,startIndex:0,signal:controller.signal}),0);
-    await Promise.resolve();controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort();
     expect(await result).toEqual([]);expect(cancel).toHaveBeenCalledOnce();expect(vi.getTimerCount()).toBe(0);
   });
   it('shares a stalled status probe across frames and EOF instead of piling up requests', async () => {
@@ -73,12 +74,32 @@ describe('snapshot-first and indexed live transport',()=>{
     expect(status).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(0);
   });
-  it.each(['completed','failed','cancelled'])('polls a hung readable and emits synthetic %s with no fake index',async status=>{
+  it.each(['completed'])('polls a hung readable and emits synthetic %s with no fake index',async status=>{
     vi.useFakeTimers();const cancel=vi.fn();const run:ViewportRunReader={status:async()=>status,nextIndex:async()=>0,
       open:()=>new ReadableStream({cancel})};
     const result=collect(viewportStream({runId:'run',sessionId:'session',run,startIndex:42}),42);
     await vi.advanceTimersByTimeAsync(1000);
     expect(await result).toEqual([{type:'viewport_end',version:1,runId:'run',status}]);
     expect(cancel).toHaveBeenCalledOnce();expect(vi.getTimerCount()).toBe(0);
+  });
+  it.each(['failed','cancelled'])('already-%s never opens getReadable and emits viewport_end',async status=>{
+    const open=vi.fn();const nextIndex=vi.fn();
+    const run:ViewportRunReader={status:async()=>status,nextIndex,open};
+    expect(await collect(viewportStream({runId:'run',sessionId:'session',run,startIndex:42}),42))
+      .toEqual([{type:'viewport_end',version:1,runId:'run',status}]);
+    expect(open).not.toHaveBeenCalled();expect(nextIndex).not.toHaveBeenCalled();
+  });
+  it.each(['failed','cancelled'])('cold already-%s is head-only: no SDK sample, snapshot then viewport_end',async status=>{
+    const open=vi.fn();const nextIndex=vi.fn(async()=>9);
+    const run:ViewportRunReader={status:async()=>status,nextIndex,open};
+    const head={...emptyViewport('session'),source:'stored_head' as const,replace:true,
+      rows:[{id:'h',role:'assistant' as const,text:'head-only',at:0}]};
+    const records=await collect(viewportStream({runId:'run',sessionId:'session',run,startIndex:4,
+      cold:{status,readHead:async()=>head}}));
+    expect(open).not.toHaveBeenCalled();expect(nextIndex).not.toHaveBeenCalled();
+    expect(records.map(r=>r.type)).toEqual(['viewport_state','viewport_snapshot','viewport_end']);
+    expect(records[1]).toMatchObject({source:'stored_head',gap:true});
+    expect(JSON.stringify(records)).toContain('head-only');
+    expect(records[2]).toMatchObject({status});
   });
 });

@@ -53,16 +53,18 @@ export async function readViewportHead(opts: {
 export async function recoverViewport(opts: {
   runId: string; sessionId: string; initialIndex: number; run: ViewportRunReader;
   readHead: (deadline: number) => Promise<ViewportView>; signal?: AbortSignal;
+  /** Skip SDK sample + tail probe (cancelled/failed C16 hang class). Head-only. */
+  skipStream?: boolean;
 }): Promise<ViewportSnapshot> {
   const deadline = Date.now() + VIEWPORT_RECOVERY_MAX_MS;
   const headPromise = viewportWait(opts.readHead(deadline), VIEWPORT_RECOVERY_MAX_MS, opts.signal)
     .catch(() => emptyViewport(opts.sessionId));
   const start = Math.max(0, opts.initialIndex - VIEWPORT_TAIL_MAX_FRAMES);
-  let end = start, bytes = 0, gap = start > 0;
+  let end = start, bytes = 0, gap = opts.skipStream || start > 0;
   const reducer = new ViewportReducer();
   let reader: ReadableStreamDefaultReader<string | Uint8Array> | undefined;
   try {
-    if (start < opts.initialIndex && !opts.signal?.aborted) {
+    if (!opts.skipStream && start < opts.initialIndex && !opts.signal?.aborted) {
       reader = opts.run.open(start).getReader();
       while (end < opts.initialIndex && end - start < VIEWPORT_TAIL_MAX_FRAMES && Date.now() < deadline) {
         const chunk = await viewportWait(reader.read(), deadline - Date.now(), opts.signal);
@@ -81,9 +83,11 @@ export async function recoverViewport(opts: {
   const head = await headPromise;
   if (opts.signal?.aborted) throw new Error('Viewport read aborted');
   let resumeIndex = opts.initialIndex;
-  try {
-    resumeIndex = Math.max(resumeIndex, await viewportWait(opts.run.nextIndex(), VIEWPORT_FINAL_PROBE_MAX_MS, opts.signal));
-  } catch { gap = true; }
+  if (!opts.skipStream) {
+    try {
+      resumeIndex = Math.max(resumeIndex, await viewportWait(opts.run.nextIndex(), VIEWPORT_FINAL_PROBE_MAX_MS, opts.signal));
+    } catch { gap = true; }
+  }
   if (opts.signal?.aborted) throw new Error('Viewport read aborted');
   gap ||= end < opts.initialIndex || resumeIndex > opts.initialIndex;
   const sampled = reducer.snapshot();

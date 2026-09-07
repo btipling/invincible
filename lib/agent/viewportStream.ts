@@ -8,6 +8,10 @@ import { isTerminalRunStatus } from './pipeRunReadable';
 
 type FrameResult = { kind: 'frame'; result: ReadableStreamReadResult<string | Uint8Array> } | { kind: 'terminal'; status: string };
 
+function isHangClassStatus(status: string | undefined): status is 'cancelled' | 'failed' {
+  return status === 'cancelled' || status === 'failed';
+}
+
 /** One pending raw read, one pending status probe at most; stop all timers/listeners on settle. */
 function nextFrame(reader: ReadableStreamDefaultReader<string | Uint8Array>, statusProbe: () => Promise<string>, signal: AbortSignal): Promise<FrameResult> {
   return new Promise((resolve, reject) => {
@@ -66,14 +70,25 @@ export function viewportStream(opts: {
     let index = opts.startIndex;
     try {
       if (aborter.signal.aborted) return;
+      // Same C16 gate as bodyForRun: already-cancelled/failed never touches getReadable.
+      const liveStatus = await viewportWait(statusProbe(), TURN_STREAM_STATUS_POLL_MS, aborter.signal).catch(() => undefined);
+      const skipReadable = isHangClassStatus(liveStatus);
       if (opts.cold) {
         yield { type: 'viewport_state', version: 1, runId: opts.runId, status: opts.cold.status, phase: 'recovering' };
         const snapshot = await recoverViewport({ runId: opts.runId, sessionId: opts.sessionId,
-          initialIndex: index, run: opts.run, readHead: opts.cold.readHead, signal: aborter.signal });
+          initialIndex: index, run: opts.run, readHead: opts.cold.readHead, signal: aborter.signal,
+          skipStream: skipReadable });
         if (opts.stillOwned && !(await viewportWait(opts.stillOwned(), TURN_STREAM_STATUS_POLL_MS, aborter.signal)))
           throw new Error('Viewport session changed');
         index = snapshot.resumeIndex;
         yield { type: 'viewport_snapshot', ...snapshot };
+        if (skipReadable) {
+          yield { type: 'viewport_end', version: 1, runId: opts.runId, status: liveStatus };
+          return;
+        }
+      } else if (skipReadable) {
+        yield { type: 'viewport_end', version: 1, runId: opts.runId, status: liveStatus };
+        return;
       }
       if (aborter.signal.aborted) return;
       reader = opts.run.open(index).getReader();
