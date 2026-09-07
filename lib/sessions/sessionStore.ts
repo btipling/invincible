@@ -101,6 +101,8 @@ export const RESERVED_META_KEYS = [
   'workingNotes',
   'freshnessReminderPointer',
   'compactionPointer',
+  /** Plan #960 reserved carrier — JSON-array string (each entry a host-known prompt). `[]` means an explicit empty tombstone, not "unset". */
+  'queueMirror',
 ] as const;
 export type HarnessSessionMetaKey = (typeof RESERVED_META_KEYS)[number];
 
@@ -636,12 +638,15 @@ export function validateMeta(value: unknown): SessionStoreResult<HarnessSessionM
       if (isRedisSafeOpaqueId(v)) meta.compactionPointer = v;
       continue;
     }
-    if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean') {
-      return {
-        ok: false,
-        code: 'invalid_meta',
-        error: `meta.${key} must be a string, number, or boolean.`,
-      };
+    if (key === 'queueMirror') {
+      // Plan #960 — JSON-array string; invalid JSON drops, never a transfy path.
+      if (typeof v !== 'string') {
+        return {
+          ok: false,
+          code: 'invalid_meta',
+          error: 'meta.queueMirror must be a JSON-encoded string.',
+        };
+      }
     }
     meta[key as HarnessSessionMetaKey] = v as string | number | boolean;
   }

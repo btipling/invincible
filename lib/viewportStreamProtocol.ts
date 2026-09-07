@@ -40,6 +40,7 @@ export class ViewportStreamDecoder {
   private decoder = new TextDecoder('utf-8', { fatal: true });
   private pending = '';
   private nextIndex: number | undefined;
+  private lastViewportSnapshot: ViewportSnapshot | undefined;
   constructor(private readonly runId: string, startIndex?: number) { this.nextIndex = startIndex; }
   push(bytes: Uint8Array, final = false): ViewportRecord[] {
     this.pending += this.decoder.decode(bytes, { stream: !final });
@@ -56,6 +57,9 @@ export class ViewportStreamDecoder {
     }
     if (final && this.pending.trim()) throw new Error('Incomplete viewport record');
     return out;
+  }
+  public get lastSnapshot(): ViewportSnapshot | undefined {
+    return this.lastViewportSnapshot;
   }
   private parse(block: string): ViewportRecord {
     const fields = (name: string) => block.split('\n').filter(l => l.startsWith(`${name}:`)).map(l => l.slice(name.length + 1).trimStart());
@@ -98,8 +102,7 @@ export class ViewportStreamDecoder {
       }
       const start = sanitizeTurnStreamCursor(range.start)!;
       const end = sanitizeTurnStreamCursor(range.end)!;
-      return {
-        type,
+      const recSnapshotData: ViewportSnapshot = {
         version: 1,
         runId: this.runId,
         sessionId: o.sessionId as string,
@@ -114,6 +117,9 @@ export class ViewportStreamDecoder {
         sampledRange: { start, end },
         ...(index !== undefined ? { resumeIndex: index } : {}),
       };
+      const recSnapshot = { type, ...recSnapshotData };
+      if (this.lastViewportSnapshot === undefined) this.lastViewportSnapshot = recSnapshot;
+      return recSnapshot as ({ type: 'viewport_snapshot' } & ViewportSnapshot);
     }
     if (type === 'viewport_state' && o.phase === 'recovering' && typeof o.status === 'string')
       return { type, version: 1, runId: this.runId, status: o.status, phase: 'recovering' };
