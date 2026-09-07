@@ -142,6 +142,8 @@ export function viewportStream(opts: {
         index = nextIndex;
         yield event ? { type: 'turn_event', version: 1, runId: opts.runId, nextIndex, event }
           : { type: 'turn_event', version: 1, runId: opts.runId, nextIndex, skipped: true };
+        // Stored done/error are producer-terminal. Do not synthesize viewport_end
+        // (cancelled inject is an error event, not status failed).
         if (event?.type === 'done' || event?.type === 'error') return;
       }
     } catch {

@@ -30,7 +30,22 @@ describe('snapshot-first and indexed live transport',()=>{
     expect(JSON.stringify(records[1])).toContain(VIEWPORT_HISTORY_NOTE);
     expect(JSON.stringify(records)).not.toContain('old-secret-think');
     expect(records[2]).toMatchObject({nextIndex:101,event:{type:'reasoning_delta',text:'new live thinking'}});
+    expect(records[4]).toMatchObject({type:'turn_event',event:{type:'done'}});
+    expect(records.some(r=>r.type==='viewport_end')).toBe(false);
     expect(run.open).toHaveBeenNthCalledWith(1,0); expect(run.open).toHaveBeenNthCalledWith(2,100);
+  });
+  it('stored error is producer-terminal and does not synthesize viewport_end', async () => {
+    const run: ViewportRunReader = {
+      status: async () => 'running', nextIndex: async () => 0,
+      open: () => new ReadableStream({ start(c) {
+        c.enqueue(line({ type: 'error', error: 'Request cancelled.' })); c.close();
+      } }),
+    };
+    const records = await collect(viewportStream({ runId: 'run', sessionId: 'session', run, startIndex: 0 }), 0);
+    expect(records).toEqual([{
+      type: 'turn_event', version: 1, runId: 'run', nextIndex: 1,
+      event: { type: 'error', error: 'Request cancelled.' },
+    }]);
   });
   it('known malformed frame is skipped at its raw index; EOF synthesizes no stored index',async()=>{
     const run:ViewportRunReader={status:async()=> 'completed',nextIndex:async()=>0,open:()=>new ReadableStream({start(c){c.enqueue('broken');c.close();}})};

@@ -34,6 +34,10 @@ The backend offers an explicitly **partial, read-only** display path; the curren
   these rows as a full transcript or use them as model seed/history.
 - No transcript/envelope writes, model/tool execution, run start or run cancel
   occur during recovery. SDK failure or disconnect detaches the reader only.
+  A stored `done`/`error` on the negotiated live tail closes that reader
+  **without** a following `viewport_end`; EOF, `viewport_end`, and
+  `viewport_error` are the other terminal signals (see
+  [agent-stream.md](agent-stream.md)).
 
 The worker's existing durable transcript/model projections remain unchanged.
 See [agent-stream.md](agent-stream.md) for version negotiation and record grammar,

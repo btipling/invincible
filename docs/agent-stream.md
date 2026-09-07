@@ -42,8 +42,8 @@ and `runId`). Only stored `turn_event` records have `id:`:
 |---|---|
 | `viewport_state` | `status`, `phase:'recovering'`; restore Busy/Stop without erasing cached paint |
 | `viewport_snapshot` | `sessionId`, optional `resumeIndex`, `rows`, `replace`, `source`, `sampledRange:{start,end}`, `historyComplete:false`, `incomplete:true`, `gap`, `hasEarlier`, safe `carriers`. `resumeIndex` is omitted when the live tail is unknown (display-only; the decoder does not jump). A missing tail is never encoded as `resumeIndex:0`. |
-| `turn_event` | `nextIndex`, `event` (allowlisted AgentStreamEvent) and matching SSE `id: nextIndex`; a malformed known stored frame instead carries `skipped:true` with no event |
-| `viewport_end` | Synthetic terminal `status` (`completed`, `failed`, `cancelled`); no raw index, no transcript-completeness promise |
+| `turn_event` | `nextIndex`, `event` (allowlisted AgentStreamEvent) and matching SSE `id: nextIndex`; a malformed known stored frame instead carries `skipped:true` with no event. A stored `done` or `error` **is producer-terminal**: the iterator closes after that record and **does not** emit `viewport_end` (cancelled inject is an `error` event, not a synthetic `failed`). Consumers must treat stored `done`/`error`, `viewport_end`, `viewport_error`, **and** reader EOF as terminal. |
+| `viewport_end` | Synthetic terminal `status` (`completed`, `failed`, `cancelled`) when the wrapper stops from `run.status` or readable EOF **without** a stored `done`/`error` (hang-class attach, completed drain that never wrote `done`). No raw index, no transcript-completeness promise |
 | `viewport_error` | Sanitized `code`; preserve last applied cursor and detach, never restart/cancel inference |
 
 Recovery samples only the recent raw-frame interval and chooses sampled display
